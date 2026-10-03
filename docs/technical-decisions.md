@@ -74,6 +74,19 @@ Left out at the start, added only when we need them: subagent views, steering mi
 
 To keep the door open: the queue, the permission wait and the fan-out each live in their own small module. If the concurrency gets messy later, Effect can be added to those modules without rewriting the app.
 
+## UI direction: the Inbox layout
+
+We mocked five layouts in `web/` (Slack, Topics, Inbox, Board, Focus). Marcho likes the Inbox one (layout 3), so that is the starting point.
+
+What it looks like: three columns, like an email app. Channels on the left, the thread list in the middle, the open thread on the right. On a phone it shows one column at a time.
+
+Rules that hold in every layout:
+
+- A channel is one git repository.
+- You cannot post a loose message in a channel. Every message starts a thread ("New Thread") or replies inside one.
+- Each thread gets its own worktree (its own copy of the repo on its own branch).
+- The message box has a model picker and a reasoning picker. No access picker for now; threads always run with full access.
+
 ## Not decided yet
 
 - Which database holds the event log (T3 uses local SQLite; a shared server may want Postgres).

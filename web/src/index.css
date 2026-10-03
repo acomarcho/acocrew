@@ -1,0 +1,122 @@
+@import 'tailwindcss';
+
+/* Every layout sets data-theme, and the shared components only use these names. */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-surface: var(--surface);
+  --color-soft: var(--soft);
+  --color-side: var(--side);
+  --color-side-fg: var(--side-fg);
+  --color-side-muted: var(--side-muted);
+  --color-side-hover: var(--side-hover);
+  --color-side-active: var(--side-active);
+  --color-side-active-fg: var(--side-active-fg);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overscroll-behavior: none;
+}
+
+body {
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-size: 15px;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button {
+  cursor: pointer;
+}
+
+[data-theme='slack'] {
+  --bg: #1a1d21;
+  --fg: #d7d8da;
+  --muted: #9a9b9e;
+  --line: #35373b;
+  --surface: #222529;
+  --soft: #2c2f33;
+  --side: #1c0f21;
+  --side-fg: #d3c3d8;
+  --side-muted: #94809b;
+  --side-hover: #33203a;
+  --side-active: #7c3085;
+  --side-active-fg: #ffffff;
+  --accent: #a56bd6;
+  --accent-fg: #ffffff;
+}
+
+[data-theme='lark'] {
+  --bg: #ffffff;
+  --fg: #1f2329;
+  --muted: #8f959e;
+  --line: #e5e6eb;
+  --surface: #ffffff;
+  --soft: #f2f3f5;
+  --side: #f5f6f7;
+  --side-fg: #1f2329;
+  --side-muted: #8f959e;
+  --side-hover: #ebecef;
+  --side-active: #e1eaff;
+  --side-active-fg: #1f2329;
+  --accent: #3370ff;
+  --accent-fg: #ffffff;
+}
+
+[data-theme='paper'] {
+  --bg: #fbfaf7;
+  --fg: #26221c;
+  --muted: #8a8376;
+  --line: #e7e2d8;
+  --surface: #ffffff;
+  --soft: #f1ede4;
+  --side: #f3efe6;
+  --side-fg: #3a352c;
+  --side-muted: #948c7d;
+  --side-hover: #e9e3d6;
+  --side-active: #26221c;
+  --side-active-fg: #fbfaf7;
+  --accent: #d9622b;
+  --accent-fg: #ffffff;
+}
+
+[data-theme='slate'] {
+  --bg: #0f172a;
+  --fg: #e2e8f0;
+  --muted: #8492a9;
+  --line: #243049;
+  --surface: #17213a;
+  --soft: #1e2a45;
+  --side: #0b1222;
+  --side-fg: #cbd5e1;
+  --side-muted: #8492a9;
+  --side-hover: #17213a;
+  --side-active: #1e2a45;
+  --side-active-fg: #ffffff;
+  --accent: #34d399;
+  --accent-fg: #052e1c;
+}
+
+[data-theme='ink'] {
+  --bg: #0a0a0b;
+  --fg: #ededee;
+  --muted: #85858c;
+  --line: #232326;
+  --surface: #131315;
+  --soft: #1c1c1f;
+  --side: #0f0f11;
+  --side-fg: #cfcfd4;
+  --side-muted: #77777e;
+  --side-hover: #19191c;
+  --side-active: #1f1f24;
+  --side-active-fg: #ffffff;
+  --accent: #3b82f6;
+  --accent-fg: #ffffff;
+}
