@@ -10,6 +10,7 @@ import {
   type NewMessage,
 } from '@acocrew/shared';
 import { serve, upgradeWebSocket } from '@hono/node-server';
+import { serveStatic } from '@hono/node-server/serve-static';
 import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { randomUUID } from 'node:crypto';
@@ -22,7 +23,8 @@ import { createRunner, type QueryFn } from './runner.ts';
 import { channels, threads } from './schema.ts';
 
 // `home` is the only folder tree that repositories can be picked from.
-export type Deps = { db: Db; query: QueryFn; home: string };
+// `web` is the folder with the built web app. Without it the server only answers `/api` and `/ws`.
+export type Deps = { db: Db; query: QueryFn; home: string; web?: string };
 
 // The parts of a message, or null if any of them is not usable.
 function readMessage(body: Partial<NewMessage>): NewMessage | null {
@@ -33,7 +35,7 @@ function readMessage(body: Partial<NewMessage>): NewMessage | null {
   return { text, model: model!, effort: effort!, access: access! };
 }
 
-export function createApp({ db, query, home }: Deps) {
+export function createApp({ db, query, home, web }: Deps) {
   const hub = createHub();
   const runner = createRunner(db, hub, query);
   const app = new Hono();
@@ -139,6 +141,13 @@ export function createApp({ db, query, home }: Deps) {
       onClose: (_, ws) => void hub.remove(ws),
     })),
   );
+
+  // The built web app. A path that is not a file gets the app itself, which then shows the right screen.
+  if (web) {
+    app.all('/api/*', (c) => c.json({ error: 'Not found.' }, 404));
+    app.use(serveStatic({ root: web }));
+    app.get('*', serveStatic({ root: web, path: 'index.html' }));
+  }
 
   return app;
 }

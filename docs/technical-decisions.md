@@ -103,7 +103,14 @@ Why:
 Rules to keep:
 
 - The web app only talks to the server over HTTP (`/api/...`) and the WebSocket (`/ws`). That keeps an Electron shell cheap to add later as `apps/desktop`.
-- In development, Vite serves the UI on port 5273 and forwards `/api` and `/ws` to the server on port 5274. In production the plan is for the server to serve the built web files itself, so there is one process and one port. That part is not built yet.
+- In development, Vite serves the UI on port 5273 and forwards `/api` and `/ws` to the server on port 5274. The dev server keeps its data in its own file, `~/.acocrew/dev.db`, so trying things out never touches real threads.
+- When the web app has been built (`pnpm build`), the server serves those files itself, so there is one process and one port.
+
+Running it for real, apart from development:
+
+- `pnpm stable` copies this checkout to `~/acocrew-stable`, builds it there and starts it in the tmux session `acocrew-stable` on port 5280, with the real data in `~/.acocrew/acocrew.db`. Editing, building or running `pnpm dev` in the checkout does not touch it. That is what lets acocrew be used to work on acocrew.
+- Run `pnpm stable` again to update it. That restarts the server, so anything Claude is doing in a thread is cut short (the thread says so, and the next message resumes).
+- Two settings let copies live side by side: `PORT` (default 5274) and `ACOCREW_DB` (default `~/.acocrew/acocrew.db`).
 
 Commands, from the repo root:
 
@@ -114,6 +121,7 @@ Commands, from the repo root:
 | `pnpm typecheck` | Type checks every package                |
 | `pnpm check`     | Checks formatting and lint rules         |
 | `pnpm build`     | Builds the web app                       |
+| `pnpm stable`    | Updates and restarts the copy people use |
 
 ## Decision 5: SQLite with Drizzle
 

@@ -11,10 +11,10 @@ import {
 } from '@acocrew/shared';
 import type { PermissionResult, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { eq } from 'drizzle-orm';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, afterEach, beforeEach, expect, test, vi } from 'vite-plus/test';
+import { afterAll, afterEach, beforeEach, expect, onTestFinished, test, vi } from 'vite-plus/test';
 import { WebSocket } from 'ws';
 import { openDb, type Db } from './db.ts';
 import type { QueryFn } from './runner.ts';
@@ -304,6 +304,24 @@ test('health check answers ok', async () => {
 
 test('unknown paths are 404', async () => {
   expect((await fetch(url('/nope'))).status).toBe(404);
+});
+
+test('with the built web app, one server gives out the app, its files and the api', async () => {
+  const web = mkdtempSync(join(workDir, 'test-web-'));
+  onTestFinished(() => rmSync(web, { recursive: true }));
+  mkdirSync(join(web, 'assets'));
+  writeFileSync(join(web, 'index.html'), '<html>the app</html>');
+  writeFileSync(join(web, 'assets', 'app.js'), 'console.log(1)');
+  server.close();
+  server = await startServer(0, { db, query: claude.query, home, web });
+
+  // Any screen's address gets the app, which then shows that screen.
+  for (const path of ['/', '/c/some-channel/t/some-thread']) {
+    expect(await (await fetch(url(path))).text(), path).toBe('<html>the app</html>');
+  }
+  expect(await (await fetch(url('/assets/app.js'))).text()).toBe('console.log(1)');
+  expect(await (await fetch(url(HEALTH_PATH))).json()).toEqual({ ok: true });
+  expect((await fetch(url('/api/nope'))).status).toBe(404);
 });
 
 test('folders: lists visible folders and marks git repositories', async () => {
