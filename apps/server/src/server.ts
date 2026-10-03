@@ -1,5 +1,6 @@
 import {
   ACCESS,
+  COMMANDS_PATH,
   CONTEXTS,
   DECISIONS,
   EFFORTS,
@@ -18,9 +19,11 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
+import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { basename } from 'node:path';
+import { basename, join } from 'node:path';
+import { promisify } from 'node:util';
 import { WebSocketServer } from 'ws';
 import { channelCols, listChannels, listThreads, loadItems, threadCols, type Db } from './db.ts';
 import { folderInside, isRepo, listFolders } from './folders.ts';
@@ -31,8 +34,11 @@ import { channels, threads } from './schema.ts';
 
 // `home` is the only folder tree that repositories can be picked from.
 // `images` is the folder where images attached to messages are kept.
+// `worktrees` is the folder where threads get their own working copy of a repository.
 // `web` is the folder with the built web app. Without it the server only answers `/api` and `/ws`.
-export type Deps = { db: Db; query: QueryFn; home: string; images: string; web?: string };
+export type Deps = { db: Db; query: QueryFn; home: string; images: string; worktrees: string; web?: string };
+
+const run = promisify(execFile);
 
 // The parts of a message, or null if any of them is not usable.
 function readMessage(body: Partial<NewMessage>, store: Images): NewMessage | null {
@@ -52,7 +58,7 @@ function readMessage(body: Partial<NewMessage>, store: Images): NewMessage | nul
   return { text, images, model: model!, effort: effort!, context: context!, fast, access: access! };
 }
 
-export function createApp({ db, query, home, images, web }: Deps) {
+export function createApp({ db, query, home, images, worktrees, web }: Deps) {
   const hub = createHub();
   const store = openImages(images);
   const runner = createRunner(db, hub, query, store);
@@ -95,11 +101,25 @@ export function createApp({ db, query, home, images, web }: Deps) {
       .from(channels)
       .where(eq(channels.id, String(body.channelId)))
       .get();
-    if (!message || !channel) return c.json({ error: 'Needs a channel, a message and a full set of settings.' }, 400);
+    if (!message || !channel || typeof body.worktree !== 'boolean')
+      return c.json({ error: 'Needs a channel, a message and a full set of settings.' }, 400);
+    const id = randomUUID();
+    const short = id.slice(0, 8);
+    // A worktree is a second working copy of the repository. It starts on a new branch, from the commit the
+    // repository is on right now.
+    const path = body.worktree ? join(worktrees, channel.name, short) : null;
+    if (path) {
+      try {
+        await run('git', ['-C', channel.path, 'worktree', 'add', '-b', `acocrew/${short}`, path]);
+      } catch (err) {
+        return c.json({ error: `Could not make a worktree: ${(err as { stderr?: string }).stderr || err}` }, 500);
+      }
+    }
     const now = Date.now();
     const row = {
-      id: randomUUID(),
+      id,
       channelId: channel.id,
+      path,
       title: message.text.split('\n')[0].slice(0, 70) || 'Image',
       model: message.model,
       effort: message.effort,
@@ -138,6 +158,23 @@ export function createApp({ db, query, home, images, web }: Deps) {
   app.post('/api/threads/:id/stop', async (c) => {
     await runner.stop(c.req.param('id'));
     return c.json({ ok: true });
+  });
+
+  // What the message box suggests after a `/`: what Claude can run where the thread works, or in the
+  // channel's repository for a thread that has not been started yet.
+  app.get(COMMANDS_PATH, async (c) => {
+    const thread = db
+      .select()
+      .from(threads)
+      .where(eq(threads.id, c.req.query('thread') ?? ''))
+      .get();
+    const channel = db
+      .select()
+      .from(channels)
+      .where(eq(channels.id, thread?.channelId ?? c.req.query('channel') ?? ''))
+      .get();
+    if (!channel) return c.json({ error: 'Needs a thread or a channel.' }, 404);
+    return c.json(await runner.commands(thread?.path ?? channel.path));
   });
 
   // The browser sends one image as the whole request, and puts the id it gets back in the message.

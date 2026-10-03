@@ -1,8 +1,10 @@
 import {
+  COMMANDS_PATH,
   HEALTH_PATH,
   WS_PATH,
   type Answer,
   type Channel,
+  type Command,
   type FolderList,
   type Item,
   type ServerEvent,
@@ -11,6 +13,7 @@ import {
 } from '@acocrew/shared';
 import type { PermissionResult, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { eq } from 'drizzle-orm';
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -37,6 +40,11 @@ const recording = (name: string): Line[] =>
 const TWO_TURNS = recording('two-turns');
 const SESSION = (TWO_TURNS[1] as SDKMessage).session_id;
 
+// Part of what a real Claude said it can run in a repository with skills of its own: three of the repository's
+// skills (`broken` has a skill file with no header, `ship` is an old-style command file), one from the home
+// folder that the repository also has under the same name (`concise-mode`), one from a plugin, and built-ins.
+const COMMANDS = JSON.parse(readFileSync(new URL('./fixtures/commands.json', import.meta.url), 'utf8'));
+
 // A stand-in for Claude that plays a recording back. Like the real thing it waits for a user message only
 // where the recording had one, asks for permission where the recording did, and otherwise talks on its own.
 function fakeClaude(script: Line[]) {
@@ -46,6 +54,8 @@ function fakeClaude(script: Line[]) {
   const said: SDKUserMessage['message']['content'][] = [];
   const holds: { before: (msg: SDKMessage) => boolean; released: Promise<void> }[] = [];
   const releases: (() => void)[] = [];
+  // Set to make Claude fail the next time it is asked what it can run.
+  let listing: Error | undefined;
   let closed = 0;
   let interrupted = 0;
   let abandoned = 0;
@@ -113,6 +123,12 @@ function fakeClaude(script: Line[]) {
         // A killed process never finishes its turn. The next one starts at the next user message.
         while (script[pos] && !('_user' in script[pos])) pos++;
       },
+      async supportedCommands() {
+        const failure = listing;
+        listing = undefined;
+        if (failure) throw failure;
+        return COMMANDS;
+      },
     });
   };
 
@@ -130,6 +146,7 @@ function fakeClaude(script: Line[]) {
     decisions,
     said,
     pause,
+    failListing: () => void (listing = new Error('Claude is not logged in')),
     closed: () => closed,
     interrupted: () => interrupted,
     abandoned: () => abandoned,
@@ -144,6 +161,16 @@ mkdirSync(join(home, 'code', 'notes'));
 mkdirSync(join(home, '.secret'));
 symlinkSync('/etc', join(home, 'way-out'));
 const images = join(home, '.acocrew', 'attachments');
+const worktrees = join(home, '.acocrew', 'worktrees');
+// `shop` only looks like a repository. `blog` is a real one with one commit.
+const blog = join(home, 'code', 'blog');
+const git = (dir: string, ...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim();
+mkdirSync(blog);
+git(blog, 'init', '--quiet', '--initial-branch=main');
+writeFileSync(join(blog, 'post.md'), 'hello\n');
+git(blog, 'add', '.');
+const me = ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', '-c', 'commit.gpgsign=false'];
+git(blog, ...me, 'commit', '--quiet', '-m', 'first post');
 afterAll(() => rmSync(home, { recursive: true }));
 
 let db: Db;
@@ -155,7 +182,7 @@ let sockets: WebSocket[];
 async function serve(script: Line[]) {
   server?.close();
   claude = fakeClaude(script);
-  server = await startServer(0, { db, query: claude.query, home, images }); // 0 = any free port
+  server = await startServer(0, { db, query: claude.query, home, images, worktrees }); // 0 = any free port
 }
 
 beforeEach(async () => {
@@ -259,14 +286,15 @@ async function connect() {
 const HAIKU = { model: 'claude-haiku-4-5-20251001', effort: 'low', context: '1m', fast: false, access: 'full' };
 const OPUS = { ...HAIKU, model: 'claude-opus-5-5', effort: 'high' };
 
-async function addChannel() {
-  const res = await post('/api/channels', { path: join(home, 'code', 'shop') });
+async function addChannel(path = join(home, 'code', 'shop')) {
+  const res = await post('/api/channels', { path });
   return (await res.json()) as Channel;
 }
 
+// Works in the current checkout unless `settings` says otherwise.
 async function startThread(text: string, settings: object = HAIKU) {
   const channel = await addChannel();
-  const res = await post('/api/threads', { channelId: channel.id, text, ...settings });
+  const res = await post('/api/threads', { channelId: channel.id, text, worktree: false, ...settings });
   return (await res.json()) as Thread;
 }
 
@@ -320,7 +348,7 @@ test('with the built web app, one server gives out the app, its files and the ap
   writeFileSync(join(web, 'index.html'), '<html>the app</html>');
   writeFileSync(join(web, 'assets', 'app.js'), 'console.log(1)');
   server.close();
-  server = await startServer(0, { db, query: claude.query, home, images, web });
+  server = await startServer(0, { db, query: claude.query, home, images, worktrees, web });
 
   // Any screen's address gets the app, which then shows that screen.
   for (const path of ['/', '/c/some-channel/t/some-thread']) {
@@ -343,6 +371,7 @@ test('folders: lists visible folders and marks git repositories', async () => {
   const code = (await res.json()) as FolderList;
   expect(code.parent).toBe(home);
   expect(code.folders.map((f) => [f.name, f.isRepo])).toEqual([
+    ['blog', true],
     ['notes', false],
     ['shop', true],
   ]);
@@ -369,7 +398,7 @@ test('add repository: only a git repository inside home becomes a channel, once'
 
 test('a thread runs Claude in the repo folder and streams two turns through one process', async () => {
   const { tab, thread } = await watch(TWO_TURNS, 'make notes\nplease');
-  expect(thread).toMatchObject({ title: 'make notes', status: 'working', tasks: [], ...HAIKU });
+  expect(thread).toMatchObject({ title: 'make notes', status: 'working', tasks: [], path: null, ...HAIKU });
 
   await tab.status(thread.id, 'done');
   expect(tab.screen(thread.id)).toEqual(['message: make notes\nplease', ...TURN_1.slice(1)]);
@@ -391,6 +420,44 @@ test('a thread runs Claude in the repo folder and streams two turns through one 
   expect(late.hello.threads).toMatchObject([{ id: thread.id, status: 'done' }]);
   await late.open(thread.id);
   expect(late.screen(thread.id)).toEqual(screen);
+});
+
+test('a thread started in a new worktree runs Claude there, on its own branch, and replies stay there', async () => {
+  const tab = await connect();
+  const channel = await addChannel(blog);
+  const res = await post('/api/threads', { channelId: channel.id, text: 'make notes', worktree: true, ...HAIKU });
+  const thread = (await res.json()) as Thread;
+  const short = thread.id.slice(0, 8);
+  expect(thread.path).toBe(join(worktrees, 'blog', short));
+
+  // The new folder is a second working copy of the repository, on a new branch from the commit it was on.
+  expect(git(thread.path!, 'branch', '--show-current')).toBe(`acocrew/${short}`);
+  expect(git(thread.path!, 'rev-parse', 'HEAD')).toBe(git(blog, 'rev-parse', 'HEAD'));
+  expect(readFileSync(join(thread.path!, 'post.md'), 'utf8')).toBe('hello\n');
+  expect(git(blog, 'branch', '--show-current')).toBe('main');
+
+  // A reply that needs a new Claude process starts it in the same folder.
+  await tab.status(thread.id, 'done');
+  await say(thread, 'what is in them?', OPUS);
+  await tab.status(thread.id, 'done');
+  expect(claude.calls.map((call) => call.cwd)).toEqual([thread.path, thread.path]);
+  expect((await connect()).hello.threads).toMatchObject([{ id: thread.id, path: thread.path }]);
+
+  // A thread in the current checkout of the same repository makes no worktree.
+  const before = git(blog, 'worktree', 'list');
+  const res2 = await post('/api/threads', { channelId: channel.id, text: 'make notes', worktree: false, ...HAIKU });
+  expect(await res2.json()).toMatchObject({ path: null });
+  expect(claude.calls[2].cwd).toBe(blog);
+  expect(git(blog, 'worktree', 'list')).toBe(before);
+});
+
+test('when git cannot make the worktree, no thread is started and the reason comes back', async () => {
+  const channel = await addChannel();
+  const res = await post('/api/threads', { channelId: channel.id, text: 'make notes', worktree: true, ...HAIKU });
+  expect(res.status).toBe(500);
+  expect(((await res.json()) as { error: string }).error).toMatch(/^Could not make a worktree: .*not a git repository/);
+  expect(db.select().from(threads).all()).toEqual([]);
+  expect(claude.calls).toEqual([]);
 });
 
 test('a tool card keeps what went in, what came out and how long it took', async () => {
@@ -792,6 +859,71 @@ test('a Claude process with nothing to do for ten minutes is closed, and the nex
   expect(claude.calls[1]).toMatchObject({ resume: SESSION });
 });
 
+const commands = (from: string) => fetch(url(`${COMMANDS_PATH}?${from}`));
+const names = (list: Command[], skill: boolean) => list.filter((c) => c.skill === skill).map((c) => c.name);
+
+test('the message box is offered what Claude says it can run where the thread works', async () => {
+  const tab = await connect();
+  const channel = await addChannel(blog);
+  const res = await post('/api/threads', { channelId: channel.id, text: 'make notes', worktree: true, ...HAIKU });
+  const thread = (await res.json()) as Thread;
+  await tab.status(thread.id, 'done');
+
+  const list = (await (await commands(`thread=${thread.id}`)).json()) as Command[];
+  // Skills come from the repository, the home folder and plugins. Claude picked them, so a skill only Claude
+  // may start is not there and a name used twice is there once.
+  expect(names(list, true)).toEqual(['release-notes', 'concise-mode', 'broken', 'ship', 'figma:figma-use']);
+  // What only makes sense in a terminal, or would change the shared machine's settings, is left out.
+  expect(names(list, false)).toEqual(['code-review', 'simplify', 'compact', 'context', 'usage', 'init']);
+  expect(list[0]).toEqual({
+    name: 'release-notes',
+    description: 'Write release notes for the shop from the latest commits. (project)',
+    hint: '[version]',
+    skill: true,
+  });
+
+  // Claude was asked in the thread's own worktree, by a process that was closed again without a message.
+  expect(claude.calls.map((call) => call.cwd)).toEqual([thread.path, thread.path]);
+  expect(claude.said).toHaveLength(1);
+  expect(claude.closed()).toBe(1);
+  // The thread's own process was left alone.
+  await say(thread, 'what is in them?');
+  await tab.status(thread.id, 'working');
+  await tab.status(thread.id, 'done');
+  expect(claude.calls).toHaveLength(2);
+});
+
+test('before a thread exists the repository folder is asked, and the answer is kept for a minute', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  const channel = await addChannel(blog);
+  const first = await (await commands(`channel=${channel.id}`)).json();
+  expect(claude.calls.map((call) => call.cwd)).toEqual([blog]);
+  expect(first).toHaveLength(11);
+
+  // Two tabs asking at once, or the same one again soon after, do not start more Claude processes.
+  const again = await Promise.all([commands(`channel=${channel.id}`), commands(`channel=${channel.id}`)]);
+  expect(await again[0].json()).toEqual(first);
+  expect(claude.calls).toHaveLength(1);
+
+  // Skills change on disk, so after a minute Claude is asked again.
+  vi.advanceTimersByTime(60_000);
+  await commands(`channel=${channel.id}`);
+  expect(claude.calls).toHaveLength(2);
+  expect(claude.closed()).toBe(2);
+});
+
+test('when Claude cannot say what it can run, the request fails and the next one asks again', async () => {
+  const channel = await addChannel();
+  claude.failListing();
+  expect((await commands(`channel=${channel.id}`)).status).toBe(500);
+  expect(claude.closed()).toBe(1);
+  expect(await (await commands(`channel=${channel.id}`)).json()).toHaveLength(11);
+
+  expect((await commands('channel=nope')).status).toBe(404);
+  expect((await commands('thread=nope')).status).toBe(404);
+  expect((await commands('')).status).toBe(404);
+});
+
 const PNG = readFileSync(new URL('./fixtures/image.png', import.meta.url));
 const upload = (body: Uint8Array, type: string) =>
   fetch(url('/api/images'), { method: 'POST', body, headers: { 'content-type': type } });
@@ -864,7 +996,7 @@ test('only png, jpeg, gif and webp up to 10MB are taken, and a message can only 
 
 test('requests from another website are refused, our own pages are not', async () => {
   const channel = await addChannel();
-  const body = JSON.stringify({ channelId: channel.id, text: 'hi', ...HAIKU });
+  const body = JSON.stringify({ channelId: channel.id, text: 'hi', worktree: false, ...HAIKU });
   const from = (headers: Record<string, string>) => fetch(url('/api/threads'), { method: 'POST', body, headers });
   const viaProxy = { origin: 'https://team.example:5273', 'x-forwarded-host': 'team.example:5273' };
   expect((await from({ origin: 'https://evil.example' })).status).toBe(403);
@@ -890,10 +1022,12 @@ test('requests from another website are refused, our own pages are not', async (
 test('bad requests are turned away', async () => {
   const thread = await startThread('make notes');
   const bad = [
-    ['/api/threads', { channelId: 'nope', text: 'hi', ...HAIKU }],
-    ['/api/threads', { channelId: thread.channelId, text: '  ', ...HAIKU }],
-    ['/api/threads', { channelId: thread.channelId, text: 'hi', ...HAIKU, model: 'gpt' }],
-    ['/api/threads', { channelId: thread.channelId, text: 'hi', ...HAIKU, access: 'root' }],
+    ['/api/threads', { channelId: 'nope', text: 'hi', worktree: false, ...HAIKU }],
+    ['/api/threads', { channelId: thread.channelId, text: '  ', worktree: false, ...HAIKU }],
+    ['/api/threads', { channelId: thread.channelId, text: 'hi', worktree: false, ...HAIKU, model: 'gpt' }],
+    ['/api/threads', { channelId: thread.channelId, text: 'hi', worktree: false, ...HAIKU, access: 'root' }],
+    ['/api/threads', { channelId: thread.channelId, text: 'hi', ...HAIKU }],
+    ['/api/threads', { channelId: thread.channelId, text: 'hi', worktree: 'yes', ...HAIKU }],
     [`/api/threads/${thread.id}/messages`, { text: 'hi', ...HAIKU, effort: 'huge' }],
     [`/api/threads/${thread.id}/messages`, { text: 'hi', ...HAIKU, context: '2m' }],
     [`/api/threads/${thread.id}/messages`, { text: 'hi', ...HAIKU, fast: 'yes' }],

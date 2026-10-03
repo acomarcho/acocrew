@@ -6,6 +6,7 @@ import {
   MODELS,
   type Access,
   type Channel,
+  type Command,
   type NewMessage,
   type Status,
 } from '@acocrew/shared';
@@ -17,6 +18,7 @@ import {
   Check,
   ChevronDown,
   FolderGit2,
+  GitBranch,
   ImagePlus,
   Layers,
   LoaderCircle,
@@ -28,6 +30,7 @@ import {
   X,
   Zap,
 } from 'lucide-react';
+import { CommandMenu, suggest, useCommands } from './commands';
 import { imageUrl, uploadImage } from './images';
 import { useApp } from './store';
 
@@ -173,9 +176,11 @@ type ComposerProps = {
   settings: Settings;
   onSettings: (settings: Settings) => void;
   onSend: (text: string, images: string[]) => Promise<unknown>;
+  // What Claude can run, suggested while a `/name` is being typed.
+  commands: Command[];
   // Send works with an empty box too (a picked answer to a question needs no typing).
   canSendEmpty?: boolean;
-  // The box takes words only (an answer to Claude's question cannot carry images).
+  // The box takes words only (an answer to Claude's question cannot carry images or run a command).
   textOnly?: boolean;
   // Given while Claude is doing something that can be stopped.
   onStop?: () => void;
@@ -187,6 +192,7 @@ export function Composer({
   settings,
   onSettings,
   onSend,
+  commands,
   canSendEmpty,
   textOnly,
   onStop,
@@ -201,6 +207,26 @@ export function Composer({
   const images = textOnly ? [] : added;
   const [uploading, setUploading] = useState(0);
   const picker = useRef<HTMLInputElement>(null);
+  const box = useRef<HTMLTextAreaElement>(null);
+  // Where the typing caret was after the last change to the text, which row of the suggestions is lit, and
+  // whether they were closed since that change (with Escape, by moving the caret or by leaving the box).
+  const [caret, setCaret] = useState(0);
+  const [lit, setLit] = useState(0);
+  const [closed, setClosed] = useState(false);
+  const menu = closed || textOnly ? null : suggest(commands, text, caret);
+  const edited = () => {
+    setText(box.current!.value);
+    setCaret(box.current!.selectionStart);
+    setLit(0);
+    setClosed(false);
+  };
+  // Swaps the word the caret is in for the whole name, and leaves the caret after it.
+  const pick = (command: Command) => {
+    const end = caret + text.slice(caret).search(/\s|$/);
+    box.current!.setRangeText(`/${command.name} `, menu!.start, end, 'end');
+    // Told to the box the way typing is, so it is taken in like any other change.
+    box.current!.dispatchEvent(new Event('input', { bubbles: true }));
+  };
   const clean = text.trim();
   const ready = Boolean(clean || images.length || canSendEmpty) && !sending && !uploading;
   // Pasting, dropping and the attach button all end up here. Whether this did anything with the files.
@@ -235,7 +261,7 @@ export function Composer({
   };
   return (
     <div
-      className="rounded-xl border border-border bg-card shadow-sm focus-within:border-primary"
+      className="relative rounded-xl border border-border bg-card shadow-sm focus-within:border-primary"
       onDragOver={(e) => e.dataTransfer.types.includes('Files') && e.preventDefault()}
       onDrop={(e) => {
         if (!e.dataTransfer.types.includes('Files')) return;
@@ -244,6 +270,7 @@ export function Composer({
         addImages(e.dataTransfer.files);
       }}
     >
+      {menu && <CommandMenu items={menu.items} active={lit} onActive={setLit} onPick={pick} />}
       {(images.length > 0 || uploading > 0) && (
         <div className="flex flex-wrap gap-2 px-3.5 pt-3">
           {images.map((id) => (
@@ -268,10 +295,13 @@ export function Composer({
       )}
       {/* Starts 2 lines tall and grows with the text up to 8 lines, then scrolls inside. The extra spacing(3) matches pt-3. */}
       <textarea
+        ref={box}
         autoFocus={autoFocus}
         value={text}
         placeholder={placeholder}
-        onChange={(e) => setText(e.target.value)}
+        onChange={edited}
+        onSelect={(e) => e.currentTarget.selectionStart !== caret && setClosed(true)}
+        onBlur={() => setClosed(true)}
         onPaste={(e) => {
           // Spreadsheets and documents put a picture of the copied cells next to the formatted words. The
           // words win. A copied image file comes with its name as plain words only, and is still an image.
@@ -279,6 +309,18 @@ export function Composer({
           if (addImages(e.clipboardData.files)) e.preventDefault();
         }}
         onKeyDown={(e) => {
+          // A key pressed while a word is being put together (Chinese, Japanese, Korean) belongs to that.
+          if (e.nativeEvent.isComposing) return;
+          // While suggestions are open, the keys that would move the caret or send the message work the list.
+          const step = e.key === 'ArrowDown' ? 1 : e.key === 'ArrowUp' ? -1 : 0;
+          const picks = (e.key === 'Enter' || e.key === 'Tab') && !e.shiftKey;
+          if (menu && (step || picks || e.key === 'Escape')) {
+            e.preventDefault();
+            if (step) setLit((lit + step + menu.items.length) % menu.items.length);
+            else if (picks) pick(menu.items[lit]);
+            else setClosed(true);
+            return;
+          }
           if (e.key !== 'Enter' || e.shiftKey) return;
           e.preventDefault();
           void submit();
@@ -394,19 +436,32 @@ export function NewThreadButton({ channelId }: { channelId: string }) {
   );
 }
 
+// Where a new thread works.
+const PLACES = [
+  { id: 'worktree', name: 'New worktree', hint: 'A fresh copy from the last commit, on a new branch' },
+  { id: 'checkout', name: 'Current checkout', hint: 'Right in the repository folder' },
+];
+
 // The only way to post in a channel: start a thread.
 export function NewThread({ channel }: { channel: Channel }) {
   const { createThread } = useApp();
   const navigate = useNavigate();
   const [settings, setSettings] = useState(NEW_THREAD);
+  const [place, setPlace] = useState(PLACES[0].id);
+  const worktree = place === 'worktree';
   const channelId = channel.id;
+  const commands = useCommands(`channel=${channelId}`);
   return (
     <div>
+      <div className="mb-3 flex items-center gap-2">
+        <h2 className="text-xl font-bold">Start a thread</h2>
+        <Picker icon={<GitBranch size={14} />} value={place} options={PLACES} onChange={setPlace} />
+      </div>
       <div className="mb-2 flex items-center gap-1.5 text-xs text-muted-foreground">
         <FolderGit2 size={12} className="shrink-0" />
         <span className="min-w-0 flex-1 truncate">
-          New thread in <b className="text-foreground">#{channel.name}</b>. Claude works right in{' '}
-          <span className="font-mono">{channel.path}</span>.
+          New thread in <b className="text-foreground">#{channel.name}</b>. Claude works{' '}
+          {worktree ? 'in a new worktree of' : 'right in'} <span className="font-mono">{channel.path}</span>.
         </span>
         <Link
           to="/c/$channelId"
@@ -421,8 +476,9 @@ export function NewThread({ channel }: { channel: Channel }) {
         placeholder="What should Claude work on?"
         settings={settings}
         onSettings={setSettings}
+        commands={commands}
         onSend={async (text, images) => {
-          const thread = await createThread({ channelId, text, images, ...settings });
+          const thread = await createThread({ channelId, text, images, worktree, ...settings });
           void navigate({ to: '/c/$channelId/t/$threadId', params: { channelId, threadId: thread.id }, replace: true });
         }}
       />

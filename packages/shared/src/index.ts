@@ -20,6 +20,8 @@ export type Thread = {
   fast: boolean;
   access: Access;
   status: Status;
+  // The worktree this thread works in. Null when it works right in the repository folder.
+  path: string | null;
   updatedAt: number;
   // What Claude is waiting on in the background right now, in its own words. Not stored.
   tasks: string[];
@@ -121,7 +123,8 @@ export type NewMessage = {
   fast: boolean;
   access: Access;
 };
-export type NewThread = NewMessage & { channelId: string };
+// `worktree`: the thread gets its own working copy of the repository, on a new branch.
+export type NewThread = NewMessage & { channelId: string; worktree: boolean };
 
 // The user's reply to an approval prompt or a question.
 // `always` is a yes that also stops Claude asking about this kind of action. `cancel` is a no that also ends
@@ -129,7 +132,12 @@ export type NewThread = NewMessage & { channelId: string };
 export const DECISIONS = ['approve', 'always', 'decline', 'cancel'] as const;
 export type Answer = { toolId: string; decision: (typeof DECISIONS)[number]; answers?: Record<string, string> };
 
+// Something Claude runs when a message starts with `/name`. `hint` says what may follow the name.
+// A skill is also picked up when `/name` comes later in the message. Other commands are not.
+export type Command = { name: string; description: string; hint: string; skill: boolean };
+
 export const SERVER_PORT = 5274;
 export const HEALTH_PATH = '/api/health';
 export const WS_PATH = '/ws';
 export const IMAGES_PATH = '/api/images';
+export const COMMANDS_PATH = '/api/commands';

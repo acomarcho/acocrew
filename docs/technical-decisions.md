@@ -153,7 +153,7 @@ T3 Code does the same "apply on start" thing, but with hand-written SQL files an
 ## How one message travels
 
 1. The browser posts the message to `/api/threads` (new thread) or `/api/threads/<id>/messages` (reply).
-2. The server saves the user's bubble. If the thread has no Claude process, it starts one in the repository folder (resuming the saved session if there is one). Then it pushes the message into that process's queue.
+2. The server saves the user's bubble. If the thread has no Claude process, it starts one in the thread's folder (its worktree, or the repository folder; resuming the saved session if there is one). Then it pushes the message into that process's queue.
 3. Separately, the server listens to each Claude process for as long as it lives, and turns everything Claude says into our own items (`apps/server/src/translate.ts`).
 4. Words still being written are sent to open browsers right away and not saved. Finished bubbles and tool cards are saved to `events`, then sent.
 
@@ -170,6 +170,20 @@ Most people use acocrew from a different machine than the one Claude runs on, so
 5. When the message is handed to Claude, the server reads the files and puts the images in front of the words.
 
 Left out for now: other file types, cleaning up images that were uploaded but never sent, and telling Claude where the file is on disk so it can copy it into the repository.
+
+## How the message box knows what Claude can run
+
+Typing `/` in the message box suggests what Claude can run. At the very start of a message that is every command (like `/compact`) and every skill. Later in a message it is skills only, because Claude runs a command only when the message starts with it, while a skill it also picks up from the middle. The message is sent exactly as typed.
+
+1. The message box asks the server once when it opens (`GET /api/commands?thread=<id>`, or `?channel=<id>` for a thread that has not been started yet).
+2. The server asks Claude itself. It starts a Claude process in the thread's folder (or the repository folder), calls `supportedCommands()`, and closes it. No message is sent, so it costs nothing and takes under a second. The answer is kept for a minute per folder.
+3. Entries Claude marks as built in are shown under Commands. Everything else is a skill: from the folder's `.claude/skills`, from `~/.claude/skills` on the server machine, or from a plugin.
+
+Why ask Claude and not read the skill folders ourselves (T3 Code reads the folders): Claude already applies its own rules, and we checked them in a live run. A skill name used in both places shows once. A skill marked as only for Claude is left out. Plugin skills and old-style command files are included. Reading the folders would mean rebuilding those rules and still missing plugins.
+
+Some commands are hidden with one list of names in `apps/server/src/runner.ts`. They either only change how a terminal looks, or change settings that our own pickers or the server machine's Claude account own, or cut the thread off from its conversation. This matters on a shared machine: in a live run `/config theme=dark` wrote to the real settings file of the Claude account, and `/model` switched the model behind our picker. Hiding only keeps them out of the suggestions. Typing one by hand still sends it.
+
+Also checked live: `/compact` works and shows the "summarized" note. A skill at the start of a message always runs. A skill named later in a message is up to Claude: it usually loads it, but it can also just answer. T3 Code moves such a skill to the front to force it. We do not.
 
 ## Decision 6: Always listen, and let Claude's own signals set the status
 
@@ -231,8 +245,11 @@ Rules of the UI:
 
 - A channel is one git repository. "Add repository" lets you pick a folder under the home folder of the server machine. Only folders that are git repositories can be added.
 - You cannot post a loose message in a channel. Every message starts a thread ("New Thread") or replies inside one.
-- For now a thread works directly in the repository folder, on whatever branch it is on. The plan is for each thread to get its own worktree (its own copy of the repo on its own branch). That is not built yet.
+- A new thread picks where it works, with a dropdown next to "Start a thread". "New worktree" (the default) gives the thread its own worktree: a second working copy of the repository, on its own branch. "Current checkout" works right in the repository folder, on whatever branch it is on.
+- A worktree is made with `git worktree add` when the thread starts. The folder is `worktrees/<repository name>/<first 8 characters of the thread id>`, next to the database (so `~/.acocrew/worktrees/...`). The branch is `acocrew/<the same 8 characters>` and starts from the commit the repository is on right then. The folder is saved on the thread (`threads.path`; empty means the repository folder), and every Claude process of that thread starts there. If git cannot make the worktree, no thread is started and the message box shows git's reason.
+- Not built yet for worktrees: picking the branch to start from, removing a worktree, showing the branch in the thread, and installing dependencies in the new copy (`node_modules` is not there).
 - The message box has a model picker, a reasoning picker, a context window picker (200k or 1M), a fast mode picker and an access picker (Full access or Ask first). A new thread starts on medium reasoning, 1M and fast mode off. A picker is only shown for models that have that setting. While Claude is doing something, the box also has a Stop button.
+- Typing `/` in the message box opens a list of commands and skills right above it. It narrows as you type (later in a message only to names that start with what was typed, so a path like `/docs` is left alone). Arrow keys move, Enter or Tab picks, Escape closes, and a row can be clicked or tapped. Picking puts `/name ` into the box as plain text. While the box is answering a question from Claude, nothing is suggested.
 - The 1M context window is asked for with `[1m]` after the model name. Leaving that off is not enough for 200k: in a live run the newer models still got 1M. So 200k also sets `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` for that Claude process. Fast mode is the `fastMode` setting, and it only really runs if the Claude account has extra usage switched on.
 
 - Claude's answers are shown as formatted text (bold, lists, tables, code blocks with colors and a copy button). We use Streamdown for this, a markdown renderer made for AI chat: it copes with half-written formatting while the answer is still streaming in. Your own messages stay plain text, so what you type shows exactly as typed.

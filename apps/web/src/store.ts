@@ -62,7 +62,7 @@ function reduce(state: State, action: Action): State {
   }
 }
 
-async function request<T>(path: string, body?: unknown): Promise<T> {
+export async function request<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, body ? { method: 'POST', body: JSON.stringify(body) } : undefined);
   const data = await res.json();
   if (!res.ok) throw new Error(data.error);

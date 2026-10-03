@@ -34,6 +34,7 @@ export const threadCols = {
   fast: threads.fast,
   access: threads.access,
   status: threads.status,
+  path: threads.path,
   updatedAt: threads.updatedAt,
 };
 
