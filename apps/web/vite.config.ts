@@ -16,8 +16,9 @@ export default defineConfig({
     allowedHosts: ['.ts.net'],
     // In dev the web app and the server look like one address.
     proxy: {
-      '/api': server,
-      [WS_PATH]: { target: server, ws: true },
+      // xfwd tells the server which address the browser used. It checks that against where the page came from.
+      '/api': { target: server, xfwd: true },
+      [WS_PATH]: { target: server, ws: true, xfwd: true },
     },
   },
 });

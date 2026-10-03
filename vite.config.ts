@@ -5,7 +5,7 @@ export default defineConfig({
   fmt: {
     singleQuote: true,
     printWidth: 120,
-    ignorePatterns: ['**/routeTree.gen.ts', 'pnpm-lock.yaml'],
+    ignorePatterns: ['**/routeTree.gen.ts', '**/drizzle/**', 'pnpm-lock.yaml'],
   },
   lint: {
     ignorePatterns: ['**/routeTree.gen.ts'],

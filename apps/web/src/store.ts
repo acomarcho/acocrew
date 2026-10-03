@@ -1,65 +1,133 @@
-import type { Msg, Status, Thread } from '@acocrew/shared';
-import { createContext, useContext, useState } from 'react';
-import { ME, SEED } from './data';
+import {
+  WS_PATH,
+  type Channel,
+  type ClientEvent,
+  type FolderList,
+  type Item,
+  type NewMessage,
+  type NewThread,
+  type ServerEvent,
+  type Thread,
+} from '@acocrew/shared';
+import { createContext, useCallback, useContext, useEffect, useReducer, useRef, useState } from 'react';
 
-const now = () => new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-let n = 0;
-const uid = () => `x${++n}`;
+type State = {
+  // False until the server has sent the channels and threads.
+  ready: boolean;
+  online: boolean;
+  channels: Channel[];
+  threads: Thread[];
+  // The thread on screen. `items` is null until the server has sent what is in it.
+  openId: string | null;
+  items: Item[] | null;
+};
 
-// Canned agent answers. The real app would stream these from Claude.
-const REPLIES = [
-  "On it. I looked through the code and made the change in this thread's worktree. Have a look and tell me if you want anything adjusted.",
-  'Done. I ran the tests and they pass. Nothing is merged yet, so this is safe to review first.',
-  'I found the cause and fixed it. Want me to open a pull request?',
-];
+type Action = ServerEvent | { type: 'open'; threadId: string } | { type: 'offline' };
 
-// Fake in-memory state. Which channel and thread are open lives in the URL, not here.
-export function useAppState() {
-  const [threads, setThreads] = useState<Thread[]>(SEED);
-  const [navOpen, setNavOpen] = useState(false);
+const START: State = { ready: false, online: false, channels: [], threads: [], openId: null, items: null };
 
-  const patch = (id: string, p: Partial<Thread>) =>
-    setThreads((ts) => ts.map((t) => (t.id === id ? { ...t, ...p } : t)));
+const upsert = <T extends { id: string }>(list: T[], next: T) =>
+  list.some((x) => x.id === next.id) ? list.map((x) => (x.id === next.id ? next : x)) : [...list, next];
 
-  const add = (id: string, msg: Msg, status: Status) =>
-    setThreads((ts) => ts.map((t) => (t.id === id ? { ...t, status, msgs: [...t.msgs, msg] } : t)));
-
-  const agentReply = (id: string) =>
-    setTimeout(() => {
-      const msg: Msg = {
-        id: uid(),
-        by: 'claude',
-        at: now(),
-        text: REPLIES[n % REPLIES.length],
-        tools: [{ kind: 'run', label: 'Ran', detail: 'git status' }],
+function reduce(state: State, action: Action): State {
+  // Thread content only matters for the thread on screen.
+  if ('threadId' in action && action.type !== 'open' && action.threadId !== state.openId) return state;
+  switch (action.type) {
+    case 'hello':
+      return { ...state, ready: true, online: true, channels: action.channels, threads: action.threads };
+    case 'offline':
+      return { ...state, online: false };
+    case 'channel':
+      return { ...state, channels: upsert(state.channels, action.channel) };
+    case 'thread': {
+      // The same row can arrive twice (as the answer to a request and over the socket). The newest wins.
+      const known = state.threads.find((t) => t.id === action.thread.id);
+      if (known && known.updatedAt > action.thread.updatedAt) return state;
+      return { ...state, threads: upsert(state.threads, action.thread) };
+    }
+    case 'open':
+      return { ...state, openId: action.threadId, items: null };
+    case 'items':
+      return { ...state, items: action.items };
+    case 'item':
+      return { ...state, items: upsert(state.items ?? [], action.item) };
+    case 'delta':
+      return {
+        ...state,
+        items: (state.items ?? []).map((item) =>
+          item.id === action.itemId && item.kind === 'message' ? { ...item, text: item.text + action.text } : item,
+        ),
       };
-      add(id, msg, 'done');
-    }, 2200);
+  }
+}
 
-  const send = (id: string, text: string) => {
-    add(id, { id: uid(), by: ME, at: now(), text }, 'working');
-    agentReply(id);
+async function request<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(path, body ? { method: 'POST', body: JSON.stringify(body) } : undefined);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error);
+  return data;
+}
+
+// Everything the screens know comes down the WebSocket. Changes go up as plain requests.
+export function useAppState() {
+  const [state, dispatch] = useReducer(reduce, START);
+  const [navOpen, setNavOpen] = useState(false);
+  const socket = useRef<WebSocket | null>(null);
+  const openId = useRef<string | null>(null);
+
+  const tell = (event: ClientEvent) => {
+    if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify(event));
   };
 
-  // Returns the new thread's id so the caller can open it.
-  const create = (channelId: string, text: string, model: string, effort: string) => {
-    const id = uid();
-    const title = text.split('\n')[0].slice(0, 70);
-    const slug = title
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '')
-      .slice(0, 32);
-    const first: Msg = { id: uid(), by: ME, at: now(), text };
-    setThreads((ts) => [
-      ...ts,
-      { id, channelId, title, branch: `thread/${slug}`, status: 'working', model, effort, msgs: [first] },
-    ]);
-    agentReply(id);
-    return id;
+  useEffect(() => {
+    let retry: ReturnType<typeof setTimeout>;
+    let stopped = false;
+    const connect = () => {
+      const ws = new WebSocket(location.origin.replace(/^http/, 'ws') + WS_PATH);
+      socket.current = ws;
+      // After a reconnect, ask again for the thread on screen so nothing is missed.
+      ws.onopen = () => openId.current && tell({ type: 'open', threadId: openId.current });
+      ws.onmessage = (message) => dispatch(JSON.parse(message.data));
+      ws.onclose = () => {
+        if (stopped) return;
+        dispatch({ type: 'offline' });
+        retry = setTimeout(connect, 1000);
+      };
+    };
+    connect();
+    return () => {
+      stopped = true;
+      clearTimeout(retry);
+      socket.current?.close();
+    };
+  }, []);
+
+  const openThread = useCallback((threadId: string) => {
+    openId.current = threadId;
+    dispatch({ type: 'open', threadId });
+    tell({ type: 'open', threadId });
+  }, []);
+
+  const listFolders = useCallback(
+    (path?: string) => request<FolderList>(`/api/folders${path ? `?path=${encodeURIComponent(path)}` : ''}`),
+    [],
+  );
+
+  const addChannel = async (path: string) => {
+    const channel = await request<Channel>('/api/channels', { path });
+    dispatch({ type: 'channel', channel });
+    return channel;
   };
 
-  return { threads, navOpen, setNavOpen, patch, send, create };
+  const createThread = async (body: NewThread) => {
+    const thread = await request<Thread>('/api/threads', body);
+    dispatch({ type: 'thread', thread });
+    return thread;
+  };
+
+  const sendMessage = (threadId: string, body: NewMessage) => request(`/api/threads/${threadId}/messages`, body);
+
+  return { ...state, navOpen, setNavOpen, openThread, listFolders, addChannel, createThread, sendMessage };
 }
 
 export type App = ReturnType<typeof useAppState>;

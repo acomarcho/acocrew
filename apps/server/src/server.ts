@@ -1,20 +1,125 @@
-import { HEALTH_PATH, WS_PATH } from '@acocrew/shared';
+import { EFFORTS, HEALTH_PATH, MODELS, WS_PATH, type ClientEvent, type NewMessage } from '@acocrew/shared';
 import { serve, upgradeWebSocket } from '@hono/node-server';
+import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
+import { randomUUID } from 'node:crypto';
+import { basename } from 'node:path';
 import { WebSocketServer } from 'ws';
+import { channelCols, listChannels, listThreads, loadItems, threadCols, type Db } from './db.ts';
+import { folderInside, isRepo, listFolders } from './folders.ts';
+import { createHub } from './hub.ts';
+import { createRunner, type QueryFn } from './runner.ts';
+import { channels, threads } from './schema.ts';
 
-const app = new Hono();
+// `home` is the only folder tree that repositories can be picked from.
+export type Deps = { db: Db; query: QueryFn; home: string };
 
-app.get(HEALTH_PATH, (c) => c.json({ ok: true }));
+// The text, model and reasoning level of a message, or null if any of them is not usable.
+function readMessage(body: Partial<NewMessage>): NewMessage | null {
+  const text = typeof body.text === 'string' ? body.text.trim() : '';
+  const known = MODELS.some((m) => m.id === body.model) && EFFORTS.some((e) => e.id === body.effort);
+  return text && known ? { text, model: body.model!, effort: body.effort! } : null;
+}
 
-// Accepts connections and does nothing yet. Thread events will be pushed through here.
-app.get(
-  WS_PATH,
-  upgradeWebSocket(() => ({})),
-);
+export function createApp({ db, query, home }: Deps) {
+  const hub = createHub();
+  const runner = createRunner(db, hub, query);
+  const app = new Hono();
+
+  // Browsers say which site a request comes from. Only our own pages may talk to the server, so that some
+  // other website open in a teammate's browser cannot start threads here. A proxy in front (Tailscale, the
+  // dev server) passes the address the browser used as `x-forwarded-host`.
+  app.use(async (c, next) => {
+    const origin = c.req.header('origin');
+    const host = c.req.header('x-forwarded-host') ?? c.req.header('host');
+    if (origin && new URL(origin).host !== host) return c.json({ error: 'Wrong site.' }, 403);
+    await next();
+  });
+
+  app.get(HEALTH_PATH, (c) => c.json({ ok: true }));
+
+  app.get('/api/folders', (c) => {
+    const list = listFolders(home, c.req.query('path') ?? home);
+    return list ? c.json(list) : c.json({ error: 'Folder not found.' }, 404);
+  });
+
+  app.post('/api/channels', async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const path = folderInside(home, String(body.path));
+    if (!path || !isRepo(path)) return c.json({ error: 'Pick a git repository inside the home folder.' }, 400);
+    const existing = db.select(channelCols).from(channels).where(eq(channels.path, path)).get();
+    if (existing) return c.json(existing);
+    const row = { id: randomUUID(), name: basename(path), path, createdAt: Date.now() };
+    const channel = db.insert(channels).values(row).returning(channelCols).get();
+    hub.toAll({ type: 'channel', channel });
+    return c.json(channel);
+  });
+
+  app.post('/api/threads', async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const message = readMessage(body);
+    const channel = db
+      .select()
+      .from(channels)
+      .where(eq(channels.id, String(body.channelId)))
+      .get();
+    if (!message || !channel)
+      return c.json({ error: 'Needs a channel, a message, a model and a reasoning level.' }, 400);
+    const now = Date.now();
+    const row = {
+      id: randomUUID(),
+      channelId: channel.id,
+      title: message.text.split('\n')[0].slice(0, 70),
+      model: message.model,
+      effort: message.effort,
+      status: 'working' as const,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const thread = db.insert(threads).values(row).returning(threadCols).get();
+    hub.toAll({ type: 'thread', thread });
+    runner.send(thread.id, message);
+    return c.json(thread);
+  });
+
+  app.post('/api/threads/:id/messages', async (c) => {
+    const message = readMessage(await c.req.json().catch(() => ({})));
+    const thread = db
+      .select()
+      .from(threads)
+      .where(eq(threads.id, c.req.param('id')))
+      .get();
+    if (!message || !thread) return c.json({ error: 'Needs a thread, a message, a model and a reasoning level.' }, 400);
+    runner.send(thread.id, message);
+    return c.json({ ok: true });
+  });
+
+  app.get(
+    WS_PATH,
+    upgradeWebSocket(() => ({
+      onOpen(_, ws) {
+        hub.add(ws);
+        hub.send(ws, { type: 'hello', channels: listChannels(db), threads: listThreads(db) });
+      },
+      // The browser says which thread it is looking at. It is signed up for that thread's events and gets
+      // everything so far in the same step, so nothing can slip in between.
+      onMessage(message, ws) {
+        const { threadId } = JSON.parse(String(message.data)) as ClientEvent;
+        hub.open(ws, threadId);
+        const live = runner.live(threadId);
+        const items = [...loadItems(db, threadId), ...(live ? [live] : [])].sort((a, b) => a.at - b.at);
+        hub.send(ws, { type: 'items', threadId, items });
+      },
+      onClose: (_, ws) => void hub.remove(ws),
+    })),
+  );
+
+  return app;
+}
 
 // Listens on localhost only. Tailscale or a tunnel sits in front of it.
-export function startServer(port: number) {
+export function startServer(port: number, deps: Deps) {
+  const app = createApp(deps);
   const websocket = { server: new WebSocketServer({ noServer: true }) };
   return new Promise<{ port: number; close: () => void }>((resolve) => {
     const server = serve({ fetch: app.fetch, port, hostname: '127.0.0.1', websocket }, (info) =>
