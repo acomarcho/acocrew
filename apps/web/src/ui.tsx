@@ -206,8 +206,8 @@ export function Composer({
   };
   return (
     <div className="rounded-xl border border-border bg-card shadow-sm focus-within:border-primary">
+      {/* Starts 2 lines tall and grows with the text up to 8 lines, then scrolls inside. The extra spacing(3) matches pt-3. */}
       <textarea
-        rows={2}
         autoFocus={autoFocus}
         value={text}
         placeholder={placeholder}
@@ -217,7 +217,7 @@ export function Composer({
           e.preventDefault();
           void submit();
         }}
-        className="block w-full resize-none bg-transparent px-3.5 pt-3 text-base text-foreground outline-none placeholder:text-muted-foreground md:text-sm"
+        className="block field-sizing-content max-h-[calc(8lh+--spacing(3))] min-h-[calc(2lh+--spacing(3))] w-full resize-none bg-transparent px-3.5 pt-3 text-base text-foreground outline-none placeholder:text-muted-foreground md:text-sm"
       />
       {error && <p className="px-3.5 pb-1 text-xs text-rose-500">{error}</p>}
       <div className="flex items-center gap-0.5 px-1.5 pb-1.5">
