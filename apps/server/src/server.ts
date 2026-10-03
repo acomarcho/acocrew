@@ -31,6 +31,7 @@ import { createHub } from './hub.ts';
 import { openImages, type Images } from './images.ts';
 import { createRunner, type QueryFn } from './runner.ts';
 import { channels, threads } from './schema.ts';
+import { firstLine } from './title.ts';
 
 // `home` is the only folder tree that repositories can be picked from.
 // `images` is the folder where images attached to messages are kept.
@@ -120,7 +121,7 @@ export function createApp({ db, query, home, images, worktrees, web }: Deps) {
       id,
       channelId: channel.id,
       path,
-      title: message.text.split('\n')[0].slice(0, 70) || 'Image',
+      title: firstLine(message.text) || 'Image',
       model: message.model,
       effort: message.effort,
       context: message.context,
@@ -133,6 +134,7 @@ export function createApp({ db, query, home, images, worktrees, web }: Deps) {
     const thread = runner.withTasks(db.insert(threads).values(row).returning(threadCols).get());
     hub.toAll({ type: 'thread', thread });
     runner.send(thread.id, message);
+    if (message.text) runner.name(thread.id, message.text);
     return c.json(thread);
   });
 

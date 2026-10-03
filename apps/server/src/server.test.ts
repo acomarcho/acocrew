@@ -39,6 +39,9 @@ const recording = (name: string): Line[] =>
 // Turn 1 writes notes.txt, turn 2 reads two files.
 const TWO_TURNS = recording('two-turns');
 const SESSION = (TWO_TURNS[1] as SDKMessage).session_id;
+// What Claude said when asked to name a thread that starts with "make notes".
+const NAMING = recording('title');
+const NAME = '📝 Create note-taking feature';
 
 // Part of what a real Claude said it can run in a repository with skills of its own: three of the repository's
 // skills (`broken` has a skill file with no header, `ship` is an old-style command file), one from the home
@@ -47,8 +50,11 @@ const COMMANDS = JSON.parse(readFileSync(new URL('./fixtures/commands.json', imp
 
 // A stand-in for Claude that plays a recording back. Like the real thing it waits for a user message only
 // where the recording had one, asks for permission where the recording did, and otherwise talks on its own.
-function fakeClaude(script: Line[]) {
+// Asked to name a thread, it plays `naming` back instead.
+function fakeClaude(script: Line[], naming: Line[] = []) {
   const calls: Parameters<QueryFn>[0]['options'][] = [];
+  // Every time it was asked to name a thread.
+  const named: Parameters<QueryFn>[0][] = [];
   const decisions: PermissionResult[] = [];
   // What each user message handed to Claude held.
   const said: SDKUserMessage['message']['content'][] = [];
@@ -61,7 +67,19 @@ function fakeClaude(script: Line[]) {
   let abandoned = 0;
   let pos = 0;
 
+  async function* name() {
+    for (const line of naming) {
+      if ('_crash' in line) throw new Error('Claude crashed');
+      yield line as SDKMessage;
+    }
+  }
+
   const query: QueryFn = ({ prompt, options }) => {
+    // Plain words instead of an open conversation: the one question the server asks is what to name a thread.
+    if (typeof prompt === 'string') {
+      named.push({ prompt, options });
+      return Object.assign(name(), { close() {}, async interrupt() {}, supportedCommands: async () => [] });
+    }
     calls.push(options);
     const abort = new AbortController();
     const users = prompt[Symbol.asyncIterator]();
@@ -143,6 +161,7 @@ function fakeClaude(script: Line[]) {
   return {
     query,
     calls,
+    named,
     decisions,
     said,
     pause,
@@ -179,9 +198,9 @@ let server: Awaited<ReturnType<typeof startServer>>;
 let sockets: WebSocket[];
 
 // Starts (or restarts) the server with a Claude that plays `script`.
-async function serve(script: Line[]) {
+async function serve(script: Line[], naming?: Line[]) {
   server?.close();
-  claude = fakeClaude(script);
+  claude = fakeClaude(script, naming);
   server = await startServer(0, { db, query: claude.query, home, images, worktrees }); // 0 = any free port
 }
 
@@ -420,6 +439,76 @@ test('a thread runs Claude in the repo folder and streams two turns through one 
   expect(late.hello.threads).toMatchObject([{ id: thread.id, status: 'done' }]);
   await late.open(thread.id);
   expect(late.screen(thread.id)).toEqual(screen);
+});
+
+test('a new thread starts out named after its first line, then gets a name from Claude on every device', async () => {
+  await serve(TWO_TURNS, NAMING);
+  const tab = await connect();
+  // The thread is there before the name is: nothing waits for it.
+  const thread = await startThread('make notes\nplease');
+  expect(thread.title).toBe('make notes');
+  const named = await tab.until('thread', (e) => e.thread.title === NAME);
+  expect(named.thread).toMatchObject({ id: thread.id, channelId: thread.channelId });
+  expect(named.thread.updatedAt).toBeGreaterThanOrEqual(thread.updatedAt);
+
+  // Claude got the first message and nothing to act with, on the small model whatever the thread runs on.
+  expect(claude.named).toHaveLength(1);
+  expect(claude.named[0].prompt).toContain('make notes\nplease');
+  expect(claude.named[0].options).toMatchObject({ model: HAIKU.model, tools: [], settingSources: [] });
+
+  // The name is given once. A reply does not ask again, and the name stays through the rest of the thread.
+  await tab.status(thread.id, 'done');
+  await say(thread, 'what is in them?');
+  await tab.status(thread.id, 'working');
+  expect((await tab.status(thread.id, 'done')).title).toBe(NAME);
+  expect(claude.named).toHaveLength(1);
+  expect((await connect()).hello.threads).toMatchObject([{ id: thread.id, title: NAME }]);
+});
+
+test('a thread on a bigger model is still named by the small one, and the thread itself still runs on the big one', async () => {
+  await serve(TWO_TURNS, NAMING);
+  const tab = await connect();
+  const thread = await startThread('make notes', OPUS);
+  await tab.until('thread', (e) => e.thread.title === NAME);
+  expect(claude.named[0].options.model).toBe(HAIKU.model);
+  expect(claude.calls[0].model).toBe('claude-opus-5-5[1m]');
+  expect((await tab.status(thread.id, 'done')).model).toBe(OPUS.model);
+});
+
+// Ways naming goes wrong: the process dies, it ends without an answer, or its answer is not a name.
+const RESULT = NAMING.at(-1) as Extract<SDKMessage, { subtype: 'success' }>;
+test.each([
+  ['crashes', [NAMING[0], { _crash: true }]],
+  ['says nothing', NAMING.slice(0, 1)],
+  ['answers with an error', [{ ...RESULT, is_error: true, result: 'API Error: 529 Overloaded' }]],
+  ['answers with nothing', [{ ...RESULT, result: '  ' }]],
+  // What the real Claude once said when the first message was just "hi".
+  [
+    'talks back',
+    [{ ...RESULT, result: 'I need more context to name this thread. The message "hi" is just a greeting.' }],
+  ],
+] as [string, Line[]][])('when naming a thread %s, the first line stays as its name', async (_, naming) => {
+  const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+  onTestFinished(() => logged.mockRestore());
+  await serve(TWO_TURNS, naming);
+  const tab = await connect();
+  const thread = await startThread('make notes');
+  expect((await tab.status(thread.id, 'done')).title).toBe('make notes');
+  expect(claude.named).toHaveLength(1);
+  // The thread itself is not bothered: no error in it, and it does not ask for attention.
+  const late = await connect();
+  expect(late.hello.threads).toMatchObject([{ title: 'make notes', status: 'done' }]);
+  await late.open(thread.id);
+  expect(late.screen(thread.id)).toEqual(TURN_1);
+});
+
+test('a long name from Claude is cut to one short line', async () => {
+  const long = `🧪 ${'word '.repeat(40)}\nand a second line`;
+  await serve(TWO_TURNS, [{ ...RESULT, result: long }]);
+  const tab = await connect();
+  const thread = await startThread('make notes');
+  const named = await tab.until('thread', (e) => e.thread.id === thread.id && e.thread.title.startsWith('🧪'));
+  expect(named.thread.title).toBe(long.slice(0, 70));
 });
 
 test('a thread started in a new worktree runs Claude there, on its own branch, and replies stay there', async () => {
@@ -963,6 +1052,8 @@ test('an image can be sent with no words, to start a thread or to reply', async 
   const thread = await startThread('', { ...HAIKU, images: [id] });
   expect(thread.title).toBe('Image');
   await tab.status(thread.id, 'done');
+  // With no words there is nothing to name the thread after.
+  expect(claude.named).toEqual([]);
   expect((await say(thread, ' ', { ...HAIKU, images: [id, id] })).status).toBe(200);
   await tab.status(thread.id, 'done');
   const image = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG.toString('base64') } };

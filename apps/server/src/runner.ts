@@ -16,11 +16,13 @@ import { loadItems, saveItem, threadCols, type Db } from './db.ts';
 import type { Hub } from './hub.ts';
 import type { Images } from './images.ts';
 import { channels, threads } from './schema.ts';
+import { inferTitle } from './title.ts';
 import { createTranslator, nextAt, wasAborted, type Out } from './translate.ts';
 
 // The part of the Claude Agent SDK we use. Tests pass a fake with the same shape.
 export type QueryFn = (params: {
-  prompt: AsyncIterable<SDKUserMessage>;
+  // A list of messages that stays open for a conversation, or plain words for a single question.
+  prompt: string | AsyncIterable<SDKUserMessage>;
   options: Options;
 }) => AsyncIterable<SDKMessage> & {
   close(): void;
@@ -409,6 +411,13 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images) {
       } catch (err) {
         fail(threadId, err);
       }
+    },
+
+    // Gives a new thread a proper name, in the background. If that does not work out, it keeps the name it has.
+    name(threadId: string, text: string) {
+      inferTitle(query, text)
+        .then((title) => title && setThread(threadId, { title }))
+        .catch((err) => console.error('Could not name the thread:', err));
     },
 
     // Hands the user's reply to the approval prompt or question that is waiting for it.
