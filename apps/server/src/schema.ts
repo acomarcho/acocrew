@@ -17,6 +17,8 @@ export const threads = sqliteTable('threads', {
   title: text('title').notNull(),
   model: text('model').notNull(),
   effort: text('effort').notNull(),
+  context: text('context').notNull().default('1m'),
+  fast: integer('fast', { mode: 'boolean' }).notNull().default(false),
   access: text('access').$type<Access>().notNull().default('full'),
   status: text('status').$type<Status>().notNull(),
   // Claude's own id for the conversation. Lets a new Claude process pick up where the last one stopped.

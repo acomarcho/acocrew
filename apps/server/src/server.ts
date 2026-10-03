@@ -1,5 +1,6 @@
 import {
   ACCESS,
+  CONTEXTS,
   DECISIONS,
   EFFORTS,
   HEALTH_PATH,
@@ -29,10 +30,17 @@ export type Deps = { db: Db; query: QueryFn; home: string; web?: string };
 // The parts of a message, or null if any of them is not usable.
 function readMessage(body: Partial<NewMessage>): NewMessage | null {
   const text = typeof body.text === 'string' ? body.text.trim() : '';
-  const { model, effort, access } = body;
+  const { model, effort, context, fast, access } = body;
   const known = (list: { id: string }[], id?: string) => list.some((option) => option.id === id);
-  if (!text || !known(MODELS, model) || !known(EFFORTS, effort) || !known(ACCESS, access)) return null;
-  return { text, model: model!, effort: effort!, access: access! };
+  const usable =
+    text &&
+    known(MODELS, model) &&
+    known(EFFORTS, effort) &&
+    known(CONTEXTS, context) &&
+    typeof fast === 'boolean' &&
+    known(ACCESS, access);
+  if (!usable) return null;
+  return { text, model: model!, effort: effort!, context: context!, fast, access: access! };
 }
 
 export function createApp({ db, query, home, web }: Deps) {
@@ -77,8 +85,7 @@ export function createApp({ db, query, home, web }: Deps) {
       .from(channels)
       .where(eq(channels.id, String(body.channelId)))
       .get();
-    if (!message || !channel)
-      return c.json({ error: 'Needs a channel, a message, a model, a reasoning level and an access level.' }, 400);
+    if (!message || !channel) return c.json({ error: 'Needs a channel, a message and a full set of settings.' }, 400);
     const now = Date.now();
     const row = {
       id: randomUUID(),
@@ -86,6 +93,8 @@ export function createApp({ db, query, home, web }: Deps) {
       title: message.text.split('\n')[0].slice(0, 70),
       model: message.model,
       effort: message.effort,
+      context: message.context,
+      fast: message.fast,
       access: message.access,
       status: 'working' as const,
       createdAt: now,
@@ -104,8 +113,7 @@ export function createApp({ db, query, home, web }: Deps) {
       .from(threads)
       .where(eq(threads.id, c.req.param('id')))
       .get();
-    if (!message || !thread)
-      return c.json({ error: 'Needs a thread, a message, a model, a reasoning level and an access level.' }, 400);
+    if (!message || !thread) return c.json({ error: 'Needs a thread, a message and a full set of settings.' }, 400);
     runner.send(thread.id, message);
     return c.json({ ok: true });
   });

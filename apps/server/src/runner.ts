@@ -1,4 +1,12 @@
-import type { Access, Answer, Item, NewMessage, Status, Thread } from '@acocrew/shared';
+import {
+  MODELS,
+  type Access,
+  type Answer,
+  type Item,
+  type NewMessage,
+  type Status,
+  type Thread,
+} from '@acocrew/shared';
 import type { Options, PermissionResult, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { eq, ne } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
@@ -20,8 +28,10 @@ type Session = {
   input: ReturnType<typeof queue<SDKUserMessage>>;
   running: ReturnType<QueryFn>;
   translator: ReturnType<typeof createTranslator>;
-  model: string;
-  effort: string;
+  // What the process was started with, as one string, to tell when a message asks for something else.
+  launch: string;
+  // Fast mode was asked for, and we have not yet heard from Claude whether it really runs.
+  fastUnconfirmed: boolean;
   access: Access;
   // Claude is in the middle of a turn.
   busy: boolean;
@@ -40,6 +50,24 @@ type Session = {
 const IDLE_MS = 10 * 60_000;
 // How long Stop waits for Claude to wind down politely before the process is closed anyway.
 const INTERRUPT_MS = 3000;
+
+// What a Claude process is started with. These are fixed for as long as the process lives.
+function launchOptions({ model, effort, context, fast }: NewMessage) {
+  const spec = MODELS.find((option) => option.id === model);
+  const big = Boolean(spec?.bigContext && context === '1m');
+  // Newer models get the 1M window with or without the suffix, so 200k means switching 1M off.
+  const env: Record<string, string> = big ? {} : { CLAUDE_CODE_DISABLE_1M_CONTEXT: '1' };
+  return {
+    // The 1M context window is asked for with a suffix on the model name.
+    model: big ? `${model}[1m]` : model,
+    effort: effort as Options['effort'],
+    settings: {
+      // Always said out loud, so the server user's own Claude settings cannot switch fast mode on.
+      fastMode: Boolean(spec?.fast && fast),
+      env,
+    },
+  };
+}
 
 // A list you can keep adding to while someone else is reading from it.
 function queue<T>() {
@@ -120,7 +148,8 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn) {
   }
   const lastShown = new Map<string, string>();
 
-  function start(threadId: string, { model, effort, access }: NewMessage): Session {
+  function start(threadId: string, message: NewMessage): Session {
+    const launch = launchOptions(message);
     const { cwd, sessionId } = db
       .select({ cwd: channels.path, sessionId: threads.sessionId })
       .from(threads)
@@ -170,8 +199,7 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn) {
       prompt: input,
       options: {
         cwd,
-        model,
-        effort: effort as Options['effort'],
+        ...launch,
         resume: sessionId ?? undefined,
         // Claude asks us about every action. With full access we say yes right away.
         permissionMode: 'default',
@@ -183,9 +211,9 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn) {
       input,
       running,
       translator: createTranslator(before?.todos),
-      model,
-      effort,
-      access,
+      launch: JSON.stringify(launch),
+      fastUnconfirmed: launch.settings.fastMode,
+      access: message.access,
       busy: false,
       failed: false,
       tasks: [],
@@ -222,6 +250,13 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn) {
   function hear(threadId: string, session: Session, msg: SDKMessage) {
     if (msg.type === 'system' && msg.subtype === 'init') {
       db.update(threads).set({ sessionId: msg.session_id }).where(eq(threads.id, threadId)).run();
+      // Claude takes the fast mode setting even when the account cannot run it, and then quietly works at
+      // normal speed. Say so, once per process (this message comes at the start of every turn).
+      if (session.fastUnconfirmed && msg.fast_mode_state === 'off') {
+        const why = msg.fast_mode_disabled_reason?.replaceAll('_', ' ') ?? 'no reason given';
+        addItem(threadId, note('notice', `Fast mode is not available (${why}), so Claude runs at normal speed.`));
+      }
+      session.fastUnconfirmed = false;
     }
     if (msg.type === 'system' && msg.subtype === 'background_tasks_changed') {
       session.tasks = msg.tasks.filter((task) => !task.ambient).map((task) => task.description);
@@ -285,13 +320,14 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn) {
     // Saves the user's message and hands it to Claude. If Claude is busy, it picks the message up when it can.
     send(threadId: string, message: NewMessage) {
       addItem(threadId, { id: randomUUID(), kind: 'message', by: 'user', text: message.text, at: nextAt() });
-      const { model, effort, access } = message;
-      db.update(threads).set({ model, effort, access }).where(eq(threads.id, threadId)).run();
+      const { model, effort, context, fast, access } = message;
+      db.update(threads).set({ model, effort, context, fast, access }).where(eq(threads.id, threadId)).run();
       try {
-        // The model and reasoning level are fixed when a process starts. A change takes a fresh process, which
-        // would kill whatever the current one is doing, so it only happens when that one has nothing going on.
+        // The model, reasoning level, context window and fast mode are fixed when a process starts. A change
+        // takes a fresh process, which would kill whatever the current one is doing, so it only happens when
+        // that one has nothing going on.
         const old = sessions.get(threadId);
-        const changed = old && (old.model !== model || old.effort !== effort);
+        const changed = old && old.launch !== JSON.stringify(launchOptions(message));
         if (changed && !old.busy && !old.tasks.length && !old.asks.size) close(threadId);
         const session = sessions.get(threadId) ?? start(threadId, message);
         session.access = access;

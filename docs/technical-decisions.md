@@ -183,7 +183,7 @@ So the server does not count messages and answers. It listens all the time and w
 
 We checked the SDK for a ready-made "running / idle" signal. It exists in the type definitions (`session_state_changed`) but was not sent in a live run, so we do not rely on it.
 
-A Claude process is closed after 10 minutes with nothing going on (no turn, no background work, no open question). The model and reasoning level are fixed when a process starts, so a change needs a new process. That would kill whatever the old one is doing, so it only happens when the old one has nothing going on. Otherwise the change waits. The next message to a closed process starts a new one that resumes the same session.
+A Claude process is closed after 10 minutes with nothing going on (no turn, no background work, no open question). The model, reasoning level, context window and fast mode are fixed when a process starts, so a change needs a new process. That would kill whatever the old one is doing, so it only happens when the old one has nothing going on. Otherwise the change waits. The next message to a closed process starts a new one that resumes the same session.
 
 Other rules that follow from listening all the time:
 
@@ -220,7 +220,8 @@ Rules of the UI:
 - A channel is one git repository. "Add repository" lets you pick a folder under the home folder of the server machine. Only folders that are git repositories can be added.
 - You cannot post a loose message in a channel. Every message starts a thread ("New Thread") or replies inside one.
 - For now a thread works directly in the repository folder, on whatever branch it is on. The plan is for each thread to get its own worktree (its own copy of the repo on its own branch). That is not built yet.
-- The message box has a model picker, a reasoning picker and an access picker (Full access or Ask first). While Claude is doing something, it also has a Stop button.
+- The message box has a model picker, a reasoning picker, a context window picker (200k or 1M), a fast mode picker and an access picker (Full access or Ask first). A new thread starts on medium reasoning, 1M and fast mode off. A picker is only shown for models that have that setting. While Claude is doing something, the box also has a Stop button.
+- The 1M context window is asked for with `[1m]` after the model name. Leaving that off is not enough for 200k: in a live run the newer models still got 1M. So 200k also sets `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` for that Claude process. Fast mode is the `fastMode` setting, and it only really runs if the Claude account has extra usage switched on.
 
 - Claude's answers are shown as formatted text (bold, lists, tables, code blocks with colors and a copy button). We use Streamdown for this, a markdown renderer made for AI chat: it copes with half-written formatting while the answer is still streaming in. Your own messages stay plain text, so what you type shows exactly as typed.
 - Color names in the CSS follow shadcn/ui (`background`, `foreground`, `muted`, `border`, `primary` and so on), because Streamdown expects those names. The colors themselves are set once in `:root` in `apps/web/src/index.css`.

@@ -225,8 +225,8 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
   // Only what this person changed and has not sent yet. The rest follows the thread, so a teammate's change
   // shows up here and is not undone by the next reply.
   const [picked, setPicked] = useState<Partial<Settings>>({});
-  const { model, effort, access } = thread;
-  const settings: Settings = { model, effort, access, ...picked };
+  const { model, effort, context, fast, access } = thread;
+  const settings: Settings = { model, effort, context, fast, access, ...picked };
   // Follow new content only while the reader is at the bottom, so reading further up is not interrupted.
   const stick = useRef(true);
   const scroller = useRef<HTMLDivElement>(null);

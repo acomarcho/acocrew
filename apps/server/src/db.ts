@@ -30,6 +30,8 @@ export const threadCols = {
   title: threads.title,
   model: threads.model,
   effort: threads.effort,
+  context: threads.context,
+  fast: threads.fast,
   access: threads.access,
   status: threads.status,
   updatedAt: threads.updatedAt,

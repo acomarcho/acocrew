@@ -250,7 +250,8 @@ async function connect() {
   };
 }
 
-const HAIKU = { model: 'claude-haiku-4-5-20251001', effort: 'low', access: 'full' };
+const HAIKU = { model: 'claude-haiku-4-5-20251001', effort: 'low', context: '1m', fast: false, access: 'full' };
+const OPUS = { ...HAIKU, model: 'claude-opus-5-5', effort: 'high' };
 
 async function addChannel() {
   const res = await post('/api/channels', { path: join(home, 'code', 'shop') });
@@ -438,12 +439,72 @@ test('changing the model while Claude is idle starts a new process that resumes 
   const tab = await connect();
   const thread = await startThread('make notes');
   await tab.status(thread.id, 'done');
-  await say(thread, 'what is in them?', { model: 'claude-opus-5-5', effort: 'high', access: 'full' });
+  await say(thread, 'what is in them?', OPUS);
   const done = await tab.status(thread.id, 'done');
   expect(done).toMatchObject({ model: 'claude-opus-5-5', effort: 'high' });
   expect(claude.closed()).toBe(1);
   expect(claude.calls).toHaveLength(2);
-  expect(claude.calls[1]).toMatchObject({ model: 'claude-opus-5-5', effort: 'high', resume: SESSION });
+  expect(claude.calls[1]).toMatchObject({ model: 'claude-opus-5-5[1m]', effort: 'high', resume: SESSION });
+});
+
+const SMALL = { CLAUDE_CODE_DISABLE_1M_CONTEXT: '1' };
+
+test.each([
+  ['Opus has both extras', OPUS, 'claude-opus-5-5[1m]', { fastMode: false, env: {} }],
+  ['200k switches the 1M window off', { ...OPUS, context: '200k' }, 'claude-opus-5-5', { fastMode: false, env: SMALL }],
+  ['fast mode is switched on', { ...OPUS, fast: true }, 'claude-opus-5-5[1m]', { fastMode: true, env: {} }],
+  [
+    'Sonnet has no fast mode',
+    { ...OPUS, model: 'claude-sonnet-5-5', fast: true },
+    'claude-sonnet-5-5[1m]',
+    { fastMode: false, env: {} },
+  ],
+  ['Haiku has neither', { ...HAIKU, fast: true }, HAIKU.model, { fastMode: false, env: SMALL }],
+])('Claude is started with the context window and fast mode the model has: %s', async (_, settings, model, extras) => {
+  const tab = await connect();
+  const thread = await startThread('make notes', settings);
+  expect(thread).toMatchObject({ context: settings.context, fast: settings.fast });
+  await tab.status(thread.id, 'done');
+  expect(claude.calls[0]).toMatchObject({ model, effort: settings.effort });
+  expect(claude.calls[0].settings).toEqual(extras);
+});
+
+test('when the account cannot run fast mode, the thread says so once, and only if fast mode was asked for', async () => {
+  // What a real account with extra usage switched off answers.
+  const noFast = TWO_TURNS.map((msg) =>
+    'subtype' in msg && msg.subtype === 'init'
+      ? { ...msg, fast_mode_state: 'off' as const, fast_mode_disabled_reason: 'extra_usage_disabled' as const }
+      : msg,
+  );
+  const NOTICE = 'notice: Fast mode is not available (extra usage disabled), so Claude runs at normal speed.';
+  await serve(noFast);
+  const tab = await connect();
+  const fast = await startThread('make notes', { ...OPUS, fast: true });
+  await tab.open(fast.id);
+  await tab.status(fast.id, 'done');
+  expect(tab.screen(fast.id)).toEqual([TURN_1[0], NOTICE, ...TURN_1.slice(1)]);
+  await say(fast, 'what is in them?', { ...OPUS, fast: true });
+  await tab.status(fast.id, 'done');
+  expect(tab.screen(fast.id).filter((shown) => shown === NOTICE)).toHaveLength(1);
+
+  await serve(noFast);
+  const late = await connect();
+  const standard = await startThread('make notes', OPUS);
+  await late.open(standard.id);
+  await late.status(standard.id, 'done');
+  expect(late.screen(standard.id)).toEqual(TURN_1);
+});
+
+test('changing the context window or fast mode while Claude is idle starts a new process', async () => {
+  const tab = await connect();
+  const thread = await startThread('make notes', OPUS);
+  await tab.status(thread.id, 'done');
+  await say(thread, 'what is in them?', { ...OPUS, context: '200k', fast: true });
+  const done = await tab.status(thread.id, 'done');
+  expect(done).toMatchObject({ context: '200k', fast: true });
+  expect(claude.closed()).toBe(1);
+  expect(claude.calls[1]).toMatchObject({ model: 'claude-opus-5-5', resume: SESSION });
+  expect(claude.calls[1].settings).toEqual({ fastMode: true, env: SMALL });
 });
 
 test('when Claude starts background work and ends its turn, the thread waits, and what Claude says when the work finishes shows up on its own', async () => {
@@ -758,6 +819,8 @@ test('bad requests are turned away', async () => {
     ['/api/threads', { channelId: thread.channelId, text: 'hi', ...HAIKU, model: 'gpt' }],
     ['/api/threads', { channelId: thread.channelId, text: 'hi', ...HAIKU, access: 'root' }],
     [`/api/threads/${thread.id}/messages`, { text: 'hi', ...HAIKU, effort: 'huge' }],
+    [`/api/threads/${thread.id}/messages`, { text: 'hi', ...HAIKU, context: '2m' }],
+    [`/api/threads/${thread.id}/messages`, { text: 'hi', ...HAIKU, fast: 'yes' }],
     ['/api/threads/nope/messages', { text: 'hi', ...HAIKU }],
   ] as const;
   for (const [path, body] of bad) expect((await post(path, body)).status, JSON.stringify(body)).toBe(400);

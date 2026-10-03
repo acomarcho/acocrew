@@ -1,5 +1,14 @@
 // Building blocks for the Inbox screens.
-import { ACCESS, EFFORTS, MODELS, type Access, type Channel, type NewMessage, type Status } from '@acocrew/shared';
+import {
+  ACCESS,
+  CONTEXTS,
+  EFFORTS,
+  MODELS,
+  type Access,
+  type Channel,
+  type NewMessage,
+  type Status,
+} from '@acocrew/shared';
 import { Link, useNavigate } from '@tanstack/react-router';
 import { useState, type ReactNode } from 'react';
 import {
@@ -8,11 +17,13 @@ import {
   Check,
   ChevronDown,
   FolderGit2,
+  Layers,
   Menu,
   Plus,
   ShieldCheck,
   Sparkles,
   Square,
+  Zap,
 } from 'lucide-react';
 import { useApp } from './store';
 
@@ -88,24 +99,29 @@ type PickerProps = {
   options: Option[];
   onChange: (v: string) => void;
   menuClass?: string;
-  // On phones there is no room for every label, so some pickers show only their icon there.
-  iconOnPhone?: boolean;
+  // There is no room for every label, so some pickers show only their icon: on phones, or everywhere.
+  labelClass?: string;
 };
 
-function Picker({ icon, value, options, onChange, menuClass = 'left-0', iconOnPhone }: PickerProps) {
+const ICON_ON_PHONE = 'hidden sm:flex';
+
+function Picker({ icon, value, options, onChange, menuClass = 'left-0', labelClass = 'flex' }: PickerProps) {
   const [open, setOpen] = useState(false);
+  const picked = options.find((o) => o.id === value)?.name;
   return (
     <div className="relative">
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
+        title={picked}
+        aria-label={picked}
+        className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-sm whitespace-nowrap text-muted-foreground hover:bg-muted hover:text-foreground"
       >
         {icon}
-        <span className={iconOnPhone ? 'hidden sm:inline' : 'max-w-24 truncate sm:max-w-none'}>
-          {options.find((o) => o.id === value)?.name}
+        <span className={`items-center gap-1.5 ${labelClass}`}>
+          <span className="max-w-20 truncate sm:max-w-none">{picked}</span>
+          <ChevronDown size={14} />
         </span>
-        <ChevronDown size={14} />
       </button>
       {open && (
         <>
@@ -137,8 +153,16 @@ function Picker({ icon, value, options, onChange, menuClass = 'left-0', iconOnPh
   );
 }
 
-// What the user picked for the next message: which model, how hard it thinks, and whether it asks first.
-export type Settings = Pick<NewMessage, 'model' | 'effort' | 'access'>;
+// What the user picked for the next message: which model, how hard it thinks, how much it keeps in view,
+// whether it runs in fast mode, and whether it asks first.
+export type Settings = Omit<NewMessage, 'text'>;
+
+const NEW_THREAD: Settings = { model: MODELS[0].id, effort: 'medium', context: '1m', fast: false, access: 'full' };
+
+const SPEEDS = [
+  { id: 'off', name: 'Standard', hint: 'Normal speed and price' },
+  { id: 'on', name: 'Fast', hint: 'Quicker answers, costs more' },
+];
 
 type ComposerProps = {
   placeholder: string;
@@ -166,6 +190,7 @@ export function Composer({
   const [error, setError] = useState('');
   const clean = text.trim();
   const ready = Boolean(clean || canSendEmpty) && !sending;
+  const model = MODELS.find((option) => option.id === settings.model);
   // The text stays in the box until the server has taken it, so a failed send loses nothing.
   const submit = async () => {
     if (!ready) return;
@@ -209,15 +234,35 @@ export function Composer({
           options={EFFORTS}
           onChange={(effort) => onSettings({ ...settings, effort })}
           menuClass="-left-20 sm:left-0"
-          iconOnPhone
+          labelClass={ICON_ON_PHONE}
         />
+        {model?.bigContext && (
+          <Picker
+            icon={<Layers size={14} />}
+            value={settings.context}
+            options={CONTEXTS}
+            onChange={(context) => onSettings({ ...settings, context })}
+            menuClass="-left-28 sm:left-0"
+            labelClass={ICON_ON_PHONE}
+          />
+        )}
+        {model?.fast && (
+          <Picker
+            icon={<Zap size={14} className={settings.fast ? 'text-primary' : ''} />}
+            value={settings.fast ? 'on' : 'off'}
+            options={SPEEDS}
+            onChange={(speed) => onSettings({ ...settings, fast: speed === 'on' })}
+            menuClass="-left-36 sm:left-0"
+            labelClass="hidden"
+          />
+        )}
         <Picker
           icon={<ShieldCheck size={14} />}
           value={settings.access}
           options={ACCESS}
           onChange={(access) => onSettings({ ...settings, access: access as Access })}
-          menuClass="-left-32 sm:left-0"
-          iconOnPhone
+          menuClass="-left-40 sm:left-0"
+          labelClass={ICON_ON_PHONE}
         />
         <div className="flex-1" />
         {onStop && (
@@ -262,7 +307,7 @@ export function NewThreadButton({ channelId }: { channelId: string }) {
 export function NewThread({ channel }: { channel: Channel }) {
   const { createThread } = useApp();
   const navigate = useNavigate();
-  const [settings, setSettings] = useState<Settings>({ model: MODELS[0].id, effort: 'high', access: 'full' });
+  const [settings, setSettings] = useState(NEW_THREAD);
   const channelId = channel.id;
   return (
     <div>

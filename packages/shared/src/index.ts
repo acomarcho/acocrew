@@ -16,6 +16,8 @@ export type Thread = {
   title: string;
   model: string;
   effort: string;
+  context: string;
+  fast: boolean;
   access: Access;
   status: Status;
   updatedAt: number;
@@ -55,17 +57,26 @@ export type Item = { id: string; at: number; parent?: string } & (
   | { kind: 'todos'; todos: Todo[] }
 );
 
+// `bigContext`: the model can run with the 1M context window. `fast`: it has fast mode.
+// A setting the picked model does not have is not offered, and is ignored when Claude starts.
 export const MODELS = [
-  { id: 'claude-opus-5-5', name: 'Claude Opus 5.5', hint: 'Most capable' },
-  { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5', hint: 'Balanced' },
-  { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', hint: 'Fastest' },
+  { id: 'claude-opus-5-5', name: 'Claude Opus 5.5', hint: 'Most capable', bigContext: true, fast: true },
+  { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5', hint: 'Balanced', bigContext: true, fast: false },
+  { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', hint: 'Fastest', bigContext: false, fast: false },
 ];
 
 export const EFFORTS = [
   { id: 'low', name: 'Low', hint: 'Quick answers' },
   { id: 'medium', name: 'Medium', hint: 'Everyday work' },
   { id: 'high', name: 'High', hint: 'Thinks harder' },
+  { id: 'xhigh', name: 'Extra high', hint: 'Thinks a lot harder' },
   { id: 'max', name: 'Max', hint: 'Slowest, most careful' },
+];
+
+// How much of the conversation Claude can keep in view at once.
+export const CONTEXTS = [
+  { id: '200k', name: '200k', hint: 'Standard context window' },
+  { id: '1m', name: '1M', hint: 'Keeps far more in view' },
 ];
 
 export const ACCESS = [
@@ -89,7 +100,15 @@ export type ClientEvent = { type: 'open'; threadId: string };
 export type Folder = { name: string; path: string; isRepo: boolean };
 export type FolderList = { path: string; parent: string | null; folders: Folder[] };
 
-export type NewMessage = { text: string; model: string; effort: string; access: Access };
+// `fast` turns on fast mode: quicker answers at a higher price.
+export type NewMessage = {
+  text: string;
+  model: string;
+  effort: string;
+  context: string;
+  fast: boolean;
+  access: Access;
+};
 export type NewThread = NewMessage & { channelId: string };
 
 // The user's reply to an approval prompt or a question.
