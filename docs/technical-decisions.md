@@ -170,7 +170,10 @@ Rules of the UI:
 - For now a thread works directly in the repository folder, on whatever branch it is on. The plan is for each thread to get its own worktree (its own copy of the repo on its own branch). That is not built yet.
 - The message box has a model picker and a reasoning picker. No access picker for now; threads always run with full access.
 
-Not built yet: logins (everyone posts as "You"), approval prompts, a stop button, removing a repository, and showing Claude's answers as formatted text (they show as plain text, so `**bold**` stays as typed).
+- Claude's answers are shown as formatted text (bold, lists, tables, code blocks with colors and a copy button). We use Streamdown for this, a markdown renderer made for AI chat: it copes with half-written formatting while the answer is still streaming in. Your own messages stay plain text, so what you type shows exactly as typed.
+- Color names in the CSS follow shadcn/ui (`background`, `foreground`, `muted`, `border`, `primary` and so on), because Streamdown expects those names. The colors themselves are set once in `:root` in `apps/web/src/index.css`.
+
+Not built yet: logins (everyone posts as "You"), approval prompts, a stop button, removing a repository, diagrams (mermaid), and showing images that live in the repository.
 
 ## Not decided yet
 

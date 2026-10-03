@@ -25,9 +25,9 @@ function Inbox() {
 
   return (
     <div className="relative flex h-full overflow-hidden">
-      <Drawer className="md:w-56 md:border-r md:border-line">
+      <Drawer className="md:w-56 md:border-r md:border-border">
         <div className="px-4 py-3.5 text-lg font-bold">acocrew</div>
-        <div className="px-4 pb-1 text-xs font-medium uppercase tracking-wide text-side-muted">Repositories</div>
+        <div className="px-4 pb-1 text-xs font-medium uppercase tracking-wide text-sidebar-muted">Repositories</div>
         {channels.map((c) => {
           const count = threads.filter((t) => t.channelId === c.id && t.status !== 'done').length;
           return (
@@ -37,8 +37,8 @@ function Inbox() {
               params={{ channelId: c.id }}
               onClick={() => setNavOpen(false)}
               className="mx-2 flex items-center gap-2 rounded-md px-2 py-1.5"
-              activeProps={{ className: 'bg-side-active text-side-active-fg' }}
-              inactiveProps={{ className: 'hover:bg-side-hover' }}
+              activeProps={{ className: 'bg-sidebar-primary text-sidebar-primary-foreground' }}
+              inactiveProps={{ className: 'hover:bg-sidebar-accent' }}
             >
               <Hash size={15} className="opacity-60" />
               <span className="flex-1 truncate">{c.name}</span>
@@ -49,7 +49,7 @@ function Inbox() {
         <Link
           to="/add"
           onClick={() => setNavOpen(false)}
-          className="mx-2 mt-1 flex items-center gap-2 rounded-md px-2 py-1.5 text-side-muted hover:bg-side-hover"
+          className="mx-2 mt-1 flex items-center gap-2 rounded-md px-2 py-1.5 text-sidebar-muted hover:bg-sidebar-accent"
         >
           <Plus size={15} />
           Add repository
@@ -57,23 +57,23 @@ function Inbox() {
       </Drawer>
 
       <section
-        className={`w-full min-w-0 flex-col border-line md:flex md:w-[360px] md:shrink-0 md:border-r ${detailOpen ? 'hidden' : 'flex'}`}
+        className={`w-full min-w-0 flex-col border-border md:flex md:w-[360px] md:shrink-0 md:border-r ${detailOpen ? 'hidden' : 'flex'}`}
       >
         <header className="flex items-center gap-2 px-3 py-2.5">
           <NavButton />
           <div className="min-w-0 flex-1">
             <div className="truncate font-bold">#{channel.name}</div>
-            <div className="truncate font-mono text-xs text-muted">{channel.path}</div>
+            <div className="truncate font-mono text-xs text-muted-foreground">{channel.path}</div>
           </div>
           <NewThreadButton channelId={channel.id} />
         </header>
-        <div className="flex gap-1.5 overflow-x-auto border-b border-line px-3 pb-2.5">
+        <div className="flex gap-1.5 overflow-x-auto border-b border-border px-3 pb-2.5">
           {[null, ...STATUS_ORDER].map((s) => (
             <button
               key={s ?? 'all'}
               onClick={() => setFilter(s)}
               className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${
-                filter === s ? 'bg-fg text-bg' : 'bg-soft text-muted hover:text-fg'
+                filter === s ? 'bg-foreground text-background' : 'bg-muted text-muted-foreground hover:text-foreground'
               }`}
             >
               {s ? statusLabel(s) : 'All'}
@@ -86,20 +86,20 @@ function Inbox() {
               key={t.id}
               to="/c/$channelId/t/$threadId"
               params={{ channelId: channel.id, threadId: t.id }}
-              className="block border-b border-line px-3.5 py-3 hover:bg-soft"
-              activeProps={{ className: 'bg-soft' }}
+              className="block border-b border-border px-3.5 py-3 hover:bg-muted"
+              activeProps={{ className: 'bg-muted' }}
             >
               <span className="flex items-center gap-2">
                 <StatusDot status={t.status} />
                 <span className="min-w-0 flex-1 truncate font-semibold">{t.title}</span>
               </span>
-              <span className="mt-1 flex items-center gap-2 text-xs text-muted">
+              <span className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
                 <span className="flex-1 truncate">{MODELS.find((m) => m.id === t.model)?.name}</span>
                 {when(t.updatedAt)}
               </span>
             </Link>
           ))}
-          {rows.length === 0 && <p className="p-6 text-center text-sm text-muted">Nothing here.</p>}
+          {rows.length === 0 && <p className="p-6 text-center text-sm text-muted-foreground">Nothing here.</p>}
         </div>
       </section>
 

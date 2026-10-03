@@ -1,5 +1,6 @@
 // Building blocks for the Inbox screens.
 import { EFFORTS, MODELS, type Channel, type Item, type Status, type Thread } from '@acocrew/shared';
+import { code } from '@streamdown/code';
 import { Link, useNavigate } from '@tanstack/react-router';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
@@ -15,6 +16,7 @@ import {
   Sparkles,
   X,
 } from 'lucide-react';
+import { defaultRehypePlugins, Streamdown, type StreamdownProps } from 'streamdown';
 import { useApp } from './store';
 
 function Avatar({ agent }: { agent: boolean }) {
@@ -55,7 +57,7 @@ export function NavButton() {
   return (
     <button
       onClick={() => setNavOpen(true)}
-      className="-ml-1 rounded-md p-1.5 text-muted hover:bg-soft md:hidden"
+      className="-ml-1 rounded-md p-1.5 text-muted-foreground hover:bg-muted md:hidden"
       aria-label="Open menu"
     >
       <Menu size={20} />
@@ -70,7 +72,7 @@ export function Drawer({ children, className = '' }: { children: ReactNode; clas
     <>
       {navOpen && <div className="absolute inset-0 z-30 bg-black/50 md:hidden" onClick={() => setNavOpen(false)} />}
       <nav
-        className={`absolute inset-y-0 left-0 z-40 flex w-72 shrink-0 flex-col bg-side text-side-fg transition-transform md:static md:translate-x-0 ${
+        className={`absolute inset-y-0 left-0 z-40 flex w-72 shrink-0 flex-col bg-sidebar text-sidebar-foreground transition-transform md:static md:translate-x-0 ${
           navOpen ? 'translate-x-0' : '-translate-x-full'
         } ${className}`}
       >
@@ -97,7 +99,7 @@ function Picker({ icon, value, options, onChange, menuClass = 'left-0' }: Picker
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-sm text-muted hover:bg-soft hover:text-fg"
+        className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
       >
         {icon}
         <span className="max-w-28 truncate sm:max-w-none">{options.find((o) => o.id === value)?.name}</span>
@@ -107,7 +109,7 @@ function Picker({ icon, value, options, onChange, menuClass = 'left-0' }: Picker
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
           <div
-            className={`absolute bottom-full z-50 mb-1 w-52 rounded-lg border border-line bg-surface p-1 text-fg shadow-xl ${menuClass}`}
+            className={`absolute bottom-full z-50 mb-1 w-52 rounded-lg border border-border bg-card p-1 text-foreground shadow-xl ${menuClass}`}
           >
             {options.map((o) => (
               <button
@@ -117,13 +119,13 @@ function Picker({ icon, value, options, onChange, menuClass = 'left-0' }: Picker
                   onChange(o.id);
                   setOpen(false);
                 }}
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-soft"
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted"
               >
                 <span className="flex-1">
                   <span className="block">{o.name}</span>
-                  <span className="block text-xs text-muted">{o.hint}</span>
+                  <span className="block text-xs text-muted-foreground">{o.hint}</span>
                 </span>
-                {o.id === value && <Check size={14} className="text-accent" />}
+                {o.id === value && <Check size={14} className="text-primary" />}
               </button>
             ))}
           </div>
@@ -162,7 +164,7 @@ function Composer({ placeholder, model, effort, onModel, onEffort, onSend, autoF
     setSending(false);
   };
   return (
-    <div className="rounded-xl border border-line bg-surface shadow-sm focus-within:border-accent">
+    <div className="rounded-xl border border-border bg-card shadow-sm focus-within:border-primary">
       <textarea
         rows={2}
         autoFocus={autoFocus}
@@ -174,12 +176,12 @@ function Composer({ placeholder, model, effort, onModel, onEffort, onSend, autoF
           e.preventDefault();
           void submit();
         }}
-        className="block w-full resize-none bg-transparent px-3.5 pt-3 text-base text-fg outline-none placeholder:text-muted md:text-sm"
+        className="block w-full resize-none bg-transparent px-3.5 pt-3 text-base text-foreground outline-none placeholder:text-muted-foreground md:text-sm"
       />
       {error && <p className="px-3.5 pb-1 text-xs text-rose-500">{error}</p>}
       <div className="flex items-center gap-0.5 px-1.5 pb-1.5">
         <Picker
-          icon={<Sparkles size={14} className="text-accent" />}
+          icon={<Sparkles size={14} className="text-primary" />}
           value={model}
           options={MODELS}
           onChange={onModel}
@@ -198,7 +200,7 @@ function Composer({ placeholder, model, effort, onModel, onEffort, onSend, autoF
           onClick={() => void submit()}
           disabled={!clean || sending}
           aria-label="Send"
-          className="grid size-8 place-items-center rounded-full bg-accent text-accent-fg disabled:opacity-40"
+          className="grid size-8 place-items-center rounded-full bg-primary text-primary-foreground disabled:opacity-40"
         >
           <ArrowUp size={16} />
         </button>
@@ -207,62 +209,90 @@ function Composer({ placeholder, model, effort, onModel, onEffort, onSend, autoF
   );
 }
 
+// Both are made once, so a bubble that did not change is not drawn again while another one streams.
+const plugins = { code };
+// Claude reads files we do not control, and those could trick it into writing an image link that leaks data
+// the moment the browser loads it. So images from other sites are not loaded. Everything else is the default.
+type RehypePlugins = NonNullable<StreamdownProps['rehypePlugins']>;
+const [harden, hardenOptions] = defaultRehypePlugins.harden as [RehypePlugins[number], object];
+const rehypePlugins = Object.values({
+  ...defaultRehypePlugins,
+  harden: [harden, { ...hardenOptions, allowedImagePrefixes: [] }],
+}) as RehypePlugins;
+
 const clock = (at: number) => new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 
-function ItemView({ item }: { item: Item }) {
-  if (item.kind === 'tool') {
-    return (
-      <div className="py-1 pr-4 pl-16">
-        <div className="flex items-center gap-2 rounded-md border border-line bg-soft px-2.5 py-1.5 text-xs">
-          {!item.done && <LoaderCircle size={13} className="shrink-0 animate-spin text-muted" />}
-          {item.done && !item.failed && <Check size={13} className="shrink-0 text-emerald-500" />}
-          {item.failed && <X size={13} className="shrink-0 text-rose-500" />}
-          <span className="font-medium">{item.name}</span>
-          <span className="truncate font-mono text-muted">{item.detail}</span>
-        </div>
-      </div>
-    );
-  }
-  if (item.kind === 'error') {
-    return (
-      <div className="py-1 pr-4 pl-16">
-        <p className="rounded-md border border-rose-500/30 bg-rose-500/10 px-2.5 py-1.5 text-sm whitespace-pre-wrap text-rose-500">
-          {item.text}
-        </p>
-      </div>
-    );
-  }
-  const agent = item.by === 'claude';
+const byUser = (item?: Item) => !item || (item.kind === 'message' && item.by === 'user');
+
+// One row of the chat. `lead` rows show who is talking; the rows under them belong to the same speaker.
+function Row({ agent, lead, at, children }: { agent: boolean; lead: boolean; at?: number; children: ReactNode }) {
   return (
-    <div className="flex gap-3 px-4 py-2">
-      <Avatar agent={agent} />
+    <div className={`flex gap-3 px-4 ${lead ? 'pt-2 pb-1' : 'py-1'}`}>
+      {lead ? <Avatar agent={agent} /> : <div className="w-9 shrink-0" />}
       <div className="min-w-0 flex-1">
-        <div className="flex items-baseline gap-2">
-          <span className="font-semibold">{agent ? 'Claude' : 'You'}</span>
-          {agent && <span className="rounded bg-accent/15 px-1.5 text-[11px] font-medium text-accent">Agent</span>}
-          <span className="text-xs text-muted">{clock(item.at)}</span>
-        </div>
-        <p className="mt-1 leading-relaxed break-words whitespace-pre-wrap">{item.text}</p>
+        {lead && (
+          <div className="mb-1 flex items-baseline gap-2">
+            <span className="font-semibold">{agent ? 'Claude' : 'You'}</span>
+            {agent && <span className="rounded bg-primary/15 px-1.5 text-[11px] font-medium text-primary">Agent</span>}
+            {at && <span className="text-xs text-muted-foreground">{clock(at)}</span>}
+          </div>
+        )}
+        {children}
       </div>
     </div>
   );
 }
 
-function Working() {
+// Everything Claude does in a row (tools, answers, errors) sits under one "Claude" heading.
+function ItemView({ item, lead }: { item: Item; lead: boolean }) {
+  if (item.kind === 'message' && item.by === 'user') {
+    return (
+      <Row agent={false} lead at={item.at}>
+        <p className="leading-relaxed break-words whitespace-pre-wrap">{item.text}</p>
+      </Row>
+    );
+  }
   return (
-    <div className="flex items-center gap-3 px-4 py-2 text-sm text-muted">
-      <Avatar agent />
-      <span>Claude is working</span>
-      <span className="flex gap-1">
-        {[0, 150, 300].map((d) => (
-          <span
-            key={d}
-            className="size-1.5 animate-bounce rounded-full bg-muted"
-            style={{ animationDelay: `${d}ms` }}
-          />
-        ))}
-      </span>
-    </div>
+    <Row agent lead={lead} at={item.at}>
+      {item.kind === 'tool' && (
+        <div className="flex items-center gap-2 rounded-md border border-border bg-muted px-2.5 py-1.5 text-xs">
+          {!item.done && <LoaderCircle size={13} className="shrink-0 animate-spin text-muted-foreground" />}
+          {item.done && !item.failed && <Check size={13} className="shrink-0 text-emerald-500" />}
+          {item.failed && <X size={13} className="shrink-0 text-rose-500" />}
+          <span className="font-medium">{item.name}</span>
+          <span className="truncate font-mono text-muted-foreground">{item.detail}</span>
+        </div>
+      )}
+      {item.kind === 'error' && (
+        <p className="rounded-md border border-rose-500/30 bg-rose-500/10 px-2.5 py-1.5 text-sm whitespace-pre-wrap text-rose-500">
+          {item.text}
+        </p>
+      )}
+      {item.kind === 'message' && (
+        <Streamdown className="leading-relaxed break-words" plugins={plugins} rehypePlugins={rehypePlugins}>
+          {item.text}
+        </Streamdown>
+      )}
+    </Row>
+  );
+}
+
+function Working({ lead }: { lead: boolean }) {
+  return (
+    <Row agent lead={lead}>
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <span>Working</span>
+        <span className="flex gap-1">
+          {[0, 150, 300].map((d) => (
+            <span
+              key={d}
+              className="size-1.5 animate-bounce rounded-full bg-muted-foreground"
+              style={{ animationDelay: `${d}ms` }}
+            />
+          ))}
+        </span>
+      </div>
+    </Row>
   );
 }
 
@@ -282,26 +312,26 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex items-center gap-2 border-b border-line px-3 py-2.5">
+      <header className="flex items-center gap-2 border-b border-border px-3 py-2.5">
         <Link
           to="/c/$channelId"
           params={{ channelId: channel.id }}
-          className="-ml-1 rounded-md p-1.5 text-muted hover:bg-soft md:hidden"
+          className="-ml-1 rounded-md p-1.5 text-muted-foreground hover:bg-muted md:hidden"
           aria-label="Back"
         >
           <ChevronLeft size={20} />
         </Link>
         <div className="min-w-0 flex-1">
           <div className="truncate font-semibold">{thread.title}</div>
-          <div className="truncate font-mono text-xs text-muted">{channel.path}</div>
+          <div className="truncate font-mono text-xs text-muted-foreground">{channel.path}</div>
         </div>
         <StatusBadge status={thread.status} />
       </header>
       <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto py-3">
-        {items?.map((item) => (
-          <ItemView key={item.id} item={item} />
+        {items?.map((item, i) => (
+          <ItemView key={item.id} item={item} lead={byUser(items[i - 1])} />
         ))}
-        {thread.status === 'working' && <Working />}
+        {thread.status === 'working' && <Working lead={byUser(items?.at(-1))} />}
       </div>
       <div className="p-3 pt-0">
         <Composer
@@ -322,7 +352,7 @@ export function NewThreadButton({ channelId }: { channelId: string }) {
     <Link
       to="/c/$channelId/new"
       params={{ channelId }}
-      className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-accent px-3.5 py-2 text-sm font-semibold text-accent-fg hover:opacity-90"
+      className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90"
     >
       <Plus size={16} />
       New Thread
@@ -339,13 +369,17 @@ export function NewThread({ channel }: { channel: Channel }) {
   const channelId = channel.id;
   return (
     <div>
-      <div className="mb-2 flex items-center gap-1.5 text-xs text-muted">
+      <div className="mb-2 flex items-center gap-1.5 text-xs text-muted-foreground">
         <FolderGit2 size={12} className="shrink-0" />
         <span className="min-w-0 flex-1 truncate">
-          New thread in <b className="text-fg">#{channel.name}</b>. Claude works right in{' '}
+          New thread in <b className="text-foreground">#{channel.name}</b>. Claude works right in{' '}
           <span className="font-mono">{channel.path}</span>.
         </span>
-        <Link to="/c/$channelId" params={{ channelId }} className="rounded px-1.5 py-0.5 hover:bg-soft hover:text-fg">
+        <Link
+          to="/c/$channelId"
+          params={{ channelId }}
+          className="rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground"
+        >
           Cancel
         </Link>
       </div>

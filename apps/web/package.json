@@ -9,10 +9,12 @@
   },
   "dependencies": {
     "@acocrew/shared": "workspace:*",
+    "@streamdown/code": "^2.0.0",
     "@tanstack/react-router": "^1.170.41",
     "lucide-react": "^1.50.0",
     "react": "^19.3.0",
-    "react-dom": "^19.3.0"
+    "react-dom": "^19.3.0",
+    "streamdown": "^2.7.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",

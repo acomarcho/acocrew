@@ -1,21 +1,30 @@
 @import 'tailwindcss';
 
-/* Components only use these color names, so a theme change is one edit to :root. */
+/* Streamdown (the markdown renderer for Claude's answers) ships Tailwind classes. Tailwind has to see them. */
+@source "../node_modules/streamdown/dist/*.js";
+@source "../node_modules/@streamdown/code/dist/*.js";
+
+/* We only have a light theme. Tailwind's `dark:` styles would otherwise follow the computer's dark mode, and
+   Streamdown uses them, which put light-on-light text in code blocks. Now they only apply under a `.dark` class. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Components only use these color names, so a theme change is one edit to :root.
+   The names follow shadcn/ui, because Streamdown expects them. */
 @theme inline {
-  --color-bg: var(--bg);
-  --color-fg: var(--fg);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
   --color-muted: var(--muted);
-  --color-line: var(--line);
-  --color-surface: var(--surface);
-  --color-soft: var(--soft);
-  --color-side: var(--side);
-  --color-side-fg: var(--side-fg);
-  --color-side-muted: var(--side-muted);
-  --color-side-hover: var(--side-hover);
-  --color-side-active: var(--side-active);
-  --color-side-active-fg: var(--side-active-fg);
-  --color-accent: var(--accent);
-  --color-accent-fg: var(--accent-fg);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-card: var(--card);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-muted: var(--sidebar-muted);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
 }
 
 html,
@@ -42,18 +51,25 @@ button {
 }
 
 :root {
-  --bg: #fbfaf7;
-  --fg: #26221c;
-  --muted: #8a8376;
-  --line: #e7e2d8;
-  --surface: #ffffff;
-  --soft: #f1ede4;
-  --side: #f3efe6;
-  --side-fg: #3a352c;
-  --side-muted: #948c7d;
-  --side-hover: #e9e3d6;
-  --side-active: #26221c;
-  --side-active-fg: #fbfaf7;
-  --accent: #d9622b;
-  --accent-fg: #ffffff;
+  --background: #fbfaf7;
+  --foreground: #26221c;
+  --muted: #f1ede4;
+  --muted-foreground: #8a8376;
+  --border: #e7e2d8;
+  --card: #ffffff;
+  --primary: #d9622b;
+  --primary-foreground: #ffffff;
+  --sidebar: #f3efe6;
+  --sidebar-foreground: #3a352c;
+  --sidebar-muted: #948c7d;
+  --sidebar-accent: #e9e3d6;
+  --sidebar-primary: #26221c;
+  --sidebar-primary-foreground: #fbfaf7;
+}
+
+/* Streamdown puts list markers inside the text, so a wrapped line starts under its bullet. Hang them instead. */
+[data-streamdown='ordered-list'],
+[data-streamdown='unordered-list'] {
+  list-style-position: outside;
+  padding-left: 1.5rem;
 }
