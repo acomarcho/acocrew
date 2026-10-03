@@ -79,7 +79,7 @@ To keep the door open: the queue, the permission wait and the fan-out each live 
 The repo is a monorepo: one git repo that holds several apps plus the code they share.
 
 ```
-apps/server      Node. Will run Claude, store events and serve the WebSocket.
+apps/server      Node. Runs Claude, stores events and serves the WebSocket.
 apps/web         The browser UI.
 packages/shared  Types and constants that both sides import.
 ```
@@ -115,24 +115,65 @@ Commands, from the repo root:
 | `pnpm check`     | Checks formatting and lint rules         |
 | `pnpm build`     | Builds the web app                       |
 
+## Decision 5: SQLite with Drizzle
+
+Everything is stored in one SQLite file on the server machine: `~/.acocrew/acocrew.db`. The code talks to it through Drizzle (a library that lets us describe tables in TypeScript) with the `better-sqlite3` driver.
+
+Why:
+
+- One machine, one file, nothing to install or run next to the server. We have no reason to want Postgres.
+- `better-sqlite3` answers right away instead of "later" (it is synchronous). That lets the server sign a browser up for a thread and read what is in the thread in one step, with nothing able to slip in between.
+
+Tables:
+
+| Table      | What it holds                                                                                   |
+| ---------- | ----------------------------------------------------------------------------------------------- |
+| `channels` | One row per repository: its name and folder path.                                               |
+| `threads`  | Title, model, reasoning level, status, and Claude's session id so a thread can be resumed.      |
+| `events`   | A numbered log per thread. Each row is one whole item: a chat bubble, a tool card, or an error. |
+
+The `events` log is only ever added to. A tool card is written twice (started, finished). When a thread is loaded, the newest row per item wins.
+
+How table changes work (migrations):
+
+1. Change `apps/server/src/schema.ts`.
+2. Run `pnpm --filter @acocrew/server db:generate`. It writes a new SQL file into `apps/server/drizzle/`. Commit it.
+3. Every time the server starts, it applies any SQL files that have not run yet. Nobody runs migrations by hand.
+
+T3 Code does the same "apply on start" thing, but with hand-written SQL files and Effect's own SQL tools, not Drizzle.
+
+## How one message travels
+
+1. The browser posts the message to `/api/threads` (new thread) or `/api/threads/<id>/messages` (reply).
+2. The server saves the user's bubble, then lines the message up behind any turn still running in that thread.
+3. If the thread has no Claude process, the server starts one in the repository folder (resuming the saved session if there is one) and pushes the message into its queue.
+4. The server reads Claude's messages until the turn ends and turns them into our own items (`apps/server/src/translate.ts`).
+5. Words still being written are sent to open browsers right away and not saved. Finished bubbles and tool cards are saved to `events`, then sent.
+6. The thread's status goes from Working to Done, or to Needs you if the turn failed.
+
+Everything the browser shows comes down the WebSocket. On connect it gets all channels and threads. When it opens a thread it gets that thread's items, then live updates. Requests only go up over HTTP.
+
+A Claude process is closed when the model or reasoning level changes, or after 10 minutes without a message. The next message starts a new one that resumes the same session.
+
 ## UI direction: the Inbox layout
 
 We mocked five layouts (Slack, Topics, Inbox, Board, Focus). Marcho likes the Inbox one, so `apps/web` now holds only that. The other four are still in git history, in commit `d98b9b7`.
 
 What it looks like: three columns, like an email app. Channels on the left, the thread list in the middle, the open thread on the right. On a phone it shows one column at a time.
 
-URLs: `/c/<channel>` for a channel, `/c/<channel>/t/<thread>` for a thread, and `/c/<channel>/new` to start one. The data behind them is still fake and lives in the browser's memory.
+URLs: `/c/<channel>` for a channel, `/c/<channel>/t/<thread>` for a thread, `/c/<channel>/new` to start one, and `/add` to add a repository.
 
 Rules of the UI:
 
-- A channel is one git repository.
+- A channel is one git repository. "Add repository" lets you pick a folder under the home folder of the server machine. Only folders that are git repositories can be added.
 - You cannot post a loose message in a channel. Every message starts a thread ("New Thread") or replies inside one.
-- Each thread gets its own worktree (its own copy of the repo on its own branch).
+- For now a thread works directly in the repository folder, on whatever branch it is on. The plan is for each thread to get its own worktree (its own copy of the repo on its own branch). That is not built yet.
 - The message box has a model picker and a reasoning picker. No access picker for now; threads always run with full access.
+
+Not built yet: logins (everyone posts as "You"), approval prompts, a stop button, removing a repository, and showing Claude's answers as formatted text (they show as plain text, so `**bold**` stays as typed).
 
 ## Not decided yet
 
-- Which database holds the event log (T3 uses local SQLite; a shared server may want Postgres).
 - How each thread's agent is kept away from other threads' files (sandboxing).
 - What approval rules non-technical users get by default.
 - Logins and who can see which thread.
