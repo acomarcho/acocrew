@@ -1,25 +1,22 @@
 // Building blocks for the Inbox screens.
-import { EFFORTS, MODELS, type Channel, type Item, type Status, type Thread } from '@acocrew/shared';
-import { code } from '@streamdown/code';
+import { ACCESS, EFFORTS, MODELS, type Access, type Channel, type NewMessage, type Status } from '@acocrew/shared';
 import { Link, useNavigate } from '@tanstack/react-router';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import {
   ArrowUp,
   Brain,
   Check,
   ChevronDown,
-  ChevronLeft,
   FolderGit2,
-  LoaderCircle,
   Menu,
   Plus,
+  ShieldCheck,
   Sparkles,
-  X,
+  Square,
 } from 'lucide-react';
-import { defaultRehypePlugins, Streamdown, type StreamdownProps } from 'streamdown';
 import { useApp } from './store';
 
-function Avatar({ agent }: { agent: boolean }) {
+export function Avatar({ agent }: { agent: boolean }) {
   return (
     <div
       className={`grid size-9 shrink-0 place-items-center rounded-lg font-semibold text-white ${agent ? 'bg-[#d97757]' : 'bg-indigo-500'}`}
@@ -31,17 +28,18 @@ function Avatar({ agent }: { agent: boolean }) {
 
 const STATUS: Record<Status, { label: string; text: string; dot: string }> = {
   working: { label: 'Working', text: 'text-amber-500 bg-amber-500/10', dot: 'bg-amber-500 animate-pulse' },
+  waiting: { label: 'Waiting', text: 'text-sky-500 bg-sky-500/10', dot: 'bg-sky-500' },
   needs: { label: 'Needs you', text: 'text-rose-500 bg-rose-500/10', dot: 'bg-rose-500' },
   done: { label: 'Done', text: 'text-emerald-500 bg-emerald-500/10', dot: 'bg-emerald-500' },
 };
-export const STATUS_ORDER: Status[] = ['needs', 'working', 'done'];
+export const STATUS_ORDER: Status[] = ['needs', 'working', 'waiting', 'done'];
 export const statusLabel = (s: Status) => STATUS[s].label;
 
 export function StatusDot({ status }: { status: Status }) {
   return <span className={`inline-block size-2 shrink-0 rounded-full ${STATUS[status].dot}`} />;
 }
 
-function StatusBadge({ status }: { status: Status }) {
+export function StatusBadge({ status }: { status: Status }) {
   return (
     <span
       className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ${STATUS[status].text}`}
@@ -90,9 +88,11 @@ type PickerProps = {
   options: Option[];
   onChange: (v: string) => void;
   menuClass?: string;
+  // On phones there is no room for every label, so some pickers show only their icon there.
+  iconOnPhone?: boolean;
 };
 
-function Picker({ icon, value, options, onChange, menuClass = 'left-0' }: PickerProps) {
+function Picker({ icon, value, options, onChange, menuClass = 'left-0', iconOnPhone }: PickerProps) {
   const [open, setOpen] = useState(false);
   return (
     <div className="relative">
@@ -102,7 +102,9 @@ function Picker({ icon, value, options, onChange, menuClass = 'left-0' }: Picker
         className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
       >
         {icon}
-        <span className="max-w-28 truncate sm:max-w-none">{options.find((o) => o.id === value)?.name}</span>
+        <span className={iconOnPhone ? 'hidden sm:inline' : 'max-w-24 truncate sm:max-w-none'}>
+          {options.find((o) => o.id === value)?.name}
+        </span>
         <ChevronDown size={14} />
       </button>
       {open && (
@@ -135,24 +137,38 @@ function Picker({ icon, value, options, onChange, menuClass = 'left-0' }: Picker
   );
 }
 
+// What the user picked for the next message: which model, how hard it thinks, and whether it asks first.
+export type Settings = Pick<NewMessage, 'model' | 'effort' | 'access'>;
+
 type ComposerProps = {
   placeholder: string;
-  model: string;
-  effort: string;
-  onModel: (v: string) => void;
-  onEffort: (v: string) => void;
+  settings: Settings;
+  onSettings: (settings: Settings) => void;
   onSend: (text: string) => Promise<unknown>;
+  // Send works with an empty box too (a picked answer to a question needs no typing).
+  canSendEmpty?: boolean;
+  // Given while Claude is doing something that can be stopped.
+  onStop?: () => void;
   autoFocus?: boolean;
 };
 
-function Composer({ placeholder, model, effort, onModel, onEffort, onSend, autoFocus }: ComposerProps) {
+export function Composer({
+  placeholder,
+  settings,
+  onSettings,
+  onSend,
+  canSendEmpty,
+  onStop,
+  autoFocus,
+}: ComposerProps) {
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
   const clean = text.trim();
+  const ready = Boolean(clean || canSendEmpty) && !sending;
   // The text stays in the box until the server has taken it, so a failed send loses nothing.
   const submit = async () => {
-    if (!clean || sending) return;
+    if (!ready) return;
     setSending(true);
     setError('');
     try {
@@ -182,166 +198,48 @@ function Composer({ placeholder, model, effort, onModel, onEffort, onSend, autoF
       <div className="flex items-center gap-0.5 px-1.5 pb-1.5">
         <Picker
           icon={<Sparkles size={14} className="text-primary" />}
-          value={model}
+          value={settings.model}
           options={MODELS}
-          onChange={onModel}
+          onChange={(model) => onSettings({ ...settings, model })}
         />
-        {/* nudged left on phones so the menu stays on screen */}
+        {/* nudged left on phones so the menus stay on screen */}
         <Picker
           icon={<Brain size={14} />}
-          value={effort}
+          value={settings.effort}
           options={EFFORTS}
-          onChange={onEffort}
+          onChange={(effort) => onSettings({ ...settings, effort })}
           menuClass="-left-20 sm:left-0"
+          iconOnPhone
+        />
+        <Picker
+          icon={<ShieldCheck size={14} />}
+          value={settings.access}
+          options={ACCESS}
+          onChange={(access) => onSettings({ ...settings, access: access as Access })}
+          menuClass="-left-32 sm:left-0"
+          iconOnPhone
         />
         <div className="flex-1" />
+        {onStop && (
+          <button
+            type="button"
+            onClick={onStop}
+            aria-label="Stop"
+            title="Stop Claude"
+            className="mr-1 grid size-8 place-items-center rounded-full bg-rose-500/10 text-rose-500 hover:bg-rose-500/20"
+          >
+            <Square size={13} fill="currentColor" />
+          </button>
+        )}
         <button
           type="button"
           onClick={() => void submit()}
-          disabled={!clean || sending}
+          disabled={!ready}
           aria-label="Send"
           className="grid size-8 place-items-center rounded-full bg-primary text-primary-foreground disabled:opacity-40"
         >
           <ArrowUp size={16} />
         </button>
-      </div>
-    </div>
-  );
-}
-
-// Both are made once, so a bubble that did not change is not drawn again while another one streams.
-const plugins = { code };
-// Claude reads files we do not control, and those could trick it into writing an image link that leaks data
-// the moment the browser loads it. So images from other sites are not loaded. Everything else is the default.
-type RehypePlugins = NonNullable<StreamdownProps['rehypePlugins']>;
-const [harden, hardenOptions] = defaultRehypePlugins.harden as [RehypePlugins[number], object];
-const rehypePlugins = Object.values({
-  ...defaultRehypePlugins,
-  harden: [harden, { ...hardenOptions, allowedImagePrefixes: [] }],
-}) as RehypePlugins;
-
-const clock = (at: number) => new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-
-const byUser = (item?: Item) => !item || (item.kind === 'message' && item.by === 'user');
-
-// One row of the chat. `lead` rows show who is talking; the rows under them belong to the same speaker.
-function Row({ agent, lead, at, children }: { agent: boolean; lead: boolean; at?: number; children: ReactNode }) {
-  return (
-    <div className={`flex gap-3 px-4 ${lead ? 'pt-2 pb-1' : 'py-1'}`}>
-      {lead ? <Avatar agent={agent} /> : <div className="w-9 shrink-0" />}
-      <div className="min-w-0 flex-1">
-        {lead && (
-          <div className="mb-1 flex items-baseline gap-2">
-            <span className="font-semibold">{agent ? 'Claude' : 'You'}</span>
-            {agent && <span className="rounded bg-primary/15 px-1.5 text-[11px] font-medium text-primary">Agent</span>}
-            {at && <span className="text-xs text-muted-foreground">{clock(at)}</span>}
-          </div>
-        )}
-        {children}
-      </div>
-    </div>
-  );
-}
-
-// Everything Claude does in a row (tools, answers, errors) sits under one "Claude" heading.
-function ItemView({ item, lead }: { item: Item; lead: boolean }) {
-  if (item.kind === 'message' && item.by === 'user') {
-    return (
-      <Row agent={false} lead at={item.at}>
-        <p className="leading-relaxed break-words whitespace-pre-wrap">{item.text}</p>
-      </Row>
-    );
-  }
-  return (
-    <Row agent lead={lead} at={item.at}>
-      {item.kind === 'tool' && (
-        <div className="flex items-center gap-2 rounded-md border border-border bg-muted px-2.5 py-1.5 text-xs">
-          {!item.done && <LoaderCircle size={13} className="shrink-0 animate-spin text-muted-foreground" />}
-          {item.done && !item.failed && <Check size={13} className="shrink-0 text-emerald-500" />}
-          {item.failed && <X size={13} className="shrink-0 text-rose-500" />}
-          <span className="font-medium">{item.name}</span>
-          <span className="truncate font-mono text-muted-foreground">{item.detail}</span>
-        </div>
-      )}
-      {item.kind === 'error' && (
-        <p className="rounded-md border border-rose-500/30 bg-rose-500/10 px-2.5 py-1.5 text-sm whitespace-pre-wrap text-rose-500">
-          {item.text}
-        </p>
-      )}
-      {item.kind === 'message' && (
-        <Streamdown className="leading-relaxed break-words" plugins={plugins} rehypePlugins={rehypePlugins}>
-          {item.text}
-        </Streamdown>
-      )}
-    </Row>
-  );
-}
-
-function Working({ lead }: { lead: boolean }) {
-  return (
-    <Row agent lead={lead}>
-      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-        <span>Working</span>
-        <span className="flex gap-1">
-          {[0, 150, 300].map((d) => (
-            <span
-              key={d}
-              className="size-1.5 animate-bounce rounded-full bg-muted-foreground"
-              style={{ animationDelay: `${d}ms` }}
-            />
-          ))}
-        </span>
-      </div>
-    </Row>
-  );
-}
-
-// The full chat for one thread.
-export function ThreadView({ thread, channel }: { thread: Thread; channel: Channel }) {
-  const { items, openThread, sendMessage } = useApp();
-  const [model, setModel] = useState(thread.model);
-  const [effort, setEffort] = useState(thread.effort);
-  const scroller = useRef<HTMLDivElement>(null);
-
-  useEffect(() => openThread(thread.id), [openThread, thread.id]);
-
-  useEffect(() => {
-    const el = scroller.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [items, thread.status]);
-
-  return (
-    <div className="flex h-full min-h-0 flex-col">
-      <header className="flex items-center gap-2 border-b border-border px-3 py-2.5">
-        <Link
-          to="/c/$channelId"
-          params={{ channelId: channel.id }}
-          className="-ml-1 rounded-md p-1.5 text-muted-foreground hover:bg-muted md:hidden"
-          aria-label="Back"
-        >
-          <ChevronLeft size={20} />
-        </Link>
-        <div className="min-w-0 flex-1">
-          <div className="truncate font-semibold">{thread.title}</div>
-          <div className="truncate font-mono text-xs text-muted-foreground">{channel.path}</div>
-        </div>
-        <StatusBadge status={thread.status} />
-      </header>
-      <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto py-3">
-        {items?.map((item, i) => (
-          <ItemView key={item.id} item={item} lead={byUser(items[i - 1])} />
-        ))}
-        {thread.status === 'working' && <Working lead={byUser(items?.at(-1))} />}
-      </div>
-      <div className="p-3 pt-0">
-        <Composer
-          placeholder="Reply in thread"
-          model={model}
-          effort={effort}
-          onModel={setModel}
-          onEffort={setEffort}
-          onSend={(text) => sendMessage(thread.id, { text, model, effort })}
-        />
       </div>
     </div>
   );
@@ -364,8 +262,7 @@ export function NewThreadButton({ channelId }: { channelId: string }) {
 export function NewThread({ channel }: { channel: Channel }) {
   const { createThread } = useApp();
   const navigate = useNavigate();
-  const [model, setModel] = useState(MODELS[0].id);
-  const [effort, setEffort] = useState('high');
+  const [settings, setSettings] = useState<Settings>({ model: MODELS[0].id, effort: 'high', access: 'full' });
   const channelId = channel.id;
   return (
     <div>
@@ -386,12 +283,10 @@ export function NewThread({ channel }: { channel: Channel }) {
       <Composer
         autoFocus
         placeholder="What should Claude work on?"
-        model={model}
-        effort={effort}
-        onModel={setModel}
-        onEffort={setEffort}
+        settings={settings}
+        onSettings={setSettings}
         onSend={async (text) => {
-          const thread = await createThread({ channelId, text, model, effort });
+          const thread = await createThread({ channelId, text, ...settings });
           void navigate({ to: '/c/$channelId/t/$threadId', params: { channelId, threadId: thread.id }, replace: true });
         }}
       />

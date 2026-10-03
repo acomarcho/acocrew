@@ -1,6 +1,11 @@
 // Types and constants used by both the web app and the server.
 
-export type Status = 'working' | 'needs' | 'done';
+// working: Claude is in a turn. waiting: Claude is idle but background work it started is still running.
+// needs: someone has to act (an approval, a question, or a failed turn). done: nothing going on.
+export type Status = 'working' | 'waiting' | 'needs' | 'done';
+
+// full: Claude acts without asking. ask: Claude asks before anything that is not just reading.
+export type Access = 'full' | 'ask';
 
 // A channel is one git repository on the server machine.
 export type Channel = { id: string; name: string; path: string };
@@ -11,15 +16,44 @@ export type Thread = {
   title: string;
   model: string;
   effort: string;
+  access: Access;
   status: Status;
   updatedAt: number;
+  // What Claude is waiting on in the background right now, in its own words. Not stored.
+  tasks: string[];
 };
 
+// A multiple-choice question Claude asks the user.
+export type Question = {
+  question: string;
+  header: string;
+  multiSelect: boolean;
+  options: { label: string; description: string }[];
+};
+
+export type Todo = { id: string; subject: string; status: string };
+
 // One thing shown in a thread. `at` is a timestamp in milliseconds.
-export type Item =
-  | { id: string; kind: 'message'; by: 'user' | 'claude'; text: string; at: number }
-  | { id: string; kind: 'tool'; name: string; detail: string; done: boolean; failed: boolean; at: number }
-  | { id: string; kind: 'error'; text: string; at: number };
+// `parent` is set on things a subagent did: it is the id of the tool card that started that subagent.
+export type Item = { id: string; at: number; parent?: string } & (
+  | { kind: 'message'; by: 'user' | 'claude'; text: string }
+  | {
+      kind: 'tool';
+      name: string;
+      detail: string;
+      input: string;
+      output: string;
+      done: boolean;
+      failed: boolean;
+      endAt?: number;
+      // Set when Claude had to ask before running this tool.
+      ask?: 'pending' | 'approved' | 'declined';
+      questions?: Question[];
+    }
+  | { kind: 'error'; text: string }
+  | { kind: 'notice'; text: string }
+  | { kind: 'todos'; todos: Todo[] }
+);
 
 export const MODELS = [
   { id: 'claude-opus-5-5', name: 'Claude Opus 5.5', hint: 'Most capable' },
@@ -32,6 +66,11 @@ export const EFFORTS = [
   { id: 'medium', name: 'Medium', hint: 'Everyday work' },
   { id: 'high', name: 'High', hint: 'Thinks harder' },
   { id: 'max', name: 'Max', hint: 'Slowest, most careful' },
+];
+
+export const ACCESS = [
+  { id: 'full', name: 'Full access', hint: 'Claude acts without asking' },
+  { id: 'ask', name: 'Ask first', hint: 'Asks before changing things' },
 ];
 
 // What the server pushes over the WebSocket. `item` carries the whole item, so getting it twice is harmless.
@@ -50,8 +89,14 @@ export type ClientEvent = { type: 'open'; threadId: string };
 export type Folder = { name: string; path: string; isRepo: boolean };
 export type FolderList = { path: string; parent: string | null; folders: Folder[] };
 
-export type NewThread = { channelId: string; text: string; model: string; effort: string };
-export type NewMessage = { text: string; model: string; effort: string };
+export type NewMessage = { text: string; model: string; effort: string; access: Access };
+export type NewThread = NewMessage & { channelId: string };
+
+// The user's reply to an approval prompt or a question.
+// `always` is a yes that also stops Claude asking about this kind of action. `cancel` is a no that also ends
+// Claude's turn. `answers` maps each question to what the user picked or typed.
+export const DECISIONS = ['approve', 'always', 'decline', 'cancel'] as const;
+export type Answer = { toolId: string; decision: (typeof DECISIONS)[number]; answers?: Record<string, string> };
 
 export const SERVER_PORT = 5274;
 export const HEALTH_PATH = '/api/health';

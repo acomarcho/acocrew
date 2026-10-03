@@ -1,6 +1,6 @@
 import { createFileRoute, Navigate } from '@tanstack/react-router';
 import { useApp } from '../store';
-import { ThreadView } from '../ui';
+import { ThreadView } from '../thread';
 
 export const Route = createFileRoute('/c/$channelId/t/$threadId')({ component: OpenThread });
 

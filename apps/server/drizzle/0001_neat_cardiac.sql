@@ -1,0 +1,1 @@
+ALTER TABLE `threads` ADD `access` text DEFAULT 'full' NOT NULL;

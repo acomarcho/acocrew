@@ -1,5 +1,6 @@
 import {
   WS_PATH,
+  type Answer,
   type Channel,
   type ClientEvent,
   type FolderList,
@@ -126,8 +127,21 @@ export function useAppState() {
   };
 
   const sendMessage = (threadId: string, body: NewMessage) => request(`/api/threads/${threadId}/messages`, body);
+  const answer = (threadId: string, body: Answer) => request(`/api/threads/${threadId}/answers`, body);
+  const stopThread = (threadId: string) => request(`/api/threads/${threadId}/stop`, {});
 
-  return { ...state, navOpen, setNavOpen, openThread, listFolders, addChannel, createThread, sendMessage };
+  return {
+    ...state,
+    navOpen,
+    setNavOpen,
+    openThread,
+    listFolders,
+    addChannel,
+    createThread,
+    sendMessage,
+    answer,
+    stopThread,
+  };
 }
 
 export type App = ReturnType<typeof useAppState>;

@@ -45,7 +45,7 @@ The patterns we take from T3 Code:
 3. **A permission prompt is a paused function call.** `canUseTool` creates a promise, stores it under a request id, and waits. The UI shows the question. The answer resolves the promise.
 4. **Number everything, then fan out.** Every event is saved to a log and gets a number that only goes up. After saving, it is sent to every device subscribed to that thread over a WebSocket.
 5. **Late joiners get a snapshot plus the rest.** A device that opens a thread mid-turn gets the current state stamped with a number, then only the events after that number. The server starts listening for that device first and takes the snapshot second, so nothing falls in the gap.
-6. **One message at a time per thread.** Several people can send to the same thread. Messages are handled in order through a per-thread queue.
+6. **Messages go straight in.** Several people can send to the same thread. A message is handed to Claude right away. If Claude is busy it picks the message up when it can, sometimes inside the turn that is already running.
 7. **Stop and resume.** Stop interrupts and closes the Claude process. The next message starts a new process that resumes the same session.
 
 Sign-in: the central machine uses its own Claude Code login, the same way a shared T3 Code machine would. No separate organization API key.
@@ -145,15 +145,59 @@ T3 Code does the same "apply on start" thing, but with hand-written SQL files an
 ## How one message travels
 
 1. The browser posts the message to `/api/threads` (new thread) or `/api/threads/<id>/messages` (reply).
-2. The server saves the user's bubble, then lines the message up behind any turn still running in that thread.
-3. If the thread has no Claude process, the server starts one in the repository folder (resuming the saved session if there is one) and pushes the message into its queue.
-4. The server reads Claude's messages until the turn ends and turns them into our own items (`apps/server/src/translate.ts`).
-5. Words still being written are sent to open browsers right away and not saved. Finished bubbles and tool cards are saved to `events`, then sent.
-6. The thread's status goes from Working to Done, or to Needs you if the turn failed.
+2. The server saves the user's bubble. If the thread has no Claude process, it starts one in the repository folder (resuming the saved session if there is one). Then it pushes the message into that process's queue.
+3. Separately, the server listens to each Claude process for as long as it lives, and turns everything Claude says into our own items (`apps/server/src/translate.ts`).
+4. Words still being written are sent to open browsers right away and not saved. Finished bubbles and tool cards are saved to `events`, then sent.
 
 Everything the browser shows comes down the WebSocket. On connect it gets all channels and threads. When it opens a thread it gets that thread's items, then live updates. Requests only go up over HTTP.
 
-A Claude process is closed when the model or reasoning level changes, or after 10 minutes without a message. The next message starts a new one that resumes the same session.
+## Decision 6: Always listen, and let Claude's own signals set the status
+
+The first version read Claude's output only right after a user message, and assumed one message gives one answer. That is wrong, and it showed in a real thread: answers appeared one step late, and Claude changed things on a server while the thread said Done. Two things break the assumption:
+
+- Claude starts turns on its own. When background work it started finishes (a long command, a subagent), it is told and reacts.
+- A message sent while Claude is busy can be folded into the turn already running, so two messages can get one answer.
+
+So the server does not count messages and answers. It listens all the time and works the status out from three signals in Claude's stream:
+
+| Signal                                                 | Meaning                                        |
+| ------------------------------------------------------ | ---------------------------------------------- |
+| The main agent says something, or background work ends | A turn is on, until the next `result`          |
+| `result`                                               | That turn is over                              |
+| `background_tasks_changed`                             | The full list of background work still running |
+
+| Status    | When                                                                                      |
+| --------- | ----------------------------------------------------------------------------------------- |
+| Working   | A turn is on                                                                              |
+| Waiting   | No turn, but background work is still running. The thread lists what Claude is waiting on |
+| Needs you | Claude is waiting for a yes or an answer, or the last turn failed                         |
+| Done      | Nothing going on                                                                          |
+
+We checked the SDK for a ready-made "running / idle" signal. It exists in the type definitions (`session_state_changed`) but was not sent in a live run, so we do not rely on it.
+
+A Claude process is closed after 10 minutes with nothing going on (no turn, no background work, no open question). The model and reasoning level are fixed when a process starts, so a change needs a new process. That would kill whatever the old one is doing, so it only happens when the old one has nothing going on. Otherwise the change waits. The next message to a closed process starts a new one that resumes the same session.
+
+Other rules that follow from listening all the time:
+
+- **Tool cards.** A card keeps what went in and what came out. A tool that only launches background work keeps its card open until that work ends.
+- **Subagents.** What a subagent does is saved with a pointer to the card that started it, and shown inside that card.
+- **Stop.** Stop asks Claude to wind down, then closes the process. That also kills its background work. Cards that were still open are marked failed. The next message resumes the session.
+
+## Decision 7: Approvals are our own yes or no
+
+Claude always runs in its normal mode, where it asks before any action that is not plainly safe (reading files never asks). It asks through a function of ours, `canUseTool`:
+
+- **Full access** (the default): we say yes right away.
+- **Ask first**: a panel pinned above the message box shows what Claude wants to do, with Approve and Decline. The thread goes to Needs you until someone answers. A "..." menu holds two rarer choices:
+  - **Always allow this session** is a yes that also stops Claude asking about that kind of action. Which actions it covers is Claude's own suggestion, and it can be wider than it sounds: after one file edit it covers all file edits, and also shell commands that only move or delete files in the repository. It lasts as long as that Claude process lives, so after a restart Claude asks again.
+  - **Cancel** is a no that also ends Claude's turn.
+- **Claude's own questions** (multiple choice) come through the same function and show in the same spot, in both modes. One question at a time. Clicking a choice moves to the next question, number keys pick a choice, and the message box doubles as "type your own answer". On the last question you press Send.
+
+This mirrors T3 Code, with one difference: when Claude suggests no rule for "Always allow this session", T3 allows that whole tool for the session. We treat it as a single yes.
+
+Access is picked in the message box and applies from the next message on. Anyone looking at the thread can answer a prompt.
+
+Tests replay recordings of real Claude sessions (`apps/server/src/fixtures/`). `record.ts` in that folder makes a new one.
 
 ## UI direction: the Inbox layout
 
@@ -168,15 +212,14 @@ Rules of the UI:
 - A channel is one git repository. "Add repository" lets you pick a folder under the home folder of the server machine. Only folders that are git repositories can be added.
 - You cannot post a loose message in a channel. Every message starts a thread ("New Thread") or replies inside one.
 - For now a thread works directly in the repository folder, on whatever branch it is on. The plan is for each thread to get its own worktree (its own copy of the repo on its own branch). That is not built yet.
-- The message box has a model picker and a reasoning picker. No access picker for now; threads always run with full access.
+- The message box has a model picker, a reasoning picker and an access picker (Full access or Ask first). While Claude is doing something, it also has a Stop button.
 
 - Claude's answers are shown as formatted text (bold, lists, tables, code blocks with colors and a copy button). We use Streamdown for this, a markdown renderer made for AI chat: it copes with half-written formatting while the answer is still streaming in. Your own messages stay plain text, so what you type shows exactly as typed.
 - Color names in the CSS follow shadcn/ui (`background`, `foreground`, `muted`, `border`, `primary` and so on), because Streamdown expects those names. The colors themselves are set once in `:root` in `apps/web/src/index.css`.
 
-Not built yet: logins (everyone posts as "You"), approval prompts, a stop button, removing a repository, diagrams (mermaid), and showing images that live in the repository.
+Not built yet: logins (everyone posts as "You"), removing a repository, diagrams (mermaid), and showing images that live in the repository.
 
 ## Not decided yet
 
 - How each thread's agent is kept away from other threads' files (sandboxing).
-- What approval rules non-technical users get by default.
 - Logins and who can see which thread.

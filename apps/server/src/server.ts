@@ -1,4 +1,14 @@
-import { EFFORTS, HEALTH_PATH, MODELS, WS_PATH, type ClientEvent, type NewMessage } from '@acocrew/shared';
+import {
+  ACCESS,
+  DECISIONS,
+  EFFORTS,
+  HEALTH_PATH,
+  MODELS,
+  WS_PATH,
+  type Answer,
+  type ClientEvent,
+  type NewMessage,
+} from '@acocrew/shared';
 import { serve, upgradeWebSocket } from '@hono/node-server';
 import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
@@ -14,11 +24,13 @@ import { channels, threads } from './schema.ts';
 // `home` is the only folder tree that repositories can be picked from.
 export type Deps = { db: Db; query: QueryFn; home: string };
 
-// The text, model and reasoning level of a message, or null if any of them is not usable.
+// The parts of a message, or null if any of them is not usable.
 function readMessage(body: Partial<NewMessage>): NewMessage | null {
   const text = typeof body.text === 'string' ? body.text.trim() : '';
-  const known = MODELS.some((m) => m.id === body.model) && EFFORTS.some((e) => e.id === body.effort);
-  return text && known ? { text, model: body.model!, effort: body.effort! } : null;
+  const { model, effort, access } = body;
+  const known = (list: { id: string }[], id?: string) => list.some((option) => option.id === id);
+  if (!text || !known(MODELS, model) || !known(EFFORTS, effort) || !known(ACCESS, access)) return null;
+  return { text, model: model!, effort: effort!, access: access! };
 }
 
 export function createApp({ db, query, home }: Deps) {
@@ -64,7 +76,7 @@ export function createApp({ db, query, home }: Deps) {
       .where(eq(channels.id, String(body.channelId)))
       .get();
     if (!message || !channel)
-      return c.json({ error: 'Needs a channel, a message, a model and a reasoning level.' }, 400);
+      return c.json({ error: 'Needs a channel, a message, a model, a reasoning level and an access level.' }, 400);
     const now = Date.now();
     const row = {
       id: randomUUID(),
@@ -72,11 +84,12 @@ export function createApp({ db, query, home }: Deps) {
       title: message.text.split('\n')[0].slice(0, 70),
       model: message.model,
       effort: message.effort,
+      access: message.access,
       status: 'working' as const,
       createdAt: now,
       updatedAt: now,
     };
-    const thread = db.insert(threads).values(row).returning(threadCols).get();
+    const thread = runner.withTasks(db.insert(threads).values(row).returning(threadCols).get());
     hub.toAll({ type: 'thread', thread });
     runner.send(thread.id, message);
     return c.json(thread);
@@ -89,8 +102,21 @@ export function createApp({ db, query, home }: Deps) {
       .from(threads)
       .where(eq(threads.id, c.req.param('id')))
       .get();
-    if (!message || !thread) return c.json({ error: 'Needs a thread, a message, a model and a reasoning level.' }, 400);
+    if (!message || !thread)
+      return c.json({ error: 'Needs a thread, a message, a model, a reasoning level and an access level.' }, 400);
     runner.send(thread.id, message);
+    return c.json({ ok: true });
+  });
+
+  app.post('/api/threads/:id/answers', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Answer;
+    if (!DECISIONS.includes(body.decision)) return c.json({ error: 'Not an answer.' }, 400);
+    const taken = runner.answer(c.req.param('id'), body);
+    return taken ? c.json({ ok: true }) : c.json({ error: 'Claude is no longer waiting for this answer.' }, 409);
+  });
+
+  app.post('/api/threads/:id/stop', async (c) => {
+    await runner.stop(c.req.param('id'));
     return c.json({ ok: true });
   });
 
@@ -99,15 +125,15 @@ export function createApp({ db, query, home }: Deps) {
     upgradeWebSocket(() => ({
       onOpen(_, ws) {
         hub.add(ws);
-        hub.send(ws, { type: 'hello', channels: listChannels(db), threads: listThreads(db) });
+        const threads = listThreads(db).map(runner.withTasks);
+        hub.send(ws, { type: 'hello', channels: listChannels(db), threads });
       },
       // The browser says which thread it is looking at. It is signed up for that thread's events and gets
       // everything so far in the same step, so nothing can slip in between.
       onMessage(message, ws) {
         const { threadId } = JSON.parse(String(message.data)) as ClientEvent;
         hub.open(ws, threadId);
-        const live = runner.live(threadId);
-        const items = [...loadItems(db, threadId), ...(live ? [live] : [])].sort((a, b) => a.at - b.at);
+        const items = [...loadItems(db, threadId), ...runner.live(threadId)].sort((a, b) => a.at - b.at);
         hub.send(ws, { type: 'items', threadId, items });
       },
       onClose: (_, ws) => void hub.remove(ws),

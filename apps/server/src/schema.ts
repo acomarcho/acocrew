@@ -1,5 +1,5 @@
 // Database tables. After changing this file, run `pnpm db:generate` to create a migration.
-import type { Item, Status } from '@acocrew/shared';
+import type { Access, Item, Status } from '@acocrew/shared';
 import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 export const channels = sqliteTable('channels', {
@@ -17,6 +17,7 @@ export const threads = sqliteTable('threads', {
   title: text('title').notNull(),
   model: text('model').notNull(),
   effort: text('effort').notNull(),
+  access: text('access').$type<Access>().notNull().default('full'),
   status: text('status').$type<Status>().notNull(),
   // Claude's own id for the conversation. Lets a new Claude process pick up where the last one stopped.
   sessionId: text('session_id'),
