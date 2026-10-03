@@ -155,7 +155,7 @@ function ItemView({ item, lead, nested }: { item: Item; lead: boolean; nested?: 
             />
           </a>
         ))}
-        <p className="leading-relaxed break-words whitespace-pre-wrap">{item.text}</p>
+        <p className="break-words whitespace-pre-wrap">{item.text}</p>
       </Row>
     );
   }
@@ -174,7 +174,7 @@ function ItemView({ item, lead, nested }: { item: Item; lead: boolean; nested?: 
         </p>
       )}
       {item.kind === 'message' && (
-        <Streamdown className="leading-relaxed break-words" plugins={plugins} rehypePlugins={rehypePlugins}>
+        <Streamdown className="space-y-2 break-words" plugins={plugins} rehypePlugins={rehypePlugins}>
           {item.text}
         </Streamdown>
       )}

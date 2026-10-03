@@ -73,3 +73,15 @@ button {
   list-style-position: outside;
   padding-left: 1.5rem;
 }
+
+/* Streamdown's own spacing is made for long documents. In a chat it reads too airy, so it is tightened. */
+[data-streamdown='list-item'] {
+  padding-block: 0;
+}
+[data-streamdown^='heading-'] {
+  margin-top: 0.75rem;
+  margin-bottom: 0.25rem;
+}
+[data-streamdown='horizontal-rule'] {
+  margin-block: 0.75rem;
+}
