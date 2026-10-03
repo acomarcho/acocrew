@@ -12,7 +12,7 @@ function StartThread() {
   return (
     <div className="flex h-full flex-col justify-end p-3 md:justify-center md:p-10">
       <div className="mx-auto w-full max-w-2xl">
-        <NewThread channel={channel} />
+        <NewThread key={channel.id} channel={channel} />
       </div>
     </div>
   );

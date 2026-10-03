@@ -2,6 +2,7 @@ import {
   MODELS,
   type Access,
   type Answer,
+  type Command,
   type Item,
   type NewMessage,
   type Status,
@@ -21,7 +22,11 @@ import { createTranslator, nextAt, wasAborted, type Out } from './translate.ts';
 export type QueryFn = (params: {
   prompt: AsyncIterable<SDKUserMessage>;
   options: Options;
-}) => AsyncIterable<SDKMessage> & { close(): void; interrupt(): Promise<unknown> };
+}) => AsyncIterable<SDKMessage> & {
+  close(): void;
+  interrupt(): Promise<unknown>;
+  supportedCommands(): Promise<{ name: string; description: string; argumentHint: string; builtin?: boolean }[]>;
+};
 
 type Tool = Extract<Item, { kind: 'tool' }>;
 
@@ -52,6 +57,19 @@ type Session = {
 const IDLE_MS = 10 * 60_000;
 // How long Stop waits for Claude to wind down politely before the process is closed anyway.
 const INTERRUPT_MS = 3000;
+
+// How long the answer to "what can Claude run in this folder" is kept before Claude is asked again.
+const COMMANDS_MS = 60_000;
+
+// Commands Claude offers that have no place in a chat shared by a team. Some only change how a terminal looks
+// or works. Some change settings that our own pickers or the server machine's Claude account own (`/config`
+// writes to that account's settings file). Some cut the thread off from its conversation, or are internal.
+const HIDDEN = new Set(
+  `color doctor focus heapdump reload-plugins
+  advisor auto-mode-setup autocompact config design design-consent design-revoke effort extra-usage fast import mcp
+  model output-style usage-credits
+  agents clear rename __remote-workflow workflow-launch-exec`.split(/\s+/),
+);
 
 // What a Claude process is started with. These are fixed for as long as the process lives.
 function launchOptions({ model, effort, context, fast }: NewMessage) {
@@ -304,6 +322,29 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images) {
     if (session) kill(session);
   }
 
+  // Asks Claude itself, so the list follows Claude's own rules: which folders skills come from, which one wins
+  // when two share a name, and which are for Claude only. The process is never sent a message.
+  async function ask(folder: string): Promise<Command[]> {
+    const input = queue<SDKUserMessage>();
+    const asked = query({ prompt: input, options: { cwd: folder } });
+    try {
+      const all = await asked.supportedCommands();
+      return all
+        .filter((command) => !HIDDEN.has(command.name))
+        .map(({ name, description, argumentHint, builtin }) => ({
+          name,
+          description,
+          hint: argumentHint,
+          // Everything Claude does not ship with is a skill: from the folder, the home folder or a plugin.
+          skill: !builtin,
+        }));
+    } finally {
+      input.close();
+      asked.close();
+    }
+  }
+  const asked = new Map<string, { at: number; list: Promise<Command[]> }>();
+
   // Threads that were in the middle of something when the server last stopped.
   for (const { id, status } of db.select(threadCols).from(threads).where(ne(threads.status, 'done')).all()) {
     const interrupted = status === 'working' || status === 'waiting';
@@ -318,6 +359,17 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images) {
 
   return {
     withTasks,
+
+    // What a message can ask Claude to run with `/name` when Claude works in this folder.
+    commands(folder: string) {
+      const known = asked.get(folder);
+      if (known && Date.now() - known.at < COMMANDS_MS) return known.list;
+      const list = ask(folder);
+      asked.set(folder, { at: Date.now(), list });
+      // A failed try is not kept, so the next request asks again.
+      list.catch(() => asked.delete(folder));
+      return list;
+    },
 
     // Saves the user's message and hands it to Claude. If Claude is busy, it picks the message up when it can.
     send(threadId: string, message: NewMessage) {

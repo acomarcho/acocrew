@@ -20,6 +20,7 @@ import { createContext, useContext, useEffect, useRef, useState, type ReactNode 
 import { defaultRehypePlugins, Streamdown, type StreamdownProps } from 'streamdown';
 import { imageUrl } from './images';
 import { ApprovalPanel, isAsking, QuestionPanel, useQuestions } from './pending';
+import { useCommands } from './commands';
 import { useApp } from './store';
 import { Avatar, Composer, StatusBadge, type Settings } from './ui';
 
@@ -265,6 +266,7 @@ function Todos({ todos }: { todos: Todo[] }) {
 // The full chat for one thread.
 export function ThreadView({ thread, channel }: { thread: Thread; channel: Channel }) {
   const { items, openThread, sendMessage, stopThread, answer } = useApp();
+  const commands = useCommands(`thread=${thread.id}`);
   // Only what this person changed and has not sent yet. The rest follows the thread, so a teammate's change
   // shows up here and is not undone by the next reply.
   const [picked, setPicked] = useState<Partial<Settings>>({});
@@ -344,6 +346,7 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
               const changed = Object.entries(next).filter(([key, value]) => thread[key as keyof Settings] !== value);
               setPicked(Object.fromEntries(changed));
             }}
+            commands={commands}
             canSendEmpty={questions?.canSend}
             textOnly={Boolean(questions)}
             onSend={async (text, images) => {

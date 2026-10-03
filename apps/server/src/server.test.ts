@@ -1,8 +1,10 @@
 import {
+  COMMANDS_PATH,
   HEALTH_PATH,
   WS_PATH,
   type Answer,
   type Channel,
+  type Command,
   type FolderList,
   type Item,
   type ServerEvent,
@@ -38,6 +40,11 @@ const recording = (name: string): Line[] =>
 const TWO_TURNS = recording('two-turns');
 const SESSION = (TWO_TURNS[1] as SDKMessage).session_id;
 
+// Part of what a real Claude said it can run in a repository with skills of its own: three of the repository's
+// skills (`broken` has a skill file with no header, `ship` is an old-style command file), one from the home
+// folder that the repository also has under the same name (`concise-mode`), one from a plugin, and built-ins.
+const COMMANDS = JSON.parse(readFileSync(new URL('./fixtures/commands.json', import.meta.url), 'utf8'));
+
 // A stand-in for Claude that plays a recording back. Like the real thing it waits for a user message only
 // where the recording had one, asks for permission where the recording did, and otherwise talks on its own.
 function fakeClaude(script: Line[]) {
@@ -47,6 +54,8 @@ function fakeClaude(script: Line[]) {
   const said: SDKUserMessage['message']['content'][] = [];
   const holds: { before: (msg: SDKMessage) => boolean; released: Promise<void> }[] = [];
   const releases: (() => void)[] = [];
+  // Set to make Claude fail the next time it is asked what it can run.
+  let listing: Error | undefined;
   let closed = 0;
   let interrupted = 0;
   let abandoned = 0;
@@ -114,6 +123,12 @@ function fakeClaude(script: Line[]) {
         // A killed process never finishes its turn. The next one starts at the next user message.
         while (script[pos] && !('_user' in script[pos])) pos++;
       },
+      async supportedCommands() {
+        const failure = listing;
+        listing = undefined;
+        if (failure) throw failure;
+        return COMMANDS;
+      },
     });
   };
 
@@ -131,6 +146,7 @@ function fakeClaude(script: Line[]) {
     decisions,
     said,
     pause,
+    failListing: () => void (listing = new Error('Claude is not logged in')),
     closed: () => closed,
     interrupted: () => interrupted,
     abandoned: () => abandoned,
@@ -841,6 +857,71 @@ test('a Claude process with nothing to do for ten minutes is closed, and the nex
   await tab.status(thread.id, 'working');
   await tab.status(thread.id, 'done');
   expect(claude.calls[1]).toMatchObject({ resume: SESSION });
+});
+
+const commands = (from: string) => fetch(url(`${COMMANDS_PATH}?${from}`));
+const names = (list: Command[], skill: boolean) => list.filter((c) => c.skill === skill).map((c) => c.name);
+
+test('the message box is offered what Claude says it can run where the thread works', async () => {
+  const tab = await connect();
+  const channel = await addChannel(blog);
+  const res = await post('/api/threads', { channelId: channel.id, text: 'make notes', worktree: true, ...HAIKU });
+  const thread = (await res.json()) as Thread;
+  await tab.status(thread.id, 'done');
+
+  const list = (await (await commands(`thread=${thread.id}`)).json()) as Command[];
+  // Skills come from the repository, the home folder and plugins. Claude picked them, so a skill only Claude
+  // may start is not there and a name used twice is there once.
+  expect(names(list, true)).toEqual(['release-notes', 'concise-mode', 'broken', 'ship', 'figma:figma-use']);
+  // What only makes sense in a terminal, or would change the shared machine's settings, is left out.
+  expect(names(list, false)).toEqual(['code-review', 'simplify', 'compact', 'context', 'usage', 'init']);
+  expect(list[0]).toEqual({
+    name: 'release-notes',
+    description: 'Write release notes for the shop from the latest commits. (project)',
+    hint: '[version]',
+    skill: true,
+  });
+
+  // Claude was asked in the thread's own worktree, by a process that was closed again without a message.
+  expect(claude.calls.map((call) => call.cwd)).toEqual([thread.path, thread.path]);
+  expect(claude.said).toHaveLength(1);
+  expect(claude.closed()).toBe(1);
+  // The thread's own process was left alone.
+  await say(thread, 'what is in them?');
+  await tab.status(thread.id, 'working');
+  await tab.status(thread.id, 'done');
+  expect(claude.calls).toHaveLength(2);
+});
+
+test('before a thread exists the repository folder is asked, and the answer is kept for a minute', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  const channel = await addChannel(blog);
+  const first = await (await commands(`channel=${channel.id}`)).json();
+  expect(claude.calls.map((call) => call.cwd)).toEqual([blog]);
+  expect(first).toHaveLength(11);
+
+  // Two tabs asking at once, or the same one again soon after, do not start more Claude processes.
+  const again = await Promise.all([commands(`channel=${channel.id}`), commands(`channel=${channel.id}`)]);
+  expect(await again[0].json()).toEqual(first);
+  expect(claude.calls).toHaveLength(1);
+
+  // Skills change on disk, so after a minute Claude is asked again.
+  vi.advanceTimersByTime(60_000);
+  await commands(`channel=${channel.id}`);
+  expect(claude.calls).toHaveLength(2);
+  expect(claude.closed()).toBe(2);
+});
+
+test('when Claude cannot say what it can run, the request fails and the next one asks again', async () => {
+  const channel = await addChannel();
+  claude.failListing();
+  expect((await commands(`channel=${channel.id}`)).status).toBe(500);
+  expect(claude.closed()).toBe(1);
+  expect(await (await commands(`channel=${channel.id}`)).json()).toHaveLength(11);
+
+  expect((await commands('channel=nope')).status).toBe(404);
+  expect((await commands('thread=nope')).status).toBe(404);
+  expect((await commands('')).status).toBe(404);
 });
 
 const PNG = readFileSync(new URL('./fixtures/image.png', import.meta.url));

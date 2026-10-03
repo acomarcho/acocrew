@@ -1,5 +1,6 @@
 import {
   ACCESS,
+  COMMANDS_PATH,
   CONTEXTS,
   DECISIONS,
   EFFORTS,
@@ -157,6 +158,23 @@ export function createApp({ db, query, home, images, worktrees, web }: Deps) {
   app.post('/api/threads/:id/stop', async (c) => {
     await runner.stop(c.req.param('id'));
     return c.json({ ok: true });
+  });
+
+  // What the message box suggests after a `/`: what Claude can run where the thread works, or in the
+  // channel's repository for a thread that has not been started yet.
+  app.get(COMMANDS_PATH, async (c) => {
+    const thread = db
+      .select()
+      .from(threads)
+      .where(eq(threads.id, c.req.query('thread') ?? ''))
+      .get();
+    const channel = db
+      .select()
+      .from(channels)
+      .where(eq(channels.id, thread?.channelId ?? c.req.query('channel') ?? ''))
+      .get();
+    if (!channel) return c.json({ error: 'Needs a thread or a channel.' }, 404);
+    return c.json(await runner.commands(thread?.path ?? channel.path));
   });
 
   // The browser sends one image as the whole request, and puts the id it gets back in the message.

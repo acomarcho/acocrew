@@ -132,7 +132,12 @@ export type NewThread = NewMessage & { channelId: string; worktree: boolean };
 export const DECISIONS = ['approve', 'always', 'decline', 'cancel'] as const;
 export type Answer = { toolId: string; decision: (typeof DECISIONS)[number]; answers?: Record<string, string> };
 
+// Something Claude runs when a message starts with `/name`. `hint` says what may follow the name.
+// A skill is also picked up when `/name` comes later in the message. Other commands are not.
+export type Command = { name: string; description: string; hint: string; skill: boolean };
+
 export const SERVER_PORT = 5274;
 export const HEALTH_PATH = '/api/health';
 export const WS_PATH = '/ws';
 export const IMAGES_PATH = '/api/images';
+export const COMMANDS_PATH = '/api/commands';
