@@ -236,6 +236,7 @@ Rules of the UI:
 - The 1M context window is asked for with `[1m]` after the model name. Leaving that off is not enough for 200k: in a live run the newer models still got 1M. So 200k also sets `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` for that Claude process. Fast mode is the `fastMode` setting, and it only really runs if the Claude account has extra usage switched on.
 
 - Claude's answers are shown as formatted text (bold, lists, tables, code blocks with colors and a copy button). We use Streamdown for this, a markdown renderer made for AI chat: it copes with half-written formatting while the answer is still streaming in. Your own messages stay plain text, so what you type shows exactly as typed.
+- Hovering a message (yours or Claude's) shows a copy button at its top right. It copies the message as it was written, so Claude's answers come out as markdown. Phones have no hover, so the button does not show there.
 - Color names in the CSS follow shadcn/ui (`background`, `foreground`, `muted`, `border`, `primary` and so on), because Streamdown expects those names. The colors themselves are set once in `:root` in `apps/web/src/index.css`.
 
 Not built yet: logins (everyone posts as "You"), removing a repository, diagrams (mermaid), and showing images that live in the repository.

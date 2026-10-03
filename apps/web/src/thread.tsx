@@ -10,6 +10,7 @@ import {
   CircleCheck,
   CircleDot,
   Clock,
+  Copy,
   Hand,
   Info,
   LoaderCircle,
@@ -57,6 +58,33 @@ function Row({ agent, lead, at, children }: { agent: boolean; lead: boolean; at?
         )}
         {children}
       </div>
+    </div>
+  );
+}
+
+// A message, with a button to copy its text that shows while the mouse is over it.
+function Copyable({ text, children }: { text: string; children: ReactNode }) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const reset = setTimeout(() => setCopied(false), 2000);
+    return () => clearTimeout(reset);
+  }, [copied]);
+  const label = copied ? 'Copied' : 'Copy message';
+  return (
+    <div className="group relative">
+      {children}
+      {text && (
+        <button
+          type="button"
+          onClick={() => void navigator.clipboard.writeText(text).then(() => setCopied(true))}
+          className="invisible absolute -top-3 right-0 rounded-md border border-border bg-card p-1.5 text-muted-foreground shadow-sm group-hover:visible hover:text-foreground"
+          aria-label={label}
+          title={label}
+        >
+          {copied ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
+        </button>
+      )}
     </div>
   );
 }
@@ -145,17 +173,19 @@ function ItemView({ item, lead, nested }: { item: Item; lead: boolean; nested?: 
   if (item.kind === 'message' && item.by === 'user') {
     return (
       <Row agent={false} lead at={item.at}>
-        {/* A set height, so the chat does not jump when an image finishes loading. Click to see it full size. */}
-        {item.images?.map((id) => (
-          <a key={id} href={imageUrl(id)} target="_blank" rel="noreferrer" className="mr-2 mb-1 inline-block">
-            <img
-              src={imageUrl(id)}
-              alt="Attached image"
-              className="h-40 rounded-md border border-border bg-card object-contain"
-            />
-          </a>
-        ))}
-        <p className="break-words whitespace-pre-wrap">{item.text}</p>
+        <Copyable text={item.text}>
+          {/* A set height, so the chat does not jump when an image finishes loading. Click to see it full size. */}
+          {item.images?.map((id) => (
+            <a key={id} href={imageUrl(id)} target="_blank" rel="noreferrer" className="mr-2 mb-1 inline-block">
+              <img
+                src={imageUrl(id)}
+                alt="Attached image"
+                className="h-40 rounded-md border border-border bg-card object-contain"
+              />
+            </a>
+          ))}
+          <p className="break-words whitespace-pre-wrap">{item.text}</p>
+        </Copyable>
       </Row>
     );
   }
@@ -174,9 +204,11 @@ function ItemView({ item, lead, nested }: { item: Item; lead: boolean; nested?: 
         </p>
       )}
       {item.kind === 'message' && (
-        <Streamdown className="space-y-2 break-words" plugins={plugins} rehypePlugins={rehypePlugins}>
-          {item.text}
-        </Streamdown>
+        <Copyable text={item.text}>
+          <Streamdown className="space-y-2 break-words" plugins={plugins} rehypePlugins={rehypePlugins}>
+            {item.text}
+          </Streamdown>
+        </Copyable>
       )}
     </>
   );
