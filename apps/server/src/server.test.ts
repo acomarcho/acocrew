@@ -9,7 +9,7 @@ import {
   type Status,
   type Thread,
 } from '@acocrew/shared';
-import type { PermissionResult, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { PermissionResult, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { eq } from 'drizzle-orm';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -42,6 +42,8 @@ const SESSION = (TWO_TURNS[1] as SDKMessage).session_id;
 function fakeClaude(script: Line[]) {
   const calls: Parameters<QueryFn>[0]['options'][] = [];
   const decisions: PermissionResult[] = [];
+  // What each user message handed to Claude held.
+  const said: SDKUserMessage['message']['content'][] = [];
   const holds: { before: (msg: SDKMessage) => boolean; released: Promise<void> }[] = [];
   const releases: (() => void)[] = [];
   let closed = 0;
@@ -71,7 +73,9 @@ function fakeClaude(script: Line[]) {
         // Nothing left to say: sit idle like a real process until it is closed.
         if (!line) return void (await killed);
         if ('_user' in line) {
-          if ((await Promise.race([users.next(), killed])) === 'killed') return;
+          const next = await Promise.race([users.next(), killed]);
+          if (next === 'killed') return;
+          said.push(next.value.message.content);
         } else if ('_ask' in line) {
           const { toolName, input, toolUseID, suggestions } = line._ask;
           pos++;
@@ -124,6 +128,7 @@ function fakeClaude(script: Line[]) {
     query,
     calls,
     decisions,
+    said,
     pause,
     closed: () => closed,
     interrupted: () => interrupted,
@@ -138,6 +143,7 @@ mkdirSync(join(home, 'code', 'shop', '.git'), { recursive: true });
 mkdirSync(join(home, 'code', 'notes'));
 mkdirSync(join(home, '.secret'));
 symlinkSync('/etc', join(home, 'way-out'));
+const images = join(home, '.acocrew', 'attachments');
 afterAll(() => rmSync(home, { recursive: true }));
 
 let db: Db;
@@ -149,7 +155,7 @@ let sockets: WebSocket[];
 async function serve(script: Line[]) {
   server?.close();
   claude = fakeClaude(script);
-  server = await startServer(0, { db, query: claude.query, home }); // 0 = any free port
+  server = await startServer(0, { db, query: claude.query, home, images }); // 0 = any free port
 }
 
 beforeEach(async () => {
@@ -258,13 +264,13 @@ async function addChannel() {
   return (await res.json()) as Channel;
 }
 
-async function startThread(text: string, settings = HAIKU) {
+async function startThread(text: string, settings: object = HAIKU) {
   const channel = await addChannel();
   const res = await post('/api/threads', { channelId: channel.id, text, ...settings });
   return (await res.json()) as Thread;
 }
 
-const say = (thread: Thread, text: string, settings = HAIKU) =>
+const say = (thread: Thread, text: string, settings: object = HAIKU) =>
   post(`/api/threads/${thread.id}/messages`, { text, ...settings });
 const answer = (thread: Thread, body: Answer) => post(`/api/threads/${thread.id}/answers`, body);
 
@@ -314,7 +320,7 @@ test('with the built web app, one server gives out the app, its files and the ap
   writeFileSync(join(web, 'index.html'), '<html>the app</html>');
   writeFileSync(join(web, 'assets', 'app.js'), 'console.log(1)');
   server.close();
-  server = await startServer(0, { db, query: claude.query, home, web });
+  server = await startServer(0, { db, query: claude.query, home, images, web });
 
   // Any screen's address gets the app, which then shows that screen.
   for (const path of ['/', '/c/some-channel/t/some-thread']) {
@@ -784,6 +790,76 @@ test('a Claude process with nothing to do for ten minutes is closed, and the nex
   await tab.status(thread.id, 'working');
   await tab.status(thread.id, 'done');
   expect(claude.calls[1]).toMatchObject({ resume: SESSION });
+});
+
+const PNG = readFileSync(new URL('./fixtures/image.png', import.meta.url));
+const upload = (body: Uint8Array, type: string) =>
+  fetch(url('/api/images'), { method: 'POST', body, headers: { 'content-type': type } });
+const uploaded = async () => ((await (await upload(PNG, 'image/png')).json()) as { id: string }).id;
+
+test('an uploaded image shows in the thread on every device and is handed to Claude before the words', async () => {
+  const id = await uploaded();
+  const back = await fetch(url(`/api/images/${id}`));
+  expect(back.headers.get('content-type')).toBe('image/png');
+  expect(Buffer.from(await back.arrayBuffer())).toEqual(PNG);
+
+  const tab = await connect();
+  const thread = await startThread('what is this?', { ...HAIKU, images: [id] });
+  await tab.open(thread.id);
+  await tab.status(thread.id, 'done');
+  expect(tab.items(thread.id)[0]).toMatchObject({ kind: 'message', by: 'user', text: 'what is this?', images: [id] });
+  expect(claude.said).toEqual([
+    [
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG.toString('base64') } },
+      { type: 'text', text: 'what is this?' },
+    ],
+  ]);
+
+  // Words alone go to Claude as before.
+  await say(thread, 'thanks');
+  await tab.status(thread.id, 'done');
+  expect(claude.said[1]).toBe('thanks');
+
+  const late = await connect();
+  await late.open(thread.id);
+  expect(late.items(thread.id)[0]).toMatchObject({ images: [id] });
+});
+
+test('an image can be sent with no words, to start a thread or to reply', async () => {
+  const id = await uploaded();
+  const tab = await connect();
+  const thread = await startThread('', { ...HAIKU, images: [id] });
+  expect(thread.title).toBe('Image');
+  await tab.status(thread.id, 'done');
+  expect((await say(thread, ' ', { ...HAIKU, images: [id, id] })).status).toBe(200);
+  await tab.status(thread.id, 'done');
+  const image = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG.toString('base64') } };
+  expect(claude.said).toEqual([[image], [image, image]]);
+});
+
+test('only png, jpeg, gif and webp up to 10MB are taken, and a message can only point at an uploaded image', async () => {
+  for (const type of ['image/png', 'image/jpeg', 'image/gif', 'image/webp']) {
+    const res = await upload(PNG, type);
+    expect(res.status, type).toBe(200);
+    const back = await fetch(url(`/api/images/${((await res.json()) as { id: string }).id}`));
+    expect(back.headers.get('content-type')).toBe(type);
+    expect(back.headers.get('x-content-type-options')).toBe('nosniff');
+  }
+  for (const type of ['image/svg+xml', 'text/html', 'application/pdf', 'constructor', '']) {
+    expect((await upload(PNG, type)).status, type).toBe(400);
+  }
+  expect((await upload(new Uint8Array(0), 'image/png')).status).toBe(400);
+  expect((await upload(new Uint8Array(10 * 1024 * 1024), 'image/png')).status).toBe(200);
+  expect((await upload(new Uint8Array(10 * 1024 * 1024 + 1), 'image/png')).status).toBe(413);
+
+  writeFileSync(join(home, '.acocrew', 'secret.png'), 'private');
+  const thread = await startThread('make notes');
+  for (const id of ['nope.png', '../secret.png', '..', '', 7]) {
+    expect((await say(thread, 'hi', { ...HAIKU, images: [id] })).status, String(id)).toBe(400);
+    expect((await fetch(url(`/api/images/${encodeURIComponent(id)}`))).status, String(id)).toBe(404);
+  }
+  expect((await say(thread, 'hi', { ...HAIKU, images: 'nope' })).status).toBe(400);
+  expect((await say(thread, '', HAIKU)).status).toBe(400);
 });
 
 test('requests from another website are refused, our own pages are not', async () => {

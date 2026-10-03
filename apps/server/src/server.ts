@@ -4,6 +4,9 @@ import {
   DECISIONS,
   EFFORTS,
   HEALTH_PATH,
+  IMAGE_MAX_BYTES,
+  IMAGE_TYPES,
+  IMAGES_PATH,
   MODELS,
   WS_PATH,
   type Answer,
@@ -14,38 +17,45 @@ import { serve, upgradeWebSocket } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { WebSocketServer } from 'ws';
 import { channelCols, listChannels, listThreads, loadItems, threadCols, type Db } from './db.ts';
 import { folderInside, isRepo, listFolders } from './folders.ts';
 import { createHub } from './hub.ts';
+import { openImages, type Images } from './images.ts';
 import { createRunner, type QueryFn } from './runner.ts';
 import { channels, threads } from './schema.ts';
 
 // `home` is the only folder tree that repositories can be picked from.
+// `images` is the folder where images attached to messages are kept.
 // `web` is the folder with the built web app. Without it the server only answers `/api` and `/ws`.
-export type Deps = { db: Db; query: QueryFn; home: string; web?: string };
+export type Deps = { db: Db; query: QueryFn; home: string; images: string; web?: string };
 
 // The parts of a message, or null if any of them is not usable.
-function readMessage(body: Partial<NewMessage>): NewMessage | null {
+function readMessage(body: Partial<NewMessage>, store: Images): NewMessage | null {
   const text = typeof body.text === 'string' ? body.text.trim() : '';
-  const { model, effort, context, fast, access } = body;
+  const { images = [], model, effort, context, fast, access } = body;
   const known = (list: { id: string }[], id?: string) => list.some((option) => option.id === id);
   const usable =
-    text &&
+    Array.isArray(images) &&
+    images.every(store.find) &&
+    (text || images.length) &&
     known(MODELS, model) &&
     known(EFFORTS, effort) &&
     known(CONTEXTS, context) &&
     typeof fast === 'boolean' &&
     known(ACCESS, access);
   if (!usable) return null;
-  return { text, model: model!, effort: effort!, context: context!, fast, access: access! };
+  return { text, images, model: model!, effort: effort!, context: context!, fast, access: access! };
 }
 
-export function createApp({ db, query, home, web }: Deps) {
+export function createApp({ db, query, home, images, web }: Deps) {
   const hub = createHub();
-  const runner = createRunner(db, hub, query);
+  const store = openImages(images);
+  const runner = createRunner(db, hub, query, store);
   const app = new Hono();
 
   // Browsers say which site a request comes from. Only our own pages may talk to the server, so that some
@@ -79,7 +89,7 @@ export function createApp({ db, query, home, web }: Deps) {
 
   app.post('/api/threads', async (c) => {
     const body = await c.req.json().catch(() => ({}));
-    const message = readMessage(body);
+    const message = readMessage(body, store);
     const channel = db
       .select()
       .from(channels)
@@ -90,7 +100,7 @@ export function createApp({ db, query, home, web }: Deps) {
     const row = {
       id: randomUUID(),
       channelId: channel.id,
-      title: message.text.split('\n')[0].slice(0, 70),
+      title: message.text.split('\n')[0].slice(0, 70) || 'Image',
       model: message.model,
       effort: message.effort,
       context: message.context,
@@ -107,7 +117,7 @@ export function createApp({ db, query, home, web }: Deps) {
   });
 
   app.post('/api/threads/:id/messages', async (c) => {
-    const message = readMessage(await c.req.json().catch(() => ({})));
+    const message = readMessage(await c.req.json().catch(() => ({})), store);
     const thread = db
       .select()
       .from(threads)
@@ -128,6 +138,30 @@ export function createApp({ db, query, home, web }: Deps) {
   app.post('/api/threads/:id/stop', async (c) => {
     await runner.stop(c.req.param('id'));
     return c.json({ ok: true });
+  });
+
+  // The browser sends one image as the whole request, and puts the id it gets back in the message.
+  const tooBig = bodyLimit({
+    maxSize: IMAGE_MAX_BYTES,
+    onError: (c) => c.json({ error: 'An image can be 10MB at most.' }, 413),
+  });
+  app.post(IMAGES_PATH, tooBig, async (c) => {
+    const type = c.req.header('content-type') ?? '';
+    const bytes = new Uint8Array(await c.req.arrayBuffer());
+    if (!Object.hasOwn(IMAGE_TYPES, type) || !bytes.length)
+      return c.json({ error: 'Only PNG, JPEG, GIF and WebP images can be attached.' }, 400);
+    return c.json({ id: store.save(IMAGE_TYPES[type], bytes) });
+  });
+
+  // An image never changes, so browsers may keep it. `nosniff` makes them treat it as an image and nothing else.
+  app.get(`${IMAGES_PATH}/:id`, (c) => {
+    const image = store.find(c.req.param('id'));
+    if (!image) return c.json({ error: 'Image not found.' }, 404);
+    return c.body(readFileSync(image.file), 200, {
+      'content-type': image.type,
+      'x-content-type-options': 'nosniff',
+      'cache-control': 'private, max-age=31536000, immutable',
+    });
   });
 
   app.get(

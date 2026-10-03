@@ -10,21 +10,25 @@ import {
   type Status,
 } from '@acocrew/shared';
 import { Link, useNavigate } from '@tanstack/react-router';
-import { useState, type ReactNode } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import {
   ArrowUp,
   Brain,
   Check,
   ChevronDown,
   FolderGit2,
+  ImagePlus,
   Layers,
+  LoaderCircle,
   Menu,
   Plus,
   ShieldCheck,
   Sparkles,
   Square,
+  X,
   Zap,
 } from 'lucide-react';
+import { imageUrl, uploadImage } from './images';
 import { useApp } from './store';
 
 export function Avatar({ agent }: { agent: boolean }) {
@@ -155,7 +159,7 @@ function Picker({ icon, value, options, onChange, menuClass = 'left-0', labelCla
 
 // What the user picked for the next message: which model, how hard it thinks, how much it keeps in view,
 // whether it runs in fast mode, and whether it asks first.
-export type Settings = Omit<NewMessage, 'text'>;
+export type Settings = Omit<NewMessage, 'text' | 'images'>;
 
 const NEW_THREAD: Settings = { model: MODELS[0].id, effort: 'medium', context: '1m', fast: false, access: 'full' };
 
@@ -168,9 +172,11 @@ type ComposerProps = {
   placeholder: string;
   settings: Settings;
   onSettings: (settings: Settings) => void;
-  onSend: (text: string) => Promise<unknown>;
+  onSend: (text: string, images: string[]) => Promise<unknown>;
   // Send works with an empty box too (a picked answer to a question needs no typing).
   canSendEmpty?: boolean;
+  // The box takes words only (an answer to Claude's question cannot carry images).
+  textOnly?: boolean;
   // Given while Claude is doing something that can be stopped.
   onStop?: () => void;
   autoFocus?: boolean;
@@ -182,14 +188,36 @@ export function Composer({
   onSettings,
   onSend,
   canSendEmpty,
+  textOnly,
   onStop,
   autoFocus,
 }: ComposerProps) {
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
+  // Images are uploaded as soon as they are added. These are the ids the server gave back.
+  // While the box takes words only, images added before are set aside until it takes them again.
+  const [added, setImages] = useState<string[]>([]);
+  const images = textOnly ? [] : added;
+  const [uploading, setUploading] = useState(0);
+  const picker = useRef<HTMLInputElement>(null);
   const clean = text.trim();
-  const ready = Boolean(clean || canSendEmpty) && !sending;
+  const ready = Boolean(clean || images.length || canSendEmpty) && !sending && !uploading;
+  // Pasting, dropping and the attach button all end up here. Whether this did anything with the files.
+  const addImages = (files: Iterable<File>) => {
+    const picked = textOnly ? [] : [...files].filter((file) => file.type.startsWith('image/'));
+    if (!picked.length) return false;
+    setError('');
+    setUploading((count) => count + 1);
+    void Promise.allSettled(picked.map(uploadImage)).then((results) => {
+      const ids = results.flatMap((result) => (result.status === 'fulfilled' ? [result.value] : []));
+      const failed = results.find((result) => result.status === 'rejected');
+      setImages((list) => [...list, ...ids]);
+      if (failed) setError(failed.reason.message);
+      setUploading((count) => count - 1);
+    });
+    return true;
+  };
   const model = MODELS.find((option) => option.id === settings.model);
   // The text stays in the box until the server has taken it, so a failed send loses nothing.
   const submit = async () => {
@@ -197,21 +225,59 @@ export function Composer({
     setSending(true);
     setError('');
     try {
-      await onSend(clean);
+      await onSend(clean, images);
       setText('');
+      setImages((list) => list.filter((id) => !images.includes(id)));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not send.');
     }
     setSending(false);
   };
   return (
-    <div className="rounded-xl border border-border bg-card shadow-sm focus-within:border-primary">
+    <div
+      className="rounded-xl border border-border bg-card shadow-sm focus-within:border-primary"
+      onDragOver={(e) => e.dataTransfer.types.includes('Files') && e.preventDefault()}
+      onDrop={(e) => {
+        if (!e.dataTransfer.types.includes('Files')) return;
+        // Always stopped, or the browser would leave the app to show the dropped file.
+        e.preventDefault();
+        addImages(e.dataTransfer.files);
+      }}
+    >
+      {(images.length > 0 || uploading > 0) && (
+        <div className="flex flex-wrap gap-2 px-3.5 pt-3">
+          {images.map((id) => (
+            <div key={id} className="relative">
+              <img src={imageUrl(id)} alt="" className="size-16 rounded-md border border-border object-cover" />
+              <button
+                type="button"
+                onClick={() => setImages(added.filter((other) => other !== id))}
+                aria-label="Remove image"
+                className="absolute -top-1.5 -right-1.5 grid size-5 place-items-center rounded-full border border-border bg-card text-muted-foreground hover:text-foreground"
+              >
+                <X size={12} />
+              </button>
+            </div>
+          ))}
+          {uploading > 0 && (
+            <div className="grid size-16 place-items-center rounded-md border border-border text-muted-foreground">
+              <LoaderCircle size={16} className="animate-spin" />
+            </div>
+          )}
+        </div>
+      )}
       {/* Starts 2 lines tall and grows with the text up to 8 lines, then scrolls inside. The extra spacing(3) matches pt-3. */}
       <textarea
         autoFocus={autoFocus}
         value={text}
         placeholder={placeholder}
         onChange={(e) => setText(e.target.value)}
+        onPaste={(e) => {
+          // Spreadsheets and documents put a picture of the copied cells next to the formatted words. The
+          // words win. A copied image file comes with its name as plain words only, and is still an image.
+          if (e.clipboardData.getData('text/html') && e.clipboardData.getData('text/plain')) return;
+          if (addImages(e.clipboardData.files)) e.preventDefault();
+        }}
         onKeyDown={(e) => {
           if (e.key !== 'Enter' || e.shiftKey) return;
           e.preventDefault();
@@ -221,6 +287,31 @@ export function Composer({
       />
       {error && <p className="px-3.5 pb-1 text-xs text-rose-500">{error}</p>}
       <div className="flex items-center gap-0.5 px-1.5 pb-1.5">
+        {!textOnly && (
+          <>
+            <input
+              ref={picker}
+              type="file"
+              accept="image/*"
+              multiple
+              hidden
+              onChange={(e) => {
+                addImages(e.target.files ?? []);
+                // Cleared so that picking the same file again counts as a change.
+                e.target.value = '';
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => picker.current?.click()}
+              aria-label="Attach images"
+              title="Attach images"
+              className="grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              <ImagePlus size={15} />
+            </button>
+          </>
+        )}
         <Picker
           icon={<Sparkles size={14} className="text-primary" />}
           value={settings.model}
@@ -330,8 +421,8 @@ export function NewThread({ channel }: { channel: Channel }) {
         placeholder="What should Claude work on?"
         settings={settings}
         onSettings={setSettings}
-        onSend={async (text) => {
-          const thread = await createThread({ channelId, text, ...settings });
+        onSend={async (text, images) => {
+          const thread = await createThread({ channelId, text, images, ...settings });
           void navigate({ to: '/c/$channelId/t/$threadId', params: { channelId, threadId: thread.id }, replace: true });
         }}
       />

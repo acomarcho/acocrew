@@ -10,8 +10,10 @@ import {
 import type { Options, PermissionResult, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { eq, ne } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { loadItems, saveItem, threadCols, type Db } from './db.ts';
 import type { Hub } from './hub.ts';
+import type { Images } from './images.ts';
 import { channels, threads } from './schema.ts';
 import { createTranslator, nextAt, wasAborted, type Out } from './translate.ts';
 
@@ -93,7 +95,7 @@ function queue<T>() {
 }
 
 // Runs Claude for threads: one process per thread, listened to for as long as it lives.
-export function createRunner(db: Db, hub: Hub, query: QueryFn) {
+export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images) {
   const sessions = new Map<string, Session>();
 
   function addItem(threadId: string, item: Item) {
@@ -319,8 +321,8 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn) {
 
     // Saves the user's message and hands it to Claude. If Claude is busy, it picks the message up when it can.
     send(threadId: string, message: NewMessage) {
-      addItem(threadId, { id: randomUUID(), kind: 'message', by: 'user', text: message.text, at: nextAt() });
-      const { model, effort, context, fast, access } = message;
+      const { text, model, effort, context, fast, access } = message;
+      addItem(threadId, { id: randomUUID(), kind: 'message', by: 'user', text, images: message.images, at: nextAt() });
       db.update(threads).set({ model, effort, context, fast, access }).where(eq(threads.id, threadId)).run();
       try {
         // The model, reasoning level, context window and fast mode are fixed when a process starts. A change
@@ -333,9 +335,20 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn) {
         session.access = access;
         session.busy = true;
         session.failed = false;
+        // Claude gets the images themselves, ahead of the words about them.
+        const pictures = message.images.map((id) => {
+          const { type, file } = images.find(id)!;
+          const source = {
+            type: 'base64' as const,
+            media_type: type as 'image/png',
+            data: readFileSync(file, 'base64'),
+          };
+          return { type: 'image' as const, source };
+        });
+        const words = text ? [{ type: 'text' as const, text }] : [];
         session.input.push({
           type: 'user',
-          message: { role: 'user', content: message.text },
+          message: { role: 'user', content: pictures.length ? [...pictures, ...words] : text },
           parent_tool_use_id: null,
         });
         // Always tell everyone, even if the status did not change: the model or access may have.

@@ -37,8 +37,9 @@ export type Todo = { id: string; subject: string; status: string };
 
 // One thing shown in a thread. `at` is a timestamp in milliseconds.
 // `parent` is set on things a subagent did: it is the id of the tool card that started that subagent.
+// `images` on a message are ids of uploaded images, each one served at `IMAGES_PATH/<id>`.
 export type Item = { id: string; at: number; parent?: string } & (
-  | { kind: 'message'; by: 'user' | 'claude'; text: string }
+  | { kind: 'message'; by: 'user' | 'claude'; text: string; images?: string[] }
   | {
       kind: 'tool';
       name: string;
@@ -100,9 +101,20 @@ export type ClientEvent = { type: 'open'; threadId: string };
 export type Folder = { name: string; path: string; isRepo: boolean };
 export type FolderList = { path: string; parent: string | null; folders: Folder[] };
 
+// The kinds of image a message can carry, and the file ending each one is stored under.
+export const IMAGE_TYPES: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+};
+export const IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+
 // `fast` turns on fast mode: quicker answers at a higher price.
+// `images` are ids of images uploaded before. A message needs words, images or both.
 export type NewMessage = {
   text: string;
+  images: string[];
   model: string;
   effort: string;
   context: string;
@@ -120,3 +132,4 @@ export type Answer = { toolId: string; decision: (typeof DECISIONS)[number]; ans
 export const SERVER_PORT = 5274;
 export const HEALTH_PATH = '/api/health';
 export const WS_PATH = '/ws';
+export const IMAGES_PATH = '/api/images';
