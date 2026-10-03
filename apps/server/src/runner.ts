@@ -152,8 +152,8 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images) {
 
   function start(threadId: string, message: NewMessage): Session {
     const launch = launchOptions(message);
-    const { cwd, sessionId } = db
-      .select({ cwd: channels.path, sessionId: threads.sessionId })
+    const { path, repo, sessionId } = db
+      .select({ path: threads.path, repo: channels.path, sessionId: threads.sessionId })
       .from(threads)
       .innerJoin(channels, eq(channels.id, threads.channelId))
       .where(eq(threads.id, threadId))
@@ -200,7 +200,7 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images) {
     const running = query({
       prompt: input,
       options: {
-        cwd,
+        cwd: path ?? repo,
         ...launch,
         resume: sessionId ?? undefined,
         // Claude asks us about every action. With full access we say yes right away.

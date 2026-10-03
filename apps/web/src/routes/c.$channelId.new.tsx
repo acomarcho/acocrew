@@ -12,7 +12,6 @@ function StartThread() {
   return (
     <div className="flex h-full flex-col justify-end p-3 md:justify-center md:p-10">
       <div className="mx-auto w-full max-w-2xl">
-        <h2 className="mb-3 text-xl font-bold">Start a thread</h2>
         <NewThread channel={channel} />
       </div>
     </div>

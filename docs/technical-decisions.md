@@ -153,7 +153,7 @@ T3 Code does the same "apply on start" thing, but with hand-written SQL files an
 ## How one message travels
 
 1. The browser posts the message to `/api/threads` (new thread) or `/api/threads/<id>/messages` (reply).
-2. The server saves the user's bubble. If the thread has no Claude process, it starts one in the repository folder (resuming the saved session if there is one). Then it pushes the message into that process's queue.
+2. The server saves the user's bubble. If the thread has no Claude process, it starts one in the thread's folder (its worktree, or the repository folder; resuming the saved session if there is one). Then it pushes the message into that process's queue.
 3. Separately, the server listens to each Claude process for as long as it lives, and turns everything Claude says into our own items (`apps/server/src/translate.ts`).
 4. Words still being written are sent to open browsers right away and not saved. Finished bubbles and tool cards are saved to `events`, then sent.
 
@@ -231,7 +231,9 @@ Rules of the UI:
 
 - A channel is one git repository. "Add repository" lets you pick a folder under the home folder of the server machine. Only folders that are git repositories can be added.
 - You cannot post a loose message in a channel. Every message starts a thread ("New Thread") or replies inside one.
-- For now a thread works directly in the repository folder, on whatever branch it is on. The plan is for each thread to get its own worktree (its own copy of the repo on its own branch). That is not built yet.
+- A new thread picks where it works, with a dropdown next to "Start a thread". "New worktree" (the default) gives the thread its own worktree: a second working copy of the repository, on its own branch. "Current checkout" works right in the repository folder, on whatever branch it is on.
+- A worktree is made with `git worktree add` when the thread starts. The folder is `worktrees/<repository name>/<first 8 characters of the thread id>`, next to the database (so `~/.acocrew/worktrees/...`). The branch is `acocrew/<the same 8 characters>` and starts from the commit the repository is on right then. The folder is saved on the thread (`threads.path`; empty means the repository folder), and every Claude process of that thread starts there. If git cannot make the worktree, no thread is started and the message box shows git's reason.
+- Not built yet for worktrees: picking the branch to start from, removing a worktree, showing the branch in the thread, and installing dependencies in the new copy (`node_modules` is not there).
 - The message box has a model picker, a reasoning picker, a context window picker (200k or 1M), a fast mode picker and an access picker (Full access or Ask first). A new thread starts on medium reasoning, 1M and fast mode off. A picker is only shown for models that have that setting. While Claude is doing something, the box also has a Stop button.
 - The 1M context window is asked for with `[1m]` after the model name. Leaving that off is not enough for 200k: in a live run the newer models still got 1M. So 200k also sets `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` for that Claude process. Fast mode is the `fastMode` setting, and it only really runs if the Claude account has extra usage switched on.
 

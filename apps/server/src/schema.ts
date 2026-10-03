@@ -21,6 +21,8 @@ export const threads = sqliteTable('threads', {
   fast: integer('fast', { mode: 'boolean' }).notNull().default(false),
   access: text('access').$type<Access>().notNull().default('full'),
   status: text('status').$type<Status>().notNull(),
+  // The worktree this thread works in. Null when it works right in the repository folder.
+  path: text('path'),
   // Claude's own id for the conversation. Lets a new Claude process pick up where the last one stopped.
   sessionId: text('session_id'),
   createdAt: integer('created_at').notNull(),

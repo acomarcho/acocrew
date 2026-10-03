@@ -305,7 +305,7 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
           </Link>
           <div className="min-w-0 flex-1">
             <div className="truncate font-semibold">{thread.title}</div>
-            <div className="truncate font-mono text-xs text-muted-foreground">{channel.path}</div>
+            <div className="truncate font-mono text-xs text-muted-foreground">{thread.path ?? channel.path}</div>
           </div>
           <StatusBadge status={thread.status} />
         </header>

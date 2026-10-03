@@ -17,6 +17,7 @@ import {
   Check,
   ChevronDown,
   FolderGit2,
+  GitBranch,
   ImagePlus,
   Layers,
   LoaderCircle,
@@ -394,19 +395,31 @@ export function NewThreadButton({ channelId }: { channelId: string }) {
   );
 }
 
+// Where a new thread works.
+const PLACES = [
+  { id: 'worktree', name: 'New worktree', hint: 'A fresh copy from the last commit, on a new branch' },
+  { id: 'checkout', name: 'Current checkout', hint: 'Right in the repository folder' },
+];
+
 // The only way to post in a channel: start a thread.
 export function NewThread({ channel }: { channel: Channel }) {
   const { createThread } = useApp();
   const navigate = useNavigate();
   const [settings, setSettings] = useState(NEW_THREAD);
+  const [place, setPlace] = useState(PLACES[0].id);
+  const worktree = place === 'worktree';
   const channelId = channel.id;
   return (
     <div>
+      <div className="mb-3 flex items-center gap-2">
+        <h2 className="text-xl font-bold">Start a thread</h2>
+        <Picker icon={<GitBranch size={14} />} value={place} options={PLACES} onChange={setPlace} />
+      </div>
       <div className="mb-2 flex items-center gap-1.5 text-xs text-muted-foreground">
         <FolderGit2 size={12} className="shrink-0" />
         <span className="min-w-0 flex-1 truncate">
-          New thread in <b className="text-foreground">#{channel.name}</b>. Claude works right in{' '}
-          <span className="font-mono">{channel.path}</span>.
+          New thread in <b className="text-foreground">#{channel.name}</b>. Claude works{' '}
+          {worktree ? 'in a new worktree of' : 'right in'} <span className="font-mono">{channel.path}</span>.
         </span>
         <Link
           to="/c/$channelId"
@@ -422,7 +435,7 @@ export function NewThread({ channel }: { channel: Channel }) {
         settings={settings}
         onSettings={setSettings}
         onSend={async (text, images) => {
-          const thread = await createThread({ channelId, text, images, ...settings });
+          const thread = await createThread({ channelId, text, images, worktree, ...settings });
           void navigate({ to: '/c/$channelId/t/$threadId', params: { channelId, threadId: thread.id }, replace: true });
         }}
       />
