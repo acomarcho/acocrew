@@ -1,0 +1,59 @@
+@import 'tailwindcss';
+
+/* Components only use these color names, so a theme change is one edit to :root. */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-surface: var(--surface);
+  --color-soft: var(--soft);
+  --color-side: var(--side);
+  --color-side-fg: var(--side-fg);
+  --color-side-muted: var(--side-muted);
+  --color-side-hover: var(--side-hover);
+  --color-side-active: var(--side-active);
+  --color-side-active-fg: var(--side-active-fg);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overscroll-behavior: none;
+}
+
+body {
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    sans-serif;
+  font-size: 15px;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button {
+  cursor: pointer;
+}
+
+:root {
+  --bg: #fbfaf7;
+  --fg: #26221c;
+  --muted: #8a8376;
+  --line: #e7e2d8;
+  --surface: #ffffff;
+  --soft: #f1ede4;
+  --side: #f3efe6;
+  --side-fg: #3a352c;
+  --side-muted: #948c7d;
+  --side-hover: #e9e3d6;
+  --side-active: #26221c;
+  --side-active-fg: #fbfaf7;
+  --accent: #d9622b;
+  --accent-fg: #ffffff;
+}

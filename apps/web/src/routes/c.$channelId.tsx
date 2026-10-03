@@ -1,48 +1,64 @@
-// Layout 3: Inbox. Channels, then a thread list, then the open thread, like an email app.
+// The Inbox screen: channels, then a thread list, then the open thread, like an email app.
+import type { Status } from '@acocrew/shared';
+import { createFileRoute, Link, Outlet, redirect, useChildMatches } from '@tanstack/react-router';
+import { Hash } from 'lucide-react';
 import { useState } from 'react';
-import { ChevronLeft, Hash, MessagesSquare } from 'lucide-react';
-import { CHANNELS, USERS, type Status } from '../data';
+import { CHANNELS, USERS } from '../data';
 import { useApp } from '../store';
-import { Drawer, NavButton, NewThread, NewThreadButton, Participants, STATUS_ORDER, StatusDot, statusLabel, ThreadView } from '../ui';
+import { Drawer, NavButton, NewThreadButton, Participants, STATUS_ORDER, StatusDot, statusLabel } from '../ui';
 
-export default function V3Inbox() {
-  const a = useApp();
+export const Route = createFileRoute('/c/$channelId')({
+  beforeLoad: ({ params }) => {
+    const channel = CHANNELS.find((c) => c.id === params.channelId);
+    if (!channel) throw redirect({ to: '/' });
+    return { channel };
+  },
+  component: Inbox,
+});
+
+function Inbox() {
+  const { channel } = Route.useRouteContext();
+  const { threads, setNavOpen } = useApp();
   const [filter, setFilter] = useState<Status | null>(null);
-  const detailOpen = a.thread !== null || a.drafting;
-  const rows = a.channelThreads.filter((t) => !filter || t.status === filter).reverse();
+  // On phones the list and the detail take turns. The detail shows when a thread or "new" is open.
+  const detailOpen = useChildMatches({ select: (matches) => matches.some((m) => m.routeId !== '/c/$channelId/') });
+  const rows = threads.filter((t) => t.channelId === channel.id && (!filter || t.status === filter)).reverse();
 
   return (
-    <div data-theme="paper" className="relative flex h-full overflow-hidden bg-bg text-fg">
+    <div className="relative flex h-full overflow-hidden">
       <Drawer className="md:w-56 md:border-r md:border-line">
         <div className="px-4 py-3.5 text-lg font-bold">OpenCase</div>
         <div className="px-4 pb-1 text-xs font-medium uppercase tracking-wide text-side-muted">Repositories</div>
         {CHANNELS.map((c) => {
-          const count = a.threads.filter((t) => t.channelId === c.id && t.status !== 'done').length;
-          const active = c.id === a.channel.id;
+          const count = threads.filter((t) => t.channelId === c.id && t.status !== 'done').length;
           return (
-            <button
+            <Link
               key={c.id}
-              onClick={() => a.pick(c.id)}
-              className={`mx-2 flex items-center gap-2 rounded-md px-2 py-1.5 text-left ${
-                active ? 'bg-side-active text-side-active-fg' : 'hover:bg-side-hover'
-              }`}
+              to="/c/$channelId"
+              params={{ channelId: c.id }}
+              onClick={() => setNavOpen(false)}
+              className="mx-2 flex items-center gap-2 rounded-md px-2 py-1.5"
+              activeProps={{ className: 'bg-side-active text-side-active-fg' }}
+              inactiveProps={{ className: 'hover:bg-side-hover' }}
             >
               <Hash size={15} className="opacity-60" />
               <span className="flex-1 truncate">{c.name}</span>
               {count > 0 && <span className="text-xs opacity-70">{count}</span>}
-            </button>
+            </Link>
           );
         })}
       </Drawer>
 
-      <section className={`w-full min-w-0 flex-col border-line md:flex md:w-[360px] md:shrink-0 md:border-r ${detailOpen ? 'hidden' : 'flex'}`}>
+      <section
+        className={`w-full min-w-0 flex-col border-line md:flex md:w-[360px] md:shrink-0 md:border-r ${detailOpen ? 'hidden' : 'flex'}`}
+      >
         <header className="flex items-center gap-2 px-3 py-2.5">
           <NavButton />
           <div className="min-w-0 flex-1">
-            <div className="truncate font-bold">#{a.channel.name}</div>
-            <div className="truncate font-mono text-xs text-muted">{a.channel.repo}</div>
+            <div className="truncate font-bold">#{channel.name}</div>
+            <div className="truncate font-mono text-xs text-muted">{channel.repo}</div>
           </div>
-          <NewThreadButton />
+          <NewThreadButton channelId={channel.id} />
         </header>
         <div className="flex gap-1.5 overflow-x-auto border-b border-line px-3 pb-2.5">
           {[null, ...STATUS_ORDER].map((s) => (
@@ -61,10 +77,12 @@ export default function V3Inbox() {
           {rows.map((t) => {
             const last = t.msgs[t.msgs.length - 1];
             return (
-              <button
+              <Link
                 key={t.id}
-                onClick={() => a.open(t.id)}
-                className={`block w-full border-b border-line px-3.5 py-3 text-left hover:bg-soft ${t.id === a.thread?.id ? 'bg-soft' : ''}`}
+                to="/c/$channelId/t/$threadId"
+                params={{ channelId: channel.id, threadId: t.id }}
+                className="block border-b border-line px-3.5 py-3 hover:bg-soft"
+                activeProps={{ className: 'bg-soft' }}
               >
                 <span className="flex items-center gap-2">
                   <StatusDot status={t.status} />
@@ -78,7 +96,7 @@ export default function V3Inbox() {
                   <Participants thread={t} />
                   {t.msgs.length} messages
                 </span>
-              </button>
+              </Link>
             );
           })}
           {rows.length === 0 && <p className="p-6 text-center text-sm text-muted">Nothing here.</p>}
@@ -86,27 +104,7 @@ export default function V3Inbox() {
       </section>
 
       <section className={`min-w-0 flex-1 flex-col md:flex ${detailOpen ? 'flex' : 'hidden'}`}>
-        {a.thread && <ThreadView thread={a.thread} />}
-        {a.drafting && (
-          <div className="flex h-full flex-col p-3 md:justify-center md:p-10">
-            <button onClick={() => a.draft(false)} className="mb-4 flex items-center gap-1 text-sm text-muted md:hidden">
-              <ChevronLeft size={18} /> Back
-            </button>
-            <div className="mx-auto w-full max-w-2xl">
-              <h2 className="mb-3 text-xl font-bold">Start a thread</h2>
-              <NewThread />
-            </div>
-          </div>
-        )}
-        {!detailOpen && (
-          <div className="grid h-full place-items-center p-8 text-center text-muted">
-            <div>
-              <MessagesSquare size={40} className="mx-auto mb-3 opacity-50" />
-              <p className="mb-4">Pick a thread on the left, or start a new one.</p>
-              <NewThreadButton />
-            </div>
-          </div>
-        )}
+        <Outlet />
       </section>
     </div>
   );

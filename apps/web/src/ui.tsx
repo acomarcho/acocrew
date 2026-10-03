@@ -1,7 +1,22 @@
-// Pieces shared by all five layouts.
+// Building blocks for the Inbox screens.
+import type { Msg, Status, Thread } from '@acocrew/shared';
+import { Link, useNavigate } from '@tanstack/react-router';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { ArrowUp, Brain, Check, ChevronDown, ChevronLeft, GitBranch, Menu, Paperclip, Pencil, Plus, Sparkles, Terminal, X } from 'lucide-react';
-import { EFFORTS, MODELS, USERS, type Msg, type Status, type Thread } from './data';
+import {
+  ArrowUp,
+  Brain,
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  GitBranch,
+  Menu,
+  Paperclip,
+  Pencil,
+  Plus,
+  Sparkles,
+  Terminal,
+} from 'lucide-react';
+import { EFFORTS, MODELS, USERS } from './data';
 import { useApp } from './store';
 
 export function Avatar({ id, size = 36 }: { id: string; size?: number }) {
@@ -43,7 +58,9 @@ export function StatusDot({ status }: { status: Status }) {
 
 export function StatusBadge({ status }: { status: Status }) {
   return (
-    <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ${STATUS[status].text}`}>
+    <span
+      className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ${STATUS[status].text}`}
+    >
       <StatusDot status={status} />
       {STATUS[status].label}
     </span>
@@ -62,7 +79,11 @@ export function Branch({ thread }: { thread: Thread }) {
 export function NavButton() {
   const { setNavOpen } = useApp();
   return (
-    <button onClick={() => setNavOpen(true)} className="-ml-1 rounded-md p-1.5 text-muted hover:bg-soft md:hidden" aria-label="Open menu">
+    <button
+      onClick={() => setNavOpen(true)}
+      className="-ml-1 rounded-md p-1.5 text-muted hover:bg-soft md:hidden"
+      aria-label="Open menu"
+    >
       <Menu size={20} />
     </button>
   );
@@ -87,7 +108,13 @@ export function Drawer({ children, className = '' }: { children: ReactNode; clas
 
 type Option = { name: string; hint: string };
 
-type PickerProps = { icon: ReactNode; value: string; options: Option[]; onChange: (v: string) => void; menuClass?: string };
+type PickerProps = {
+  icon: ReactNode;
+  value: string;
+  options: Option[];
+  onChange: (v: string) => void;
+  menuClass?: string;
+};
 
 function Picker({ icon, value, options, onChange, menuClass = 'left-0' }: PickerProps) {
   const [open, setOpen] = useState(false);
@@ -105,7 +132,9 @@ function Picker({ icon, value, options, onChange, menuClass = 'left-0' }: Picker
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className={`absolute bottom-full z-50 mb-1 w-52 rounded-lg border border-line bg-surface p-1 text-fg shadow-xl ${menuClass}`}>
+          <div
+            className={`absolute bottom-full z-50 mb-1 w-52 rounded-lg border border-line bg-surface p-1 text-fg shadow-xl ${menuClass}`}
+          >
             {options.map((o) => (
               <button
                 key={o.name}
@@ -164,9 +193,20 @@ export function Composer({ placeholder, model, effort, onModel, onEffort, onSend
         className="block w-full resize-none bg-transparent px-3.5 pt-3 text-base text-fg outline-none placeholder:text-muted md:text-sm"
       />
       <div className="flex items-center gap-0.5 px-1.5 pb-1.5">
-        <Picker icon={<Sparkles size={14} className="text-accent" />} value={model} options={MODELS} onChange={onModel} />
+        <Picker
+          icon={<Sparkles size={14} className="text-accent" />}
+          value={model}
+          options={MODELS}
+          onChange={onModel}
+        />
         {/* nudged left on phones so the menu stays on screen */}
-        <Picker icon={<Brain size={14} />} value={effort} options={EFFORTS} onChange={onEffort} menuClass="-left-20 sm:left-0" />
+        <Picker
+          icon={<Brain size={14} />}
+          value={effort}
+          options={EFFORTS}
+          onChange={onEffort}
+          menuClass="-left-20 sm:left-0"
+        />
         <div className="flex-1" />
         <button type="button" className="rounded-md p-2 text-muted hover:bg-soft" aria-label="Attach file">
           <Paperclip size={16} />
@@ -197,8 +237,15 @@ export function Message({ m }: { m: Msg }) {
           <span className="text-xs text-muted">{m.at}</span>
         </div>
         {m.tools?.map((tool, i) => (
-          <div key={i} className="mt-1.5 flex items-center gap-2 rounded-md border border-line bg-soft px-2.5 py-1.5 text-xs">
-            {tool.kind === 'run' ? <Terminal size={13} className="shrink-0 text-muted" /> : <Pencil size={13} className="shrink-0 text-muted" />}
+          <div
+            key={i}
+            className="mt-1.5 flex items-center gap-2 rounded-md border border-line bg-soft px-2.5 py-1.5 text-xs"
+          >
+            {tool.kind === 'run' ? (
+              <Terminal size={13} className="shrink-0 text-muted" />
+            ) : (
+              <Pencil size={13} className="shrink-0 text-muted" />
+            )}
             <span className="font-medium">{tool.label}</span>
             <span className="truncate font-mono text-muted">{tool.detail}</span>
           </div>
@@ -216,7 +263,11 @@ export function Working() {
       <span>Claude is working</span>
       <span className="flex gap-1">
         {[0, 150, 300].map((d) => (
-          <span key={d} className="size-1.5 animate-bounce rounded-full bg-muted" style={{ animationDelay: `${d}ms` }} />
+          <span
+            key={d}
+            className="size-1.5 animate-bounce rounded-full bg-muted"
+            style={{ animationDelay: `${d}ms` }}
+          />
         ))}
       </span>
     </div>
@@ -237,11 +288,9 @@ export function ThreadComposer({ thread }: { thread: Thread }) {
   );
 }
 
-// The full chat for one thread. `desktopClose` shows an X on desktop (side panels).
-export function ThreadView({ thread, desktopClose, narrow }: { thread: Thread; desktopClose?: boolean; narrow?: boolean }) {
-  const { open } = useApp();
+// The full chat for one thread.
+export function ThreadView({ thread }: { thread: Thread }) {
   const scroller = useRef<HTMLDivElement>(null);
-  const width = narrow ? 'mx-auto w-full max-w-3xl' : '';
 
   useEffect(() => {
     const el = scroller.current;
@@ -249,55 +298,52 @@ export function ThreadView({ thread, desktopClose, narrow }: { thread: Thread; d
   }, [thread.id, thread.msgs.length, thread.status]);
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-bg text-fg">
-      <header className="border-b border-line">
-        <div className={`flex items-center gap-2 px-3 py-2.5 ${width}`}>
-          <button onClick={() => open(null)} className="-ml-1 rounded-md p-1.5 text-muted hover:bg-soft md:hidden" aria-label="Back">
-            <ChevronLeft size={20} />
-          </button>
-          <div className="min-w-0 flex-1">
-            <div className="truncate font-semibold">{thread.title}</div>
-            <Branch thread={thread} />
-          </div>
-          <StatusBadge status={thread.status} />
-          {desktopClose && (
-            <button onClick={() => open(null)} className="hidden rounded-md p-1.5 text-muted hover:bg-soft md:block" aria-label="Close thread">
-              <X size={18} />
-            </button>
-          )}
+    <div className="flex h-full min-h-0 flex-col">
+      <header className="flex items-center gap-2 border-b border-line px-3 py-2.5">
+        <Link
+          to="/c/$channelId"
+          params={{ channelId: thread.channelId }}
+          className="-ml-1 rounded-md p-1.5 text-muted hover:bg-soft md:hidden"
+          aria-label="Back"
+        >
+          <ChevronLeft size={20} />
+        </Link>
+        <div className="min-w-0 flex-1">
+          <div className="truncate font-semibold">{thread.title}</div>
+          <Branch thread={thread} />
         </div>
+        <StatusBadge status={thread.status} />
       </header>
       <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto py-3">
-        <div className={width}>
-          {thread.msgs.map((m) => (
-            <Message key={m.id} m={m} />
-          ))}
-          {thread.status === 'working' && <Working />}
-        </div>
+        {thread.msgs.map((m) => (
+          <Message key={m.id} m={m} />
+        ))}
+        {thread.status === 'working' && <Working />}
       </div>
-      <div className={`p-3 pt-0 ${width}`}>
+      <div className="p-3 pt-0">
         <ThreadComposer thread={thread} />
       </div>
     </div>
   );
 }
 
-export function NewThreadButton({ className = '' }: { className?: string }) {
-  const { draft } = useApp();
+export function NewThreadButton({ channelId }: { channelId: string }) {
   return (
-    <button
-      onClick={() => draft()}
-      className={`inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-accent px-3.5 py-2 text-sm font-semibold text-accent-fg hover:opacity-90 ${className}`}
+    <Link
+      to="/c/$channelId/new"
+      params={{ channelId }}
+      className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-accent px-3.5 py-2 text-sm font-semibold text-accent-fg hover:opacity-90"
     >
       <Plus size={16} />
       New Thread
-    </button>
+    </Link>
   );
 }
 
 // The only way to post in a channel: start a thread.
-export function NewThread({ cancel = true }: { cancel?: boolean }) {
-  const { channel, create, draft } = useApp();
+export function NewThread({ channelId, channelName }: { channelId: string; channelName: string }) {
+  const { create } = useApp();
+  const navigate = useNavigate();
   const [model, setModel] = useState(MODELS[0].name);
   const [effort, setEffort] = useState('High');
   return (
@@ -305,13 +351,12 @@ export function NewThread({ cancel = true }: { cancel?: boolean }) {
       <div className="mb-2 flex items-center gap-1.5 text-xs text-muted">
         <GitBranch size={12} className="shrink-0" />
         <span className="min-w-0 flex-1 truncate">
-          New thread in <b className="text-fg">#{channel.name}</b>. It gets its own worktree from <span className="font-mono">main</span>.
+          New thread in <b className="text-fg">#{channelName}</b>. It gets its own worktree from{' '}
+          <span className="font-mono">main</span>.
         </span>
-        {cancel && (
-          <button onClick={() => draft(false)} className="rounded px-1.5 py-0.5 hover:bg-soft hover:text-fg">
-            Cancel
-          </button>
-        )}
+        <Link to="/c/$channelId" params={{ channelId }} className="rounded px-1.5 py-0.5 hover:bg-soft hover:text-fg">
+          Cancel
+        </Link>
       </div>
       <Composer
         autoFocus
@@ -320,7 +365,10 @@ export function NewThread({ cancel = true }: { cancel?: boolean }) {
         effort={effort}
         onModel={setModel}
         onEffort={setEffort}
-        onSend={(text) => create(text, model, effort)}
+        onSend={(text) => {
+          const threadId = create(channelId, text, model, effort);
+          void navigate({ to: '/c/$channelId/t/$threadId', params: { channelId, threadId }, replace: true });
+        }}
       />
     </div>
   );

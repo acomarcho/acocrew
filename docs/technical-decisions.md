@@ -62,25 +62,68 @@ Why:
 
 We also start with a much smaller translator than T3's. Theirs is about 7,700 lines because it covers many edge cases. Ours starts with five message types:
 
-| SDK message | What we do |
-|---|---|
-| `assistant` with text | Create or update a chat bubble |
-| `assistant` with a tool call | Start a tool card |
-| `user` with a tool result | Finish that tool card |
-| `stream_event` | Show live pieces while Claude is writing |
-| `result` | End the turn |
+| SDK message                  | What we do                               |
+| ---------------------------- | ---------------------------------------- |
+| `assistant` with text        | Create or update a chat bubble           |
+| `assistant` with a tool call | Start a tool card                        |
+| `user` with a tool result    | Finish that tool card                    |
+| `stream_event`               | Show live pieces while Claude is writing |
+| `result`                     | End the turn                             |
 
 Left out at the start, added only when we need them: subagent views, steering mid-turn, fork and rollback, context compaction notices, rate limit tracking.
 
 To keep the door open: the queue, the permission wait and the fan-out each live in their own small module. If the concurrency gets messy later, Effect can be added to those modules without rewriting the app.
 
+## Decision 4: One repo, two apps, one shared package
+
+The repo is a monorepo: one git repo that holds several apps plus the code they share.
+
+```
+apps/server      Node. Will run Claude, store events and serve the WebSocket.
+apps/web         The browser UI.
+packages/shared  Types and constants that both sides import.
+```
+
+What each part uses:
+
+| Part                                                  | Pick                                                  |
+| ----------------------------------------------------- | ----------------------------------------------------- |
+| Linking the folders                                   | pnpm workspaces                                       |
+| Dev server, build, tests, lint, format, running tasks | Vite+ (the `vp` command)                              |
+| Web                                                   | React, Tailwind, TanStack Router                      |
+| Server                                                | Hono on Node, with the `ws` library for the WebSocket |
+
+Why:
+
+- **No Next.** The server must be one long-running process, because it holds the Claude process per thread, paused permission prompts and connected sockets in memory. Next is built around short request handlers.
+- **TanStack Router** type checks links and URL parameters, so a renamed route fails the build instead of breaking for a user.
+- **Vite+** is one tool for what would otherwise be five. It came out as 1.0 on 2026-09-28, so it is new. The tools inside it (Vite, Vitest, Oxlint, Oxfmt) are mature, and going back to them directly is a small change. T3 Code uses the same setup.
+- **No build step for the server or shared code.** Node runs the TypeScript files directly.
+
+Rules to keep:
+
+- The web app only talks to the server over HTTP (`/api/...`) and the WebSocket (`/ws`). That keeps an Electron shell cheap to add later as `apps/desktop`.
+- In development, Vite serves the UI on port 5273 and forwards `/api` and `/ws` to the server on port 5274. In production the plan is for the server to serve the built web files itself, so there is one process and one port. That part is not built yet.
+
+Commands, from the repo root:
+
+| Command          | What it does                             |
+| ---------------- | ---------------------------------------- |
+| `pnpm dev`       | Runs the web app and the server together |
+| `pnpm test`      | Runs tests                               |
+| `pnpm typecheck` | Type checks every package                |
+| `pnpm check`     | Checks formatting and lint rules         |
+| `pnpm build`     | Builds the web app                       |
+
 ## UI direction: the Inbox layout
 
-We mocked five layouts in `web/` (Slack, Topics, Inbox, Board, Focus). Marcho likes the Inbox one (layout 3), so that is the starting point.
+We mocked five layouts (Slack, Topics, Inbox, Board, Focus). Marcho likes the Inbox one, so `apps/web` now holds only that. The other four are still in git history, in commit `d98b9b7`.
 
 What it looks like: three columns, like an email app. Channels on the left, the thread list in the middle, the open thread on the right. On a phone it shows one column at a time.
 
-Rules that hold in every layout:
+URLs: `/c/<channel>` for a channel, `/c/<channel>/t/<thread>` for a thread, and `/c/<channel>/new` to start one. The data behind them is still fake and lives in the browser's memory.
+
+Rules of the UI:
 
 - A channel is one git repository.
 - You cannot post a loose message in a channel. Every message starts a thread ("New Thread") or replies inside one.
@@ -93,4 +136,3 @@ Rules that hold in every layout:
 - How each thread's agent is kept away from other threads' files (sandboxing).
 - What approval rules non-technical users get by default.
 - Logins and who can see which thread.
-- What the agents will work on (code repos, documents, other data).
