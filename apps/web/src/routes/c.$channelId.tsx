@@ -1,13 +1,13 @@
 // The Inbox screen: channels, then a thread list, then the open thread, like an email app.
-import type { Channel, Thread } from '@acocrew/shared';
+import type { Channel } from '@acocrew/shared';
 import { DragDropProvider, KeyboardSensor, PointerSensor } from '@dnd-kit/react';
 import { isSortable, useSortable } from '@dnd-kit/react/sortable';
 import { createFileRoute, Link, Navigate, Outlet, useChildMatches } from '@tanstack/react-router';
-import { ChevronDown, ChevronRight, Hash, ListFilter, Plus, Users } from 'lucide-react';
+import { Hash, ListFilter, Plus, Users } from 'lucide-react';
 import { useState } from 'react';
 import { needsYou, pinnedOf, useApp } from '../store';
 import { AutomationSection } from '../automations';
-import { Drawer, NavButton, NewThreadButton, Picker, statusLabel, ThreadRow, UserMenu } from '../ui';
+import { Drawer, NavButton, NewThreadButton, Picker, Section, statusLabel, ThreadRow, UserMenu } from '../ui';
 
 export const Route = createFileRoute('/c/$channelId')({ component: Inbox });
 
@@ -75,40 +75,6 @@ const STATES = [
   { id: 'done', name: statusLabel('done'), hint: 'Nothing going on' },
 ];
 
-// How many pinned threads show before the rest is asked for.
-const PINNED_SHOWN = 3;
-
-// The pinned threads, on top of the thread list. The section can be folded, like the automations above it.
-function PinnedSection({ threads }: { threads: Thread[] }) {
-  const [folded, setFolded] = useState(false);
-  const [all, setAll] = useState(false);
-  if (!threads.length) return null;
-  const more = threads.length - PINNED_SHOWN;
-  return (
-    <div className="bg-muted/40">
-      <button
-        type="button"
-        aria-expanded={!folded}
-        onClick={() => setFolded(!folded)}
-        className="flex w-full items-center gap-1 border-b border-border px-3 py-2 text-xs font-medium tracking-wide text-muted-foreground uppercase"
-      >
-        {folded ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-        Pinned ({threads.length})
-      </button>
-      {!folded && (all ? threads : threads.slice(0, PINNED_SHOWN)).map((t) => <ThreadRow key={t.id} thread={t} />)}
-      {!folded && more > 0 && (
-        <button
-          type="button"
-          onClick={() => setAll(!all)}
-          className="w-full border-b border-border px-3.5 py-2.5 text-left text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
-        >
-          {all ? 'Show less' : `Show ${more} more`}
-        </button>
-      )}
-    </div>
-  );
-}
-
 function Inbox() {
   const { channelId } = Route.useParams();
   const { channels, threads, seen, me, setNavOpen, orderChannels } = useApp();
@@ -123,6 +89,9 @@ function Inbox() {
     .filter((t) => state === 'all' || (state === 'you' ? needsYou(t, seen, me.id) : t.status === state))
     .filter((t) => whose === 'all' || t.people.includes(me.id))
     .sort((a, b) => b.updatedAt - a.updatedAt);
+  // Pinned threads get a part of their own, and are not repeated under the rest.
+  const pinned = pinnedOf(rows);
+  const rest = rows.filter((t) => t.pinnedAt === null);
 
   return (
     <div className="relative flex h-full overflow-hidden">
@@ -173,15 +142,23 @@ function Inbox() {
           <span className="h-4 w-px shrink-0 bg-border" />
           <Picker icon={<ListFilter size={14} />} value={state} options={STATES} onChange={setState} down fullLabel />
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        {/* A list of its own per repository, so that what was folded or scrolled in one does not carry over. */}
+        <div key={channel.id} className="min-h-0 flex-1 overflow-y-auto">
           <AutomationSection channelId={channel.id} />
-          <PinnedSection threads={pinnedOf(rows)} />
-          {rows
-            .filter((t) => t.pinnedAt === null)
-            .map((t) => (
+          {/* Not there when nothing is pinned. */}
+          {pinned.length > 0 && (
+            <Section title="Pinned" count={pinned.length} short>
+              {pinned.map((t) => (
+                <ThreadRow key={t.id} thread={t} />
+              ))}
+            </Section>
+          )}
+          <Section title="Threads" count={rest.length}>
+            {rest.map((t) => (
               <ThreadRow key={t.id} thread={t} />
             ))}
-          {rows.length === 0 && <p className="p-6 text-center text-sm text-muted-foreground">Nothing here.</p>}
+            {rest.length === 0 && <p className="p-6 text-center text-sm text-muted-foreground">Nothing here.</p>}
+          </Section>
         </div>
       </section>
 
