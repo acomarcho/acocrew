@@ -8,6 +8,13 @@ export type Status = 'working' | 'waiting' | 'needs' | 'failed' | 'done';
 // full: Claude acts without asking. ask: Claude asks before anything that is not just reading.
 export type Access = 'full' | 'ask';
 
+// private: only whoever made it sees it, and for a thread also the people it is shared with.
+// public: everyone with an account does.
+export type Visibility = 'private' | 'public';
+
+// What a person a thread is shared with can do in it. There is one kind for now: everything except sharing.
+export type Role = 'member';
+
 // Someone with an account. `username` is what they log in with, `name` is what everyone sees.
 // A deleted account stays in the list (without a username), so what the person wrote keeps their name.
 export type Person = { id: string; name: string; username: string | null; admin: boolean; deleted: boolean };
@@ -33,7 +40,13 @@ export type Thread = {
   // The branch its folder was on when Claude last finished a turn there. Null when it was on no branch.
   branch: string | null;
   updatedAt: number;
-  // When it was pinned to the top of its repository's thread list, for everyone. Null when it is not pinned.
+  visibility: Visibility;
+  // Who started it, and so who decides who sees it. Null for a thread nobody owns.
+  createdBy: string | null;
+  // The people it is shared with, as user ids. Kept while the thread is public, where it makes no difference.
+  shared: string[];
+  // When it was pinned to the top of its repository's thread list, for everyone who sees it. Null when it is
+  // not pinned.
   pinnedAt: number | null;
   // Everyone who sent a message in the thread, as user ids. Whoever started it comes first.
   people: string[];
@@ -105,6 +118,11 @@ export const CONTEXTS = [
   { id: '1m', name: '1M', hint: 'Keeps far more in view' },
 ];
 
+export const VISIBILITY = [
+  { id: 'private', name: 'Private', hint: 'Only you and people you share it with' },
+  { id: 'public', name: 'Public', hint: 'Everyone on the team' },
+];
+
 export const ACCESS = [
   { id: 'full', name: 'Full access', hint: 'Claude acts without asking' },
   { id: 'ask', name: 'Ask first', hint: 'Asks before changing things' },
@@ -115,8 +133,9 @@ export const ACCESS = [
 export type Schedule = { time: string; days: number[] };
 
 // What an automation sends, when, and how Claude runs. Every run is a fresh thread in a new worktree that
-// starts from the branch `from`.
-export type NewAutomation = Omit<NewMessage, 'images'> & Schedule & { channelId: string; from: string };
+// starts from the branch `from`. `visibility` says who sees the automation, and each thread it starts from then on.
+export type NewAutomation = Omit<NewMessage, 'images'> &
+  Schedule & { channelId: string; from: string; visibility: Visibility };
 
 // A message that is sent in a fresh thread of a repository, again and again. `on` is false while it is paused.
 // `createdBy` is the person its threads are started as. `nextAt` is when it runs next, null while paused.
@@ -127,6 +146,7 @@ export type ServerEvent =
   | { type: 'hello'; channels: Channel[]; threads: Thread[]; people: Person[]; seen: Seen; automations: Automation[] }
   // An automation was made or changed, or has just run (so it runs next at another time).
   | { type: 'automation'; automation: Automation }
+  // It was deleted, or the person may no longer see it.
   | { type: 'automation-gone'; id: string }
   // Threads the person just saw, on this device or another one of theirs.
   | { type: 'seen'; seen: Seen }
@@ -135,6 +155,8 @@ export type ServerEvent =
   | { type: 'order'; ids: string[] }
   | { type: 'person'; person: Person }
   | { type: 'thread'; thread: Thread }
+  // The person may no longer see this thread.
+  | { type: 'thread-gone'; id: string }
   | { type: 'items'; threadId: string; items: Item[] }
   | { type: 'item'; threadId: string; item: Item }
   // Words to add to the end of a bubble that Claude is still writing.
@@ -168,7 +190,10 @@ export type NewMessage = {
 };
 // `from`: the thread gets its own new worktree, on a new branch that starts from this branch.
 // `path`: the thread works in a folder that exists already: the repository folder or one of its worktrees.
-export type NewThread = NewMessage & { channelId: string } & ({ from: string } | { path: string });
+export type NewThread = NewMessage & { channelId: string; visibility: Visibility } & (
+    | { from: string }
+    | { path: string }
+  );
 
 // Where a new thread in a repository can work.
 export type Places = {

@@ -30,6 +30,7 @@ import { defaultRehypePlugins, Streamdown, type StreamdownProps } from 'streamdo
 import { ApprovalPanel, isAsking, QuestionPanel, useQuestions } from './pending';
 import { useCommands } from './commands';
 import { useApp } from './store';
+import { ShareButton } from './sharing';
 import { Avatar, Composer, Elapsed, Picture, PinButton, StatusBadge, type Settings } from './ui';
 
 type Tool = Extract<Item, { kind: 'tool' }>;
@@ -321,6 +322,7 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
             <div className="truncate font-semibold">{thread.title}</div>
             <div className="truncate font-mono text-xs text-muted-foreground">{thread.path ?? channel.path}</div>
           </div>
+          <ShareButton thread={thread} />
           <PinButton thread={thread} />
           <StatusBadge status={thread.status} />
         </header>

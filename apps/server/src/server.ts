@@ -14,6 +14,7 @@ import {
   ME_PATH,
   MODELS,
   USERS_PATH,
+  VISIBILITY,
   WS_PATH,
   type Answer,
   type ClientEvent,
@@ -22,6 +23,7 @@ import {
   type NewMessage,
   type Places,
   type Thread,
+  type Visibility,
 } from '@acocrew/shared';
 import { serve, upgradeWebSocket } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
@@ -45,6 +47,7 @@ import {
 import { CHECK_MS, nextRun, readSchedule, shown, type Stored } from './automations.ts';
 import {
   automationCols,
+  canSee,
   channelCols,
   listAutomations,
   listChannels,
@@ -53,13 +56,14 @@ import {
   loadItems,
   threadCols,
   type Db,
+  type StoredThread,
 } from './db.ts';
 import { folderInside, isRepo, listFolders } from './folders.ts';
 import { addWorktree, listPlaces } from './git.ts';
 import { createHub } from './hub.ts';
 import { openImages, type Images } from './images.ts';
 import { createRunner, type QueryFn } from './runner.ts';
-import { automations, channels, seen, session as sessions, threads, user } from './schema.ts';
+import { automations, channels, seen, session as sessions, shares, threads, user } from './schema.ts';
 import { firstLine } from './title.ts';
 
 // `home` is the only folder tree that repositories can be picked from.
@@ -106,6 +110,10 @@ function readMessage(body: Partial<NewMessage>, store: Images): NewMessage | nul
   return { text, images, model: model!, effort: effort!, context: context!, fast, access: access! };
 }
 
+// Who sees a thread or an automation, or null if the value is not one of the choices.
+const readVisibility = (value: unknown) =>
+  VISIBILITY.some((option) => option.id === value) ? (value as Visibility) : null;
+
 export async function createApp({ db, query, home, images, worktrees, secret, https = false, web }: Deps) {
   const auth = createAuth(db, secret, https);
   await seedAdmin(auth, db);
@@ -113,7 +121,8 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
   const store = openImages(images);
   const runner = createRunner(db, hub, query, store);
   // `user` is whoever is logged in on the browser that sent the request, and `login` is the id of that login.
-  const app = new Hono<{ Variables: { user: Me; login: string } }>();
+  // `thread` is the thread a request is about (see the routes under `/api/threads/:id`).
+  const app = new Hono<{ Variables: { user: Me; login: string; thread: StoredThread } }>();
 
   // Browsers say which site a request comes from. Only our own pages may talk to the server, so that some
   // other website open in a teammate's browser cannot start threads here. A proxy in front (Tailscale, the
@@ -304,12 +313,12 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
   // both start threads through here. Gives back the thread, or why there is none.
   type Where = { from?: unknown; path?: unknown };
   type Refusal = { error: string; status: 400 | 500 };
-  type Starter = { userId: string; automationId?: string };
+  type Starter = { userId: string; visibility: Visibility; automationId?: string };
   async function startThread(
     channel: typeof channels.$inferSelect,
     message: NewMessage,
     pick: Where,
-    { userId, automationId }: Starter,
+    { userId, visibility, automationId }: Starter,
   ): Promise<Thread | Refusal> {
     const id = randomUUID();
     const short = id.slice(0, 8);
@@ -340,13 +349,14 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
       access: message.access,
       status: 'working' as const,
       createdBy: userId,
+      visibility,
       automationId,
       people: [userId],
       createdAt: now,
       updatedAt: now,
     };
     const thread = runner.withLive(db.insert(threads).values(row).returning(threadCols).get());
-    hub.toAll({ type: 'thread', thread });
+    hub.thread(thread);
     runner.send(thread.id, message, userId);
     if (message.text) runner.name(thread.id, message.text);
     return thread;
@@ -362,14 +372,22 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
     const body = await c.req.json().catch(() => ({}));
     const message = readMessage(body, store);
     const channel = findChannel(body.channelId);
-    if (!message || !channel) return c.json({ error: 'Needs a channel, a message and a full set of settings.' }, 400);
-    const thread = await startThread(channel, message, body, { userId: c.get('user').id });
+    const visibility = readVisibility(body.visibility);
+    if (!message || !channel || !visibility)
+      return c.json({ error: 'Needs a channel, a message and a full set of settings.' }, 400);
+    const thread = await startThread(channel, message, body, { userId: c.get('user').id, visibility });
     return 'error' in thread ? c.json({ error: thread.error }, thread.status) : c.json(thread);
   });
 
   // One run of an automation: its message in a fresh thread, in a new worktree, as the person who made it.
-  const runAutomation = ({ id, channelId, from, createdBy, ...message }: Stored) =>
-    startThread(findChannel(channelId)!, { ...message, images: [] }, { from }, { userId: createdBy, automationId: id });
+  // The thread is seen by whoever sees the automation at that moment.
+  const runAutomation = ({ id, channelId, from, createdBy, visibility, ...message }: Stored) => {
+    const starter = { userId: createdBy, visibility, automationId: id };
+    return startThread(findChannel(channelId)!, { ...message, images: [] }, { from }, starter);
+  };
+  // How an automation is now, to everyone who sees it.
+  const announce = (row: Stored) =>
+    hub.toSome({ type: 'automation', automation: shown(row) }, (userId) => canSee(row, userId));
 
   // Once a minute, every automation that is on and whose time came since the last look is run. The first look
   // counts from when the server started, so a run that was missed while the server was off is skipped.
@@ -386,39 +404,43 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
       const failed = (why: unknown) => console.error(`Automation ${automation.id} did not run:`, why);
       runAutomation(automation).then((thread) => 'error' in thread && failed(thread.error), failed);
       // It runs next at another time now.
-      hub.toAll({ type: 'automation', automation: shown(automation) });
+      announce(automation);
     }
     // What was saved before this look is behind it from now on.
     saved.clear();
   }, CHECK_MS).unref();
 
   // What an automation is made of, or null if any part cannot be used. A newly picked branch has to be one
-  // git lists. The branch it had (`kept`) is taken as it is, so that an automation whose branch is gone can
-  // still be paused.
-  async function readAutomation(body: Partial<NewAutomation>, kept?: string) {
+  // git lists. The branch it had (`kept.from`) is taken as it is, so that an automation whose branch is gone
+  // can still be paused.
+  async function readAutomation(body: Partial<NewAutomation>, kept?: Stored) {
     const message = readMessage({ ...body, images: [] }, store);
     const schedule = readSchedule(body);
     const channel = findChannel(body.channelId);
-    if (!message?.text || !schedule || !channel || typeof body.from !== 'string') return null;
-    const listed = body.from === kept || (await listPlaces(channel.path)).branches.some((b) => b.name === body.from);
+    const visibility = readVisibility(body.visibility);
+    if (!message?.text || !schedule || !channel || !visibility || typeof body.from !== 'string') return null;
+    const listed =
+      body.from === kept?.from || (await listPlaces(channel.path)).branches.some((b) => b.name === body.from);
     if (!listed) return null;
     const { images: _, ...settings } = message;
-    return { ...settings, ...schedule, channelId: channel.id, from: body.from };
+    return { ...settings, ...schedule, channelId: channel.id, from: body.from, visibility };
   }
   const NOT_AN_AUTOMATION =
     'Needs a channel, a message, a time, at least one day, a branch and a full set of settings.';
-  const findAutomation = (c: Context) =>
-    db
+  // The automation a request is about. One the person may not see does not exist for them.
+  const findAutomation = (c: Context) => {
+    const row = db
       .select(automationCols)
       .from(automations)
       .where(eq(automations.id, c.req.param('id')!))
       .get();
+    return row && canSee(row, c.get('user').id) ? row : undefined;
+  };
   const noAutomation = (c: Context) => c.json({ error: 'Automation not found.' }, 404);
   const tellAutomation = (c: Context, row: Stored) => {
     saved.set(row.id, Date.now());
-    const automation = shown(row);
-    hub.toAll({ type: 'automation', automation });
-    return c.json(automation);
+    announce(row);
+    return c.json(shown(row));
   };
 
   app.post(AUTOMATIONS_PATH, async (c) => {
@@ -433,13 +455,15 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
     const old = findAutomation(c);
     if (!old) return noAutomation(c);
     const body = await c.req.json().catch(() => ({}));
-    const parts = await readAutomation({ ...body, channelId: old.channelId }, old.from);
+    const parts = await readAutomation({ ...body, channelId: old.channelId }, old);
     if (!parts || typeof body.on !== 'boolean') return refuse(c, NOT_AN_AUTOMATION);
+    if (parts.visibility !== old.visibility && old.createdBy !== c.get('user').id)
+      return c.json({ error: 'Only the person who made an automation can change who sees it.' }, 403);
     const set = { ...parts, on: body.on as boolean };
-    return tellAutomation(
-      c,
-      db.update(automations).set(set).where(eq(automations.id, old.id)).returning(automationCols).get(),
-    );
+    const row = db.update(automations).set(set).where(eq(automations.id, old.id)).returning(automationCols).get();
+    // Whoever saw it and no longer does is told it is gone.
+    hub.toSome({ type: 'automation-gone', id: old.id }, (userId) => canSee(old, userId) && !canSee(row, userId));
+    return tellAutomation(c, row);
   });
 
   // The threads it started stay, and no longer say an automation started them.
@@ -447,7 +471,7 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
     const old = findAutomation(c);
     if (!old) return noAutomation(c);
     db.delete(automations).where(eq(automations.id, old.id)).run();
-    hub.toAll({ type: 'automation-gone', id: old.id });
+    hub.toSome({ type: 'automation-gone', id: old.id }, (userId) => canSee(old, userId));
     return c.json({ ok: true });
   });
 
@@ -459,22 +483,78 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
     return 'error' in thread ? c.json({ error: thread.error }, thread.status) : c.json(thread);
   });
 
+  // The thread with this id, if this person sees it. A thread they may not see does not exist for them.
+  const findThread = (id: string, userId: string) => {
+    const thread = db.select(threadCols).from(threads).where(eq(threads.id, id)).get();
+    return thread && canSee(thread, userId) ? thread : undefined;
+  };
+
+  // Every route about one thread starts here.
+  app.use('/api/threads/:id/*', async (c, next) => {
+    const thread = findThread(c.req.param('id'), c.get('user').id);
+    if (!thread) return c.json({ error: 'Thread not found.' }, 404);
+    c.set('thread', thread);
+    await next();
+  });
+
   app.post('/api/threads/:id/messages', async (c) => {
     const message = readMessage(await c.req.json().catch(() => ({})), store);
-    const thread = db
-      .select()
-      .from(threads)
-      .where(eq(threads.id, c.req.param('id')))
-      .get();
-    if (!message || !thread) return c.json({ error: 'Needs a thread, a message and a full set of settings.' }, 400);
-    runner.send(thread.id, message, c.get('user').id);
+    if (!message) return c.json({ error: 'Needs a message and a full set of settings.' }, 400);
+    runner.send(c.get('thread').id, message, c.get('user').id);
     return c.json({ ok: true });
+  });
+
+  // Who sees a thread is for whoever started it to decide: whether it is private or public, and who it is
+  // shared with. The people stay on the list while it is public, for when it is private again.
+  for (const part of ['visibility', 'shares']) {
+    app.use(`/api/threads/:id/${part}`, async (c, next) => {
+      if (c.get('thread').createdBy !== c.get('user').id)
+        return c.json({ error: 'Only the person who started a thread can share it.' }, 403);
+      await next();
+    });
+  }
+  // Makes such a change and tells everyone how the thread is now. Whoever saw it and no longer does is told
+  // it is gone. How the thread was is read right before the change, so that two changes made close together
+  // cannot miss each other. This is not news: the thread keeps its `updatedAt`.
+  const reshare = (id: string, change: () => unknown) => {
+    const read = () => db.select(threadCols).from(threads).where(eq(threads.id, id)).get()!;
+    const old = read();
+    change();
+    const row = read();
+    hub.drop(id, (userId) => canSee(old, userId) && !canSee(row, userId));
+    hub.thread(runner.withLive(row));
+    return { ok: true };
+  };
+
+  app.post('/api/threads/:id/visibility', async (c) => {
+    const visibility = readVisibility((await c.req.json().catch(() => ({}))).visibility);
+    if (!visibility) return c.json({ error: 'Needs private or public.' }, 400);
+    const { id } = c.get('thread');
+    return c.json(reshare(id, () => db.update(threads).set({ visibility }).where(eq(threads.id, id)).run()));
+  });
+
+  // Shares the thread with one person, or takes that back. One person at a time, so that two changes made
+  // close together cannot undo each other.
+  app.post('/api/threads/:id/shares', async (c) => {
+    const { userId, shared } = await c.req.json().catch(() => ({}));
+    const thread = c.get('thread');
+    const person = findPerson(db, String(userId));
+    const addable = person && !person.deleted && person.id !== thread.createdBy;
+    if (typeof shared !== 'boolean' || (shared && !addable))
+      return c.json({ error: 'Needs someone else with an account, and shared or not.' }, 400);
+    const row = { threadId: thread.id, userId: String(userId), createdAt: Date.now() };
+    const mine = and(eq(shares.threadId, row.threadId), eq(shares.userId, row.userId));
+    return c.json(
+      reshare(thread.id, () =>
+        shared ? db.insert(shares).values(row).onConflictDoNothing().run() : db.delete(shares).where(mine).run(),
+      ),
+    );
   });
 
   app.post('/api/threads/:id/answers', async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as Answer;
     if (!DECISIONS.includes(body.decision)) return c.json({ error: 'Not an answer.' }, 400);
-    const taken = runner.answer(c.req.param('id'), body);
+    const taken = runner.answer(c.get('thread').id, body);
     return taken ? c.json({ ok: true }) : c.json({ error: 'Claude is no longer waiting for this answer.' }, 409);
   });
 
@@ -482,12 +562,8 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
   // after that is still new to them. Their other devices are told.
   app.post('/api/threads/:id/seen', async (c) => {
     const { at } = await c.req.json().catch(() => ({}));
-    const thread = db
-      .select()
-      .from(threads)
-      .where(eq(threads.id, c.req.param('id')))
-      .get();
-    if (!thread || !Number.isFinite(at)) return c.json({ error: 'Needs a thread and a time.' }, 400);
+    const thread = c.get('thread');
+    if (!Number.isFinite(at)) return c.json({ error: 'Needs a time.' }, 400);
     // What was seen once stays seen: a device that is behind cannot take it back.
     const row = { userId: c.get('user').id, threadId: thread.id, at: Math.min(at, thread.updatedAt) };
     const kept = db
@@ -500,36 +576,31 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
     return c.json({ ok: true });
   });
 
-  // Pins the thread to the top of the list for everyone, or takes it off again. This is not news: the thread
-  // keeps its `updatedAt`, so it does not turn up as new for anyone.
+  // Pins the thread to the top of the list for everyone who sees it, or takes it off again. This is not news:
+  // the thread keeps its `updatedAt`, so it does not turn up as new for anyone.
   app.post('/api/threads/:id/pin', async (c) => {
     const { pinned } = await c.req.json().catch(() => ({}));
-    const row =
-      typeof pinned === 'boolean' &&
-      db
-        .update(threads)
-        .set({ pinnedAt: pinned ? Date.now() : null })
-        .where(eq(threads.id, c.req.param('id')))
-        .returning(threadCols)
-        .get();
-    if (!row) return c.json({ error: 'Needs a thread, and pinned or not.' }, 400);
-    hub.toAll({ type: 'thread', thread: runner.withLive(row) });
+    if (typeof pinned !== 'boolean') return c.json({ error: 'Needs pinned or not.' }, 400);
+    const set = { pinnedAt: pinned ? Date.now() : null };
+    const row = db
+      .update(threads)
+      .set(set)
+      .where(eq(threads.id, c.get('thread').id))
+      .returning(threadCols)
+      .get();
+    hub.thread(runner.withLive(row));
     return c.json({ ok: true });
   });
 
   app.post('/api/threads/:id/stop', async (c) => {
-    await runner.stop(c.req.param('id'));
+    await runner.stop(c.get('thread').id);
     return c.json({ ok: true });
   });
 
   // What the message box suggests after a `/`: what Claude can run where the thread works, or in the
   // channel's repository for a thread that has not been started yet.
   app.get(COMMANDS_PATH, async (c) => {
-    const thread = db
-      .select()
-      .from(threads)
-      .where(eq(threads.id, c.req.query('thread') ?? ''))
-      .get();
+    const thread = findThread(c.req.query('thread') ?? '', c.get('user').id);
     const channel = db
       .select()
       .from(channels)
@@ -569,9 +640,11 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
       onOpen(_, ws) {
         const { id } = c.get('user');
         hub.add(ws, id);
-        const threads = listThreads(db).map(runner.withLive);
+        // Only what this person sees.
+        const mine = (row: Parameters<typeof canSee>[0]) => canSee(row, id);
+        const threads = listThreads(db).filter(mine).map(runner.withLive);
         const seen = listSeen(db, id);
-        const automated = listAutomations(db).map(shown);
+        const automated = listAutomations(db).filter(mine).map(shown);
         const lists = { channels: listChannels(db), threads, people: listPeople(db), seen, automations: automated };
         hub.send(ws, { type: 'hello', ...lists });
       },
@@ -579,6 +652,7 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
       // everything so far in the same step, so nothing can slip in between.
       onMessage(message, ws) {
         const { threadId } = JSON.parse(String(message.data)) as ClientEvent;
+        if (!findThread(threadId, c.get('user').id)) return;
         hub.open(ws, threadId);
         const items = [...loadItems(db, threadId), ...runner.live(threadId)].sort((a, b) => a.at - b.at);
         hub.send(ws, { type: 'items', threadId, items });
