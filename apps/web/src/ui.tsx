@@ -22,6 +22,7 @@ import {
   Brain,
   Check,
   ChevronDown,
+  ChevronRight,
   Clock,
   FolderGit2,
   GitBranch,
@@ -851,6 +852,55 @@ export function ThreadRow({ thread: t }: { thread: Thread }) {
       {/* A pinned thread can be unpinned right in the list. The button lies on the row: a link cannot hold one. */}
       {pinned && <PinButton thread={t} className="absolute top-1 right-1.5" />}
     </div>
+  );
+}
+
+// How many rows a short part of the thread list shows. The rest is scrolled to.
+const SHOWN = 3;
+
+// Ends a box right above the row after the last one that shows, however tall the rows are.
+function cutOff(box: HTMLDivElement | null) {
+  const next = box?.children[SHOWN];
+  if (box) box.style.maxHeight = next instanceof HTMLElement ? `${next.offsetTop}px` : '';
+}
+
+type SectionProps = {
+  title: string;
+  count: number;
+  startFolded?: boolean;
+  short?: boolean;
+  action?: ReactNode;
+  children: ReactNode;
+};
+
+// One part of the thread list, under a header that says how many are in it and folds it away. A short one
+// stays as tall as its first rows and scrolls on its own, so it never pushes the parts below it far down.
+// What is folded is not kept: a reload brings back how each part starts.
+export function Section({ title, count, startFolded = false, short, action, children }: SectionProps) {
+  const [folded, setFolded] = useState(startFolded);
+  return (
+    <>
+      <div className="flex items-center border-b border-border bg-muted/40 pr-1.5">
+        <button
+          type="button"
+          aria-expanded={!folded}
+          onClick={() => setFolded(!folded)}
+          className="flex flex-1 items-center gap-1 px-3 py-2 text-xs font-medium tracking-wide text-muted-foreground uppercase"
+        >
+          {folded ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+          {title} ({count})
+        </button>
+        {action}
+      </div>
+      {/* Measured on every render, as rows come and go: React calls a ref again when it is a new function, which
+          this one is each time. `relative` makes the rows count their place from the box. */}
+      {!folded && short && (
+        <div ref={(box) => cutOff(box)} className="relative overflow-y-auto bg-muted/40">
+          {children}
+        </div>
+      )}
+      {!folded && !short && children}
+    </>
   );
 }
 

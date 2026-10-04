@@ -1,18 +1,7 @@
 // Automations: a message that is sent in a fresh thread of a repository at set times.
 import { MODELS, VISIBILITY, type Automation, type Channel, type Schedule, type Visibility } from '@acocrew/shared';
 import { Link, useNavigate } from '@tanstack/react-router';
-import {
-  ChevronDown,
-  ChevronLeft,
-  ChevronRight,
-  Clock,
-  FolderGit2,
-  GitBranch,
-  Pencil,
-  Play,
-  Plus,
-  Trash2,
-} from 'lucide-react';
+import { ChevronDown, ChevronLeft, Clock, FolderGit2, GitBranch, Pencil, Play, Plus, Trash2 } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import { useCommands } from './commands';
 import { useApp } from './store';
@@ -23,6 +12,7 @@ import {
   Picker,
   Popup,
   PrivateMark,
+  Section,
   ThreadRow,
   usePlaces,
   VisibilityPicker,
@@ -277,23 +267,17 @@ export function AutomationEditor({ channel, automation, title, onDone, onCancel 
   );
 }
 
-// The automations of a repository, pinned above its threads. It can be folded away.
+// The automations of a repository, above its threads. They start folded away.
 export function AutomationSection({ channelId }: { channelId: string }) {
   const { automations, utcOffset } = useApp();
-  const [folded, setFolded] = useState(false);
   const mine = automations.filter((automation) => automation.channelId === channelId);
   return (
-    <div className="border-b border-border bg-muted/40">
-      <div className="flex items-center pr-1.5">
-        <button
-          type="button"
-          aria-expanded={!folded}
-          onClick={() => setFolded(!folded)}
-          className="flex flex-1 items-center gap-1 px-3 py-2 text-xs font-medium tracking-wide text-muted-foreground uppercase"
-        >
-          {folded ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-          Automations ({mine.length})
-        </button>
+    <Section
+      title="Automations"
+      count={mine.length}
+      startFolded
+      short
+      action={
         <Link
           to="/c/$channelId/new"
           params={{ channelId }}
@@ -304,30 +288,30 @@ export function AutomationSection({ channelId }: { channelId: string }) {
         >
           <Plus size={15} />
         </Link>
-      </div>
-      {!folded &&
-        mine.map((automation) => (
-          <Link
-            key={automation.id}
-            to="/c/$channelId/a/$automationId"
-            params={{ channelId, automationId: automation.id }}
-            className={`flex items-center gap-2 px-3.5 py-2 hover:bg-muted ${automation.on ? '' : 'opacity-60'}`}
-            activeProps={{ className: 'bg-muted' }}
-          >
-            <Clock size={14} className={`shrink-0 ${automation.on ? 'text-primary' : 'text-muted-foreground'}`} />
-            <span className="min-w-0 flex-1">
-              <span className="flex items-center gap-1.5 text-sm font-medium">
-                <span className="truncate">{titleOf(automation)}</span>
-                <PrivateMark visibility={automation.visibility} />
-              </span>
-              <span className="block truncate text-xs text-muted-foreground">
-                {describe(automation, utcOffset)}
-                {!automation.on && ' · Paused'}
-              </span>
+      }
+    >
+      {mine.map((automation) => (
+        <Link
+          key={automation.id}
+          to="/c/$channelId/a/$automationId"
+          params={{ channelId, automationId: automation.id }}
+          className={`flex items-center gap-2 border-b border-border px-3.5 py-2 hover:bg-muted ${automation.on ? '' : 'opacity-60'}`}
+          activeProps={{ className: 'bg-muted' }}
+        >
+          <Clock size={14} className={`shrink-0 ${automation.on ? 'text-primary' : 'text-muted-foreground'}`} />
+          <span className="min-w-0 flex-1">
+            <span className="flex items-center gap-1.5 text-sm font-medium">
+              <span className="truncate">{titleOf(automation)}</span>
+              <PrivateMark visibility={automation.visibility} />
             </span>
-          </Link>
-        ))}
-    </div>
+            <span className="block truncate text-xs text-muted-foreground">
+              {describe(automation, utcOffset)}
+              {!automation.on && ' · Paused'}
+            </span>
+          </span>
+        </Link>
+      ))}
+    </Section>
   );
 }
 
