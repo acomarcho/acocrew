@@ -25,12 +25,12 @@ type State = {
 
 type Action = ServerEvent | { type: 'open'; threadId: string } | { type: 'offline' };
 
-const START: State = { ready: false, online: false, channels: [], threads: [], openId: null, items: null };
+export const START: State = { ready: false, online: false, channels: [], threads: [], openId: null, items: null };
 
 const upsert = <T extends { id: string }>(list: T[], next: T) =>
   list.some((x) => x.id === next.id) ? list.map((x) => (x.id === next.id ? next : x)) : [...list, next];
 
-function reduce(state: State, action: Action): State {
+export function reduce(state: State, action: Action): State {
   // Thread content only matters for the thread on screen.
   if ('threadId' in action && action.type !== 'open' && action.threadId !== state.openId) return state;
   switch (action.type) {
@@ -40,6 +40,11 @@ function reduce(state: State, action: Action): State {
       return { ...state, online: false };
     case 'channel':
       return { ...state, channels: upsert(state.channels, action.channel) };
+    case 'order': {
+      // A channel the list does not name stays at the end.
+      const at = (channel: Channel) => action.ids.indexOf(channel.id) + 1 || action.ids.length + 1;
+      return { ...state, channels: state.channels.toSorted((a, b) => at(a) - at(b)) };
+    }
     case 'thread': {
       // The same row can arrive twice (as the answer to a request and over the socket). The newest wins.
       const known = state.threads.find((t) => t.id === action.thread.id);
@@ -120,6 +125,13 @@ export function useAppState() {
     return channel;
   };
 
+  // Shows the new order right away. If the server turns it down, the old order comes back.
+  const orderChannels = (ids: string[]) => {
+    const before = state.channels.map((channel) => channel.id);
+    dispatch({ type: 'order', ids });
+    request('/api/channels/order', { ids }).catch(() => dispatch({ type: 'order', ids: before }));
+  };
+
   const createThread = async (body: NewThread) => {
     const thread = await request<Thread>('/api/threads', body);
     dispatch({ type: 'thread', thread });
@@ -137,6 +149,7 @@ export function useAppState() {
     openThread,
     listFolders,
     addChannel,
+    orderChannels,
     createThread,
     sendMessage,
     answer,

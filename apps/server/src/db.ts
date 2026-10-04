@@ -39,7 +39,7 @@ export const threadCols = {
   updatedAt: threads.updatedAt,
 };
 
-export const listChannels = (db: Db) => db.select(channelCols).from(channels).orderBy(asc(channels.createdAt)).all();
+export const listChannels = (db: Db) => db.select(channelCols).from(channels).orderBy(asc(channels.position)).all();
 export const listThreads = (db: Db) => db.select(threadCols).from(threads).orderBy(asc(threads.createdAt)).all();
 
 export const saveItem = (db: Db, threadId: string, item: Item) => db.insert(events).values({ threadId, item }).run();

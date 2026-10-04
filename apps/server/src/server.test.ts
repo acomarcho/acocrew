@@ -430,6 +430,32 @@ test('add repository: only a git repository inside home becomes a channel, once'
   expect((await connect()).hello.channels).toEqual([channel]);
 });
 
+test('repositories can be put in a new order, which every device gets and keeps, and a new one goes last', async () => {
+  const [a, b] = [await addChannel(shop), await addChannel(blog)];
+  const tab = await connect();
+  expect(tab.hello.channels).toEqual([a, b]);
+
+  expect((await post('/api/channels/order', { ids: [b.id, a.id] })).status).toBe(200);
+  expect(await tab.until('order')).toEqual({ type: 'order', ids: [b.id, a.id] });
+  expect((await connect()).hello.channels).toEqual([b, a]);
+
+  const c = await addChannel(journal);
+  expect((await connect()).hello.channels).toEqual([b, a, c]);
+
+  // Only the full list of repositories, each one once, is an order.
+  for (const ids of [
+    [a.id, b.id],
+    [a.id, b.id, c.id, c.id],
+    [a.id, b.id, 'nope'],
+    [a.id, b.id, 7],
+    'nope',
+    undefined,
+  ]) {
+    expect((await post('/api/channels/order', { ids })).status, JSON.stringify(ids)).toBe(400);
+  }
+  expect((await connect()).hello.channels).toEqual([b, a, c]);
+});
+
 test('a thread runs Claude in the repo folder and streams two turns through one process', async () => {
   const { tab, thread } = await watch(TWO_TURNS, 'make notes\nplease');
   expect(thread).toMatchObject({ title: 'make notes', status: 'working', tasks: [], path: null, ...HAIKU });
