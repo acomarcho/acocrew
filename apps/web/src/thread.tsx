@@ -1,5 +1,5 @@
 // The open thread: everything said and done in it, and the box to reply.
-import type { Answer, Channel, Item, Thread, Todo } from '@acocrew/shared';
+import type { Answer, Channel, Item, Person, Thread, Todo } from '@acocrew/shared';
 import { code } from '@streamdown/code';
 import { Link } from '@tanstack/react-router';
 import {
@@ -45,14 +45,18 @@ const byUser = (item?: Item) => !item || (item.kind === 'message' && item.by ===
 const ThreadCtx = createContext<(id: string) => Item[]>(null!);
 
 // One row of the chat. `lead` rows show who is talking; the rows under them belong to the same speaker.
-function Row({ agent, lead, at, children }: { agent: boolean; lead: boolean; at?: number; children: ReactNode }) {
+// The speaker is Claude (`agent`), or the person whose user id is `by`.
+type Speaker = { agent?: boolean; by?: string };
+function Row({ agent, by, lead, at, children }: Speaker & { lead: boolean; at?: number; children: ReactNode }) {
+  const { people } = useApp();
+  const person: Person | undefined = people.find((known) => known.id === by);
   return (
     <div className={`flex gap-3 px-4 ${lead ? 'pt-2 pb-1' : 'py-1'}`}>
-      {lead ? <Avatar agent={agent} /> : <div className="w-9 shrink-0" />}
+      {lead ? <Avatar agent={agent} person={person} /> : <div className="w-9 shrink-0" />}
       <div className="min-w-0 flex-1">
         {lead && (
           <div className="mb-1 flex items-baseline gap-2">
-            <span className="font-semibold">{agent ? 'Claude' : 'You'}</span>
+            <span className="font-semibold">{agent ? 'Claude' : (person?.name ?? 'Someone')}</span>
             {agent && <span className="rounded bg-primary/15 px-1.5 text-[11px] font-medium text-primary">Agent</span>}
             {at && <span className="text-xs text-muted-foreground">{clock(at)}</span>}
           </div>
@@ -174,7 +178,7 @@ function ItemView({ item, lead, nested }: { item: Item; lead: boolean; nested?: 
   if (item.kind === 'todos') return null;
   if (item.kind === 'message' && item.by === 'user') {
     return (
-      <Row agent={false} lead at={item.at}>
+      <Row by={item.userId} lead at={item.at}>
         <Copyable text={item.text}>
           {/* A set height, so the chat does not jump when an image finishes loading. Click to see it full size. */}
           {item.images?.map((id) => (

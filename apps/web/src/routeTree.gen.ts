@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AddRouteImport } from './routes/add'
+import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as CChannelIdRouteImport } from './routes/c.$channelId'
 import { Route as CChannelIdIndexRouteImport } from './routes/c.$channelId.index'
 import { Route as CChannelIdNewRouteImport } from './routes/c.$channelId.new'
@@ -24,6 +25,11 @@ const IndexRoute = IndexRouteImport.update({
 const AddRoute = AddRouteImport.update({
   id: '/add',
   path: '/add',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SettingsRoute = SettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CChannelIdRoute = CChannelIdRouteImport.update({
@@ -50,6 +56,7 @@ const CChannelIdTThreadIdRoute = CChannelIdTThreadIdRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/add': typeof AddRoute
+  '/settings': typeof SettingsRoute
   '/c/$channelId': typeof CChannelIdRouteWithChildren
   '/c/$channelId/new': typeof CChannelIdNewRoute
   '/c/$channelId/': typeof CChannelIdIndexRoute
@@ -58,6 +65,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/add': typeof AddRoute
+  '/settings': typeof SettingsRoute
   '/c/$channelId/new': typeof CChannelIdNewRoute
   '/c/$channelId': typeof CChannelIdIndexRoute
   '/c/$channelId/t/$threadId': typeof CChannelIdTThreadIdRoute
@@ -66,6 +74,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/add': typeof AddRoute
+  '/settings': typeof SettingsRoute
   '/c/$channelId': typeof CChannelIdRouteWithChildren
   '/c/$channelId/new': typeof CChannelIdNewRoute
   '/c/$channelId/': typeof CChannelIdIndexRoute
@@ -76,6 +85,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/add'
+    | '/settings'
     | '/c/$channelId'
     | '/c/$channelId/new'
     | '/c/$channelId/'
@@ -84,6 +94,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/add'
+    | '/settings'
     | '/c/$channelId/new'
     | '/c/$channelId'
     | '/c/$channelId/t/$threadId'
@@ -91,6 +102,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/add'
+    | '/settings'
     | '/c/$channelId'
     | '/c/$channelId/new'
     | '/c/$channelId/'
@@ -100,6 +112,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AddRoute: typeof AddRoute
+  SettingsRoute: typeof SettingsRoute
   CChannelIdRoute: typeof CChannelIdRouteWithChildren
 }
 
@@ -117,6 +130,13 @@ declare module '@tanstack/react-router' {
       path: '/add'
       fullPath: '/add'
       preLoaderRoute: typeof AddRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/settings': {
+      id: '/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof SettingsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/c/$channelId': {
@@ -169,6 +189,7 @@ const CChannelIdRouteWithChildren = CChannelIdRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AddRoute: AddRoute,
+  SettingsRoute: SettingsRoute,
   CChannelIdRoute: CChannelIdRouteWithChildren,
 }
 export const routeTree = rootRouteImport

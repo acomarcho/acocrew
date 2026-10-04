@@ -1,6 +1,6 @@
 # Technical decisions
 
-Last updated: 2026-10-03
+Last updated: 2026-10-04
 
 ## What we are building
 
@@ -111,6 +111,7 @@ Running it for real, apart from development:
 - `pnpm stable` copies this checkout to `~/acocrew-stable`, builds it there and starts it in the tmux session `acocrew-stable` on port 5280, with the real data in `~/.acocrew/acocrew.db`. Editing, building or running `pnpm dev` in the checkout does not touch it. That is what lets acocrew be used to work on acocrew.
 - Run `pnpm stable` again to update it. That restarts the server, so anything Claude is doing in a thread is cut short (the thread says so, and the next message resumes).
 - Two settings let copies live side by side: `PORT` (default 5274) and `ACOCREW_DB` (default `~/.acocrew/acocrew.db`).
+- `ACOCREW_HTTPS=1` is for a copy people reach through an https address. `pnpm stable` sets it. See Decision 8.
 
 Commands, from the repo root:
 
@@ -139,6 +140,7 @@ Tables:
 | `channels` | One row per repository: its name and folder path.                                               |
 | `threads`  | Title, model, reasoning level, status, folder, branch, and Claude's session id for resuming.    |
 | `events`   | A numbered log per thread. Each row is one whole item: a chat bubble, a tool card, or an error. |
+| `user`     | One row per account: display name, username, whether it is an admin. See Decision 8.            |
 
 The `events` log is only ever added to. A tool card is written twice (started, finished). When a thread is loaded, the newest row per item wins.
 
@@ -200,12 +202,12 @@ So the server does not count messages and answers. It listens all the time and w
 | `result`                                               | That turn is over                              |
 | `background_tasks_changed`                             | The full list of background work still running |
 
-| Status    | When                                                                                      |
-| --------- | ----------------------------------------------------------------------------------------- |
-| Working   | A turn is on                                                                              |
-| Waiting   | No turn, but background work is still running. The thread lists what Claude is waiting on |
-| Needs you | Claude is waiting for a yes or an answer, or the last turn failed                         |
-| Done      | Nothing going on                                                                          |
+| Status          | When                                                                                      |
+| --------------- | ----------------------------------------------------------------------------------------- |
+| Working         | A turn is on                                                                              |
+| Waiting         | No turn, but background work is still running. The thread lists what Claude is waiting on |
+| Needs attention | Claude is waiting for a yes or an answer, or the last turn failed                         |
+| Done            | Nothing going on                                                                          |
 
 We checked the SDK for a ready-made "running / idle" signal. It exists in the type definitions (`session_state_changed`) but was not sent in a live run, so we do not rely on it.
 
@@ -222,7 +224,7 @@ Other rules that follow from listening all the time:
 Claude always runs in its normal mode, where it asks before any action that is not plainly safe (reading files never asks). It asks through a function of ours, `canUseTool`:
 
 - **Full access** (the default): we say yes right away.
-- **Ask first**: a panel pinned above the message box shows what Claude wants to do, with Approve and Decline. The thread goes to Needs you until someone answers. A "..." menu holds two rarer choices:
+- **Ask first**: a panel pinned above the message box shows what Claude wants to do, with Approve and Decline. The thread goes to Needs attention until someone answers. A "..." menu holds two rarer choices:
   - **Always allow this session** is a yes that also stops Claude asking about that kind of action. Which actions it covers is Claude's own suggestion, and it can be wider than it sounds: after one file edit it covers all file edits, and also shell commands that only move or delete files in the repository. It lasts as long as that Claude process lives, so after a restart Claude asks again.
   - **Cancel** is a no that also ends Claude's turn.
 - **Claude's own questions** (multiple choice) come through the same function and show in the same spot, in both modes. One question at a time. Clicking a choice moves to the next question, number keys pick a choice, and the message box doubles as "type your own answer". On the last question you press Send.
@@ -232,6 +234,35 @@ This mirrors T3 Code, with one difference: when Claude suggests no rule for "Alw
 Access is picked in the message box and applies from the next message on. Anyone looking at the thread can answer a prompt.
 
 Tests replay recordings of real Claude sessions (`apps/server/src/fixtures/`). `record.ts` in that folder makes a new one.
+
+## Decision 8: Logins with Better Auth, behind our own routes
+
+Nothing works without a login: no page data, no API route, no WebSocket. Logins are username and password. There is no email anywhere, and no sign-up page.
+
+We use Better Auth, a library that runs inside our server and keeps its data in our SQLite file. It hashes passwords and hands out the login cookie. We did not pick a hosted service (Clerk, WorkOS): every install would need its own account with them and internet access to log in, which fights "one machine, one file".
+
+How it is wired (`apps/server/src/auth.ts` and the top of `server.ts`):
+
+- Only two of Better Auth's own routes can be reached from outside: log in (`/api/auth/sign-in/username`) and log out (`/api/auth/sign-out`). Everything else about accounts goes through small routes of our own, which call Better Auth on the server side. That keeps our rules in one place.
+- Better Auth wants an email for every user. We give it a made-up one (`<random>@acocrew.local`) and never show it.
+- Its four tables (`user`, `session`, `account`, `verification`) are in `schema.ts` and are migrated by Drizzle like the rest. `user` has three fields of ours: `admin`, `mustChangePassword` and `deleted`.
+- The secret that signs login cookies is a file next to the database (`~/.acocrew/secret`), made on the first start.
+
+The rules:
+
+- **First start.** When there are no users, the server makes one admin: username `admin`, password `changeme`. Every thread and every message from before logins becomes theirs.
+- **Temporary passwords.** A password someone else set (the first admin's, a new account's, an admin's reset) only opens one screen: "Pick a new password". The server refuses everything else with 403 until that is done.
+- **Accounts come from admins.** In Settings, an admin can add a user, reset a password, make or unmake an admin, and delete a user. There is always at least one admin, and nobody can delete their own account.
+- **Forgot your password?** Ask an admin to reset it. A reset logs that person out everywhere.
+- **Deleting keeps the name.** A deleted account loses its password, its logins and its username (which can be given out again), but the row stays. So messages it wrote still show who wrote them.
+- **Who wrote what.** A message from a person carries their user id (`userId` on the item). A thread keeps who started it (`threads.created_by`) and everyone who wrote in it (`threads.people`).
+- **Everyone sees everyone.** The WebSocket's first message carries the list of people (id, display name, username, admin, deleted). A change to anyone is sent to all browsers. There are no per-channel permissions.
+- **Picking a new password ends the other logins.** Whoever else was logged in to that account, on any device, is logged out. The browser that made the change stays in.
+- **How long a login lasts.** Seven days from when it was last used. Each request hands the browser a fresh cookie when the login was extended.
+- **Https only, when told so.** With `ACOCREW_HTTPS=1` the login cookie is marked "Secure": the browser never sends it over plain http, where anyone on the same network could read it and act as that person. This is how to run any copy that people reach through an https tunnel, and `pnpm stable` does. It is off by default, because the server itself only speaks plain http on localhost and cannot tell what is in front of it. While it is on, logging in works over https and on `localhost` only. Turning it on or off logs everyone out once, because the cookie's name changes.
+- **Being logged out.** When a login ends (log out, a deleted account, a password reset or change), the server also hangs up that person's open WebSockets. Tabs that are still logged in connect again by themselves. The others ask the server who they are, hear "nobody", and show the login screen. The same happens when any request is answered with "Log in first".
+
+Not built: email, Google login, a "forgot password" link, profile pictures, per-channel permissions, and a limit on login attempts. Better Auth has such a limit built in. It counts per caller address, and behind a tunnel that address has to be read from a header the tunnel sets, which differs per setup. Until that is set up it is off.
 
 ## UI direction: the Inbox layout
 
@@ -244,6 +275,10 @@ URLs: `/c/<channel>` for a channel, `/c/<channel>/t/<thread>` for a thread, `/c/
 Rules of the UI:
 
 - A channel is one git repository. "Add repository" lets you pick a folder under the home folder of the server machine. Only folders that are git repositories can be added.
+- The bottom of the sidebar shows who is logged in. Clicking it opens a small menu with Settings and Log out. On a phone it is at the bottom of the slide-out sidebar.
+- The thread list has two filters, each on its own row: whose threads (All threads, or Yours: the ones you started or wrote in) and their status (All, Needs attention, Working, Waiting, Done).
+- A thread in the list shows the people who wrote in it as small overlapping pictures: the first letter of the name, on a color that person keeps everywhere. The first four show, the rest become a number.
+- A message shows the display name of who wrote it. Changing your display name in Settings changes it on your old messages too.
 - You cannot post a loose message in a channel. Every message starts a thread ("New Thread") or replies inside one.
 - A new thread picks where it works, with two dropdowns side by side in a row of their own under "Start a thread". The first one picks between "New worktree" (the default) and "Existing worktree". The second one picks the branch: "from origin/main" for a new worktree, "on some-branch" for an existing one. Both lists can be searched by typing.
 - A new worktree is a second working copy of the repository, on its own new branch. It is made with `git worktree add` when the thread starts. The folder is `worktrees/<repository name>/<first 8 characters of the thread id>`, next to the database (so `~/.acocrew/worktrees/...`). The branch is `acocrew/<the same 8 characters>`. If git cannot make the worktree, no thread is started and the message box shows git's reason.
@@ -260,9 +295,9 @@ Rules of the UI:
 - Hovering a message (yours or Claude's) shows a copy button at its top right. It copies the message as it was written, so Claude's answers come out as markdown. Phones have no hover, so the button does not show there.
 - Color names in the CSS follow shadcn/ui (`background`, `foreground`, `muted`, `border`, `primary` and so on), because Streamdown expects those names. The colors themselves are set once in `:root` in `apps/web/src/index.css`.
 
-Not built yet: logins (everyone posts as "You"), removing a repository, diagrams (mermaid), and showing images that live in the repository.
+Not built yet: removing a repository, diagrams (mermaid), and showing images that live in the repository.
 
 ## Not decided yet
 
 - How each thread's agent is kept away from other threads' files (sandboxing).
-- Logins and who can see which thread.
+- Who can see which thread (today everyone logged in sees everything).

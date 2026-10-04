@@ -1,12 +1,18 @@
 import {
   COMMANDS_PATH,
   HEALTH_PATH,
+  LOGIN_PATH,
+  LOGOUT_PATH,
+  ME_PATH,
+  USERS_PATH,
   WS_PATH,
   type Answer,
   type Channel,
   type Command,
   type FolderList,
   type Item,
+  type Me,
+  type Person,
   type Places,
   type ServerEvent,
   type Status,
@@ -18,11 +24,12 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, afterEach, beforeEach, expect, onTestFinished, test, vi } from 'vite-plus/test';
+import { afterAll, afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from 'vite-plus/test';
 import { WebSocket } from 'ws';
+import { FIRST_ADMIN } from './auth.ts';
 import { openDb, type Db } from './db.ts';
 import type { QueryFn } from './runner.ts';
-import { threads } from './schema.ts';
+import { channels, events, session as sessions, threads } from './schema.ts';
 import { startServer } from './server.ts';
 
 // A line of a recording (see fixtures/record.ts): a real message from Claude, or a marker for what the
@@ -215,12 +222,32 @@ let sockets: WebSocket[];
 async function serve(script: Line[], naming?: Line[]) {
   server?.close();
   claude = fakeClaude(script, naming);
-  server = await startServer(0, { db, query: claude.query, home, images, worktrees }); // 0 = any free port
+  server = await startServer(0, { db, query: claude.query, home, images, worktrees, secret: 'test' }); // 0 = any free port
 }
 
-beforeEach(async () => {
+// The login cookie of whoever the test is acting as. Every request and every tab sends it, like a browser.
+let cookie: string;
+// What the first admin changes their password to.
+const PASSWORD = 'correct horse';
+const DAY = 24 * 60 * 60_000;
+
+// Most tests are about what happens once someone is in. So each one starts from a copy of a database in which
+// the first admin has logged in and picked a password, and acts as that admin. Getting there takes a real
+// first start and a real login, done once (hashing passwords is slow on purpose).
+let fresh: Buffer;
+let adminCookie: string;
+beforeAll(async () => {
   db = openDb(':memory:');
+  await serve(TWO_TURNS);
+  cookie = adminCookie = await logIn(FIRST_ADMIN.username, FIRST_ADMIN.password);
+  await post(`${ME_PATH}/password`, { currentPassword: FIRST_ADMIN.password, newPassword: PASSWORD });
+  fresh = db.$client.serialize();
+});
+
+beforeEach(async () => {
+  db = openDb(fresh);
   sockets = [];
+  cookie = adminCookie;
   await serve(TWO_TURNS);
 });
 afterEach(() => {
@@ -230,7 +257,20 @@ afterEach(() => {
 });
 
 const url = (path: string) => `http://127.0.0.1:${server.port}${path}`;
-const post = (path: string, body?: unknown) => fetch(url(path), { method: 'POST', body: JSON.stringify(body) });
+// What a browser adds to every request from our own pages: where the page came from, and the login cookie.
+const browser = () => ({ origin: url(''), cookie, 'content-type': 'application/json' });
+const ask = (path: string, init: RequestInit = {}) =>
+  fetch(url(path), { ...init, headers: { ...browser(), ...init.headers } });
+const post = (path: string, body?: unknown) => ask(path, { method: 'POST', body: JSON.stringify(body) });
+
+// Fills in the login form. Gives back the cookie the browser would keep, or nothing when the login failed.
+async function logIn(username: string, password: string) {
+  const res = await post(LOGIN_PATH, { username, password });
+  return res.headers
+    .getSetCookie()
+    .map((line) => line.split(';')[0])
+    .join('; ');
+}
 
 // What one item looks like on screen, as a short line of text.
 function line(item: Item): string {
@@ -242,7 +282,7 @@ function line(item: Item): string {
 
 // A browser tab: remembers every event and can wait for one.
 async function connect() {
-  const socket = new WebSocket(`ws://127.0.0.1:${server.port}${WS_PATH}`);
+  const socket = new WebSocket(`ws://127.0.0.1:${server.port}${WS_PATH}`, { headers: { cookie } });
   sockets.push(socket);
   const events: ServerEvent[] = [];
   let check = () => {};
@@ -286,6 +326,8 @@ async function connect() {
     events,
     hello,
     until,
+    // Settles once the server has cut this tab off.
+    closed: new Promise<void>((resolve) => socket.once('close', () => resolve())),
     items,
     // Opens a thread and waits for everything in it so far.
     async open(threadId: string) {
@@ -315,6 +357,18 @@ async function connect() {
       items(threadId).find((i) => i.kind === 'tool' && i.name === name) as Extract<Item, { kind: 'tool' }>,
   };
 }
+
+// What a page gets when it opens the socket: the refusal's status, or 'open'.
+const socketFrom = (headers: Record<string, string> = {}) => {
+  const socket = new WebSocket(`ws://127.0.0.1:${server.port}${WS_PATH}`, { headers: { cookie, ...headers } });
+  return new Promise((resolve) => {
+    socket.once('unexpected-response', (_, res) => resolve(res.statusCode));
+    socket.once('open', () => {
+      socket.close();
+      resolve('open');
+    });
+  });
+};
 
 const HAIKU = { model: 'claude-haiku-4-5-20251001', effort: 'low', context: '1m', fast: false, access: 'full' };
 const OPUS = { ...HAIKU, model: 'claude-opus-5-5', effort: 'high' };
@@ -365,13 +419,13 @@ const TURN_1 = [
 ];
 
 test('health check answers ok', async () => {
-  const res = await fetch(url(HEALTH_PATH));
+  const res = await ask(HEALTH_PATH);
   expect(res.status).toBe(200);
   expect(await res.json()).toEqual({ ok: true });
 });
 
 test('unknown paths are 404', async () => {
-  expect((await fetch(url('/nope'))).status).toBe(404);
+  expect((await ask('/nope')).status).toBe(404);
 });
 
 test('with the built web app, one server gives out the app, its files and the api', async () => {
@@ -381,26 +435,26 @@ test('with the built web app, one server gives out the app, its files and the ap
   writeFileSync(join(web, 'index.html'), '<html>the app</html>');
   writeFileSync(join(web, 'assets', 'app.js'), 'console.log(1)');
   server.close();
-  server = await startServer(0, { db, query: claude.query, home, images, worktrees, web });
+  server = await startServer(0, { db, query: claude.query, home, images, worktrees, secret: 'test', web });
 
   // Any screen's address gets the app, which then shows that screen.
   for (const path of ['/', '/c/some-channel/t/some-thread']) {
-    expect(await (await fetch(url(path))).text(), path).toBe('<html>the app</html>');
+    expect(await (await ask(path)).text(), path).toBe('<html>the app</html>');
   }
-  expect(await (await fetch(url('/assets/app.js'))).text()).toBe('console.log(1)');
-  expect(await (await fetch(url(HEALTH_PATH))).json()).toEqual({ ok: true });
-  expect((await fetch(url('/api/nope'))).status).toBe(404);
+  expect(await (await ask('/assets/app.js')).text()).toBe('console.log(1)');
+  expect(await (await ask(HEALTH_PATH)).json()).toEqual({ ok: true });
+  expect((await ask('/api/nope')).status).toBe(404);
 });
 
 test('folders: lists visible folders and marks git repositories', async () => {
-  const top = await (await fetch(url('/api/folders'))).json();
+  const top = await (await ask('/api/folders')).json();
   expect(top).toEqual({
     path: home,
     parent: null,
     folders: [{ name: 'code', path: join(home, 'code'), isRepo: false }],
   });
 
-  const res = await fetch(url(`/api/folders?path=${encodeURIComponent(join(home, 'code'))}`));
+  const res = await ask(`/api/folders?path=${encodeURIComponent(join(home, 'code'))}`);
   const code = (await res.json()) as FolderList;
   expect(code.parent).toBe(home);
   expect(code.folders.map((f) => [f.name, f.isRepo])).toEqual([
@@ -413,7 +467,7 @@ test('folders: lists visible folders and marks git repositories', async () => {
 
 test('folders: nothing outside the home folder can be listed', async () => {
   for (const path of ['/etc', join(home, '..'), join(home, 'way-out'), join(home, 'missing')]) {
-    const res = await fetch(url(`/api/folders?path=${encodeURIComponent(path)}`));
+    const res = await ask(`/api/folders?path=${encodeURIComponent(path)}`);
     expect(res.status, path).toBe(404);
   }
 });
@@ -584,8 +638,7 @@ test('a thread started in a new worktree runs Claude there, on its own branch, a
   expect(git(blog, 'worktree', 'list')).toBe(before);
 });
 
-const places = async (channel: Channel) =>
-  (await (await fetch(url(`/api/channels/${channel.id}/places`))).json()) as Places;
+const places = async (channel: Channel) => (await (await ask(`/api/channels/${channel.id}/places`)).json()) as Places;
 
 test('a new worktree starts from the newest commit of the remote main branch unless another branch is picked', async () => {
   const channel = await addChannel(journal);
@@ -669,8 +722,10 @@ test('the thread shows the branch Claude left its folder on, also for threads fr
   const { updatedAt } = db.update(threads).set({ branch: null }).returning().get();
   await serve(TWO_TURNS);
   const later = await connect();
-  const found = await later.until('thread', (e) => e.thread.id === thread.id && e.thread.branch === 'notes');
-  expect(found.thread.updatedAt).toBe(updatedAt);
+  // The branch is read while the server starts, so a tab that connects late is told right at the start.
+  const onNotes = (t: Thread) => t.id === thread.id && t.branch === 'notes';
+  const found = later.hello.threads.find(onNotes) ?? (await later.until('thread', (e) => onNotes(e.thread))).thread;
+  expect(found.updatedAt).toBe(updatedAt);
 });
 
 test('when git cannot make the worktree, no thread is started and the reason comes back', async () => {
@@ -1091,7 +1146,7 @@ test('a Claude process with nothing to do for ten minutes is closed, and the nex
   expect(claude.calls[1]).toMatchObject({ resume: SESSION });
 });
 
-const commands = (from: string) => fetch(url(`${COMMANDS_PATH}?${from}`));
+const commands = (from: string) => ask(`${COMMANDS_PATH}?${from}`);
 const names = (list: Command[], skill: boolean) => list.filter((c) => c.skill === skill).map((c) => c.name);
 
 test('the message box is offered what Claude says it can run where the thread works', async () => {
@@ -1158,12 +1213,12 @@ test('when Claude cannot say what it can run, the request fails and the next one
 
 const PNG = readFileSync(new URL('./fixtures/image.png', import.meta.url));
 const upload = (body: Uint8Array, type: string) =>
-  fetch(url('/api/images'), { method: 'POST', body, headers: { 'content-type': type } });
+  ask('/api/images', { method: 'POST', body, headers: { 'content-type': type } });
 const uploaded = async () => ((await (await upload(PNG, 'image/png')).json()) as { id: string }).id;
 
 test('an uploaded image shows in the thread on every device and is handed to Claude before the words', async () => {
   const id = await uploaded();
-  const back = await fetch(url(`/api/images/${id}`));
+  const back = await ask(`/api/images/${id}`);
   expect(back.headers.get('content-type')).toBe('image/png');
   expect(Buffer.from(await back.arrayBuffer())).toEqual(PNG);
 
@@ -1207,7 +1262,7 @@ test('only png, jpeg, gif and webp up to 10MB are taken, and a message can only 
   for (const type of ['image/png', 'image/jpeg', 'image/gif', 'image/webp']) {
     const res = await upload(PNG, type);
     expect(res.status, type).toBe(200);
-    const back = await fetch(url(`/api/images/${((await res.json()) as { id: string }).id}`));
+    const back = await ask(`/api/images/${((await res.json()) as { id: string }).id}`);
     expect(back.headers.get('content-type')).toBe(type);
     expect(back.headers.get('x-content-type-options')).toBe('nosniff');
   }
@@ -1222,7 +1277,7 @@ test('only png, jpeg, gif and webp up to 10MB are taken, and a message can only 
   const thread = await startThread('make notes');
   for (const id of ['nope.png', '../secret.png', '..', '', 7]) {
     expect((await say(thread, 'hi', { ...HAIKU, images: [id] })).status, String(id)).toBe(400);
-    expect((await fetch(url(`/api/images/${encodeURIComponent(id)}`))).status, String(id)).toBe(404);
+    expect((await ask(`/api/images/${encodeURIComponent(id)}`)).status, String(id)).toBe(404);
   }
   expect((await say(thread, 'hi', { ...HAIKU, images: 'nope' })).status).toBe(400);
   expect((await say(thread, '', HAIKU)).status).toBe(400);
@@ -1231,24 +1286,13 @@ test('only png, jpeg, gif and webp up to 10MB are taken, and a message can only 
 test('requests from another website are refused, our own pages are not', async () => {
   const channel = await addChannel();
   const body = JSON.stringify({ channelId: channel.id, text: 'hi', path: channel.path, ...HAIKU });
-  const from = (headers: Record<string, string>) => fetch(url('/api/threads'), { method: 'POST', body, headers });
+  const from = (headers: Record<string, string>) => ask('/api/threads', { method: 'POST', body, headers });
   const viaProxy = { origin: 'https://team.example:5273', 'x-forwarded-host': 'team.example:5273' };
   expect((await from({ origin: 'https://evil.example' })).status).toBe(403);
   expect((await from({ ...viaProxy, origin: 'https://evil.example' })).status).toBe(403);
   expect((await from({ origin: `http://127.0.0.1:${server.port}` })).status).toBe(200);
   expect((await from(viaProxy)).status).toBe(200);
 
-  // What a page on that site gets when it opens the socket: the refusal's status, or 'open'.
-  const socketFrom = (headers: Record<string, string>) => {
-    const socket = new WebSocket(`ws://127.0.0.1:${server.port}${WS_PATH}`, { headers });
-    return new Promise((resolve) => {
-      socket.once('unexpected-response', (_, res) => resolve(res.statusCode));
-      socket.once('open', () => {
-        socket.close();
-        resolve('open');
-      });
-    });
-  };
   expect(await socketFrom({ origin: 'https://evil.example' })).toBe(403);
   expect(await socketFrom(viaProxy)).toBe('open');
 });
@@ -1276,4 +1320,345 @@ test('bad requests are turned away', async () => {
   expect((await answer(thread, { toolId: 'nope', decision: 'approve' })).status).toBe(409);
   expect((await answer(thread, { toolId: 'nope' } as never)).status).toBe(400);
   expect(db.select().from(threads).where(eq(threads.channelId, thread.channelId)).all()).toHaveLength(1);
+});
+
+// Runs `what` as the person this cookie belongs to.
+async function as<T>(theirs: string, what: () => Promise<T>) {
+  const mine = cookie;
+  cookie = theirs;
+  try {
+    return await what();
+  } finally {
+    cookie = mine;
+  }
+}
+
+const error = async (res: Response) => ((await res.json()) as { error: string }).error;
+const whoAmI = async () => (await (await ask(ME_PATH)).json()) as Me;
+const TEMPORARY = 'temporary';
+const addUser = (username: string, name?: string) => post(USERS_PATH, { username, name, password: TEMPORARY });
+const setPassword = (currentPassword: string, newPassword: string) =>
+  post(`${ME_PATH}/password`, { currentPassword, newPassword });
+
+// A teammate who got an account from the admin, logged in and picked a password. Gives back their cookie.
+async function teammate(username: string, name?: string) {
+  const person = (await (await addUser(username, name)).json()) as Person;
+  const theirs = await logIn(username, TEMPORARY);
+  await as(theirs, () => setPassword(TEMPORARY, `${username} password`));
+  return { ...person, cookie: theirs };
+}
+
+test('nothing is given out without a login', async () => {
+  const thread = await startThread('make notes');
+  const mine = cookie;
+  const closed = () =>
+    Promise.all([
+      ask(ME_PATH),
+      ask('/api/folders'),
+      ask(`${COMMANDS_PATH}?thread=${thread.id}`),
+      ask('/api/images/some-image.png'),
+      post('/api/channels', { path: shop }),
+      post('/api/threads', { channelId: thread.channelId, text: 'hi', path: shop, ...HAIKU }),
+      post(`/api/threads/${thread.id}/messages`, { text: 'hi', ...HAIKU }),
+      post(`/api/threads/${thread.id}/stop`),
+      post(USERS_PATH, { username: 'sneaky', name: 'Sneaky', password: 'sneaky password' }),
+      post('/api/auth/sign-up/email', { email: 'a@b.co', name: 'Sneaky', password: 'sneaky password' }),
+    ]);
+
+  cookie = '';
+  for (const res of await closed()) expect(res.status, res.url).toBe(401);
+  expect(await socketFrom()).toBe(401);
+  // The page itself has to load, or there would be nowhere to log in.
+  expect((await ask(HEALTH_PATH)).status).toBe(200);
+
+  // A wrong password or a made-up cookie gets nowhere.
+  expect(await logIn(FIRST_ADMIN.username, 'not the password')).toBe('');
+  expect(await logIn('nobody', PASSWORD)).toBe('');
+  cookie = mine.replace(/=.{8}/, '=AAAAAAAA');
+  expect((await ask(ME_PATH)).status).toBe(401);
+
+  // Logging out ends the login for good, even for someone who kept the cookie, and hangs up on open tabs.
+  cookie = mine;
+  const tab = await connect();
+  expect((await post(LOGOUT_PATH, {})).status).toBe(200);
+  await tab.closed;
+  expect((await ask(ME_PATH)).status).toBe(401);
+  expect(await socketFrom()).toBe(401);
+  expect(claude.said).toHaveLength(1);
+});
+
+test('accounts cannot be made or changed through the login library, only through our own routes', async () => {
+  const bodies = {
+    '/api/auth/sign-up/email': { email: 'a@b.co', name: 'Sneaky', username: 'sneaky', password: 'sneaky password' },
+    '/api/auth/update-user': { name: 'Boss', admin: true },
+    '/api/auth/change-password': { currentPassword: PASSWORD, newPassword: 'another password' },
+    '/api/auth/change-email': { newEmail: 'a@b.co' },
+    '/api/auth/delete-user': {},
+    '/api/auth/sign-in/email': { email: 'a@b.co', password: PASSWORD },
+  };
+  for (const [path, body] of Object.entries(bodies)) expect((await post(path, body)).status, path).toBe(404);
+  const tab = await connect();
+  expect(tab.hello.people).toEqual([
+    { id: expect.any(String), name: 'Admin', username: 'admin', admin: true, deleted: false },
+  ]);
+  expect(await logIn(FIRST_ADMIN.username, PASSWORD)).not.toBe('');
+});
+
+test('the first start makes an admin who owns what was there before, and who must pick a password first', async () => {
+  // A database from before there were logins: a thread, what its one user wrote, and what Claude did.
+  db = openDb(':memory:');
+  const old = { id: 'thread-1', channelId: 'channel-1', title: 'Make notes', createdAt: 1, updatedAt: 1 };
+  db.insert(channels).values({ id: 'channel-1', name: 'shop', path: shop, createdAt: 1 }).run();
+  db.insert(threads)
+    .values({ ...old, model: HAIKU.model, effort: HAIKU.effort, status: 'done', branch: 'main' })
+    .run();
+  const before: Item[] = [
+    { id: 'item-1', kind: 'message', by: 'user', text: 'make notes', images: [], at: 1 },
+    { id: 'item-2', kind: 'message', by: 'claude', text: 'Done.', at: 2 },
+    { id: 'item-3', kind: 'notice', text: 'Stopped.', at: 3 },
+  ];
+  db.insert(events)
+    .values(before.map((item) => ({ threadId: old.id, item })))
+    .run();
+  await serve(TWO_TURNS);
+
+  cookie = await logIn(FIRST_ADMIN.username, FIRST_ADMIN.password);
+  const me = await whoAmI();
+  expect(me).toEqual({ ...me, name: 'Admin', username: 'admin', admin: true, mustChangePassword: true });
+
+  // Until the password is changed, the app stays shut.
+  expect((await ask('/api/folders')).status).toBe(403);
+  expect((await post(ME_PATH, { name: 'Boss' })).status).toBe(403);
+  expect((await addUser('jordan')).status).toBe(403);
+  expect(await socketFrom()).toBe(403);
+  expect(await error(await setPassword(FIRST_ADMIN.password, FIRST_ADMIN.password))).toMatch(/different/);
+  expect(await error(await setPassword(FIRST_ADMIN.password, 'short'))).toMatch(/too short/i);
+  expect((await setPassword('not the password', PASSWORD)).status).toBe(400);
+  expect((await setPassword(undefined as never, undefined as never)).status).toBe(400);
+  expect((await whoAmI()).mustChangePassword).toBe(true);
+
+  // Someone else who logged in with the default password is logged out the moment a new one is picked.
+  const other = await logIn(FIRST_ADMIN.username, FIRST_ADMIN.password);
+  expect((await setPassword(FIRST_ADMIN.password, PASSWORD)).status).toBe(200);
+  expect((await as(other, () => ask(ME_PATH))).status).toBe(401);
+  // That goes for later changes too, and for the tabs the other login has open.
+  const theirs = await as(await logIn(FIRST_ADMIN.username, PASSWORD), connect);
+  expect((await setPassword(PASSWORD, 'another password')).status).toBe(200);
+  await theirs.closed;
+  expect((await setPassword('another password', PASSWORD)).status).toBe(200);
+  expect((await whoAmI()).mustChangePassword).toBe(false);
+  expect((await ask('/api/folders')).status).toBe(200);
+  expect(await logIn(FIRST_ADMIN.username, FIRST_ADMIN.password)).toBe('');
+  expect(await logIn(FIRST_ADMIN.username, PASSWORD)).not.toBe('');
+
+  // The old thread and the message in it are the admin's now. What Claude said is nobody's.
+  const tab = await connect();
+  expect(tab.hello.threads).toMatchObject([{ id: old.id, people: [me.id] }]);
+  await tab.open(old.id);
+  expect(tab.items(old.id)).toEqual([{ ...before[0], userId: me.id }, before[1], before[2]]);
+  expect(db.select().from(threads).get()!.createdBy).toBe(me.id);
+
+  // A restart does not make a second admin, and leaves the password alone.
+  await serve(TWO_TURNS);
+  expect((await connect()).hello.people).toHaveLength(1);
+  expect(await logIn(FIRST_ADMIN.username, FIRST_ADMIN.password)).toBe('');
+});
+
+test('an admin makes an account, and its owner picks a password of their own on first login', async () => {
+  const tab = await connect();
+  const res = await addUser('Jordan.Lee', 'Jordan');
+  const jordan = (await res.json()) as Person;
+  // Usernames are kept in small letters. Everyone connected hears about the new teammate.
+  expect(jordan).toEqual({ id: jordan.id, name: 'Jordan', username: 'jordan.lee', admin: false, deleted: false });
+  expect((await tab.until('person')).person).toEqual(jordan);
+
+  // What cannot be an account says why, in words for the admin who typed it.
+  expect(await error(await addUser('jordan.lee'))).toMatch(/already taken/i);
+  expect(await error(await addUser('jo'))).toMatch(/too short/i);
+  expect(await error(await addUser('jordan lee'))).toMatch(/username/i);
+  expect(await error(await post(USERS_PATH, { username: 'robin', password: 'short' }))).toMatch(/too short/i);
+  expect((await post(USERS_PATH, {})).status).toBe(400);
+  // Without a display name, the username stands in for it.
+  expect(await (await post(USERS_PATH, { username: 'robin', name: '  ', password: TEMPORARY })).json()).toMatchObject({
+    name: 'robin',
+  });
+
+  // The temporary password only opens the screen that asks for a new one.
+  cookie = await logIn('JORDAN.LEE', TEMPORARY);
+  expect(await whoAmI()).toEqual({ ...jordan, mustChangePassword: true });
+  expect((await ask('/api/folders')).status).toBe(403);
+  expect(await socketFrom()).toBe(403);
+  expect((await setPassword(TEMPORARY, 'jordan password')).status).toBe(200);
+  expect((await ask('/api/folders')).status).toBe(200);
+  expect(await socketFrom()).toBe('open');
+
+  // Someone who is not an admin cannot make or change accounts.
+  for (const path of [USERS_PATH, `${USERS_PATH}/${jordan.id}/admin`, `${USERS_PATH}/${jordan.id}/delete`]) {
+    expect((await post(path, { username: 'sam', password: TEMPORARY, admin: true })).status, path).toBe(403);
+  }
+  expect((await post(`${USERS_PATH}/${tab.hello.people[0].id}/password`, { password: TEMPORARY })).status).toBe(403);
+  expect((await connect()).hello.people.map((person) => person.username)).toEqual(['admin', 'jordan.lee', 'robin']);
+});
+
+test('a message says who wrote it, and a thread lists everyone who wrote in it', async () => {
+  const admin = await whoAmI();
+  const jordan = await teammate('jordan', 'Jordan');
+  const tab = await connect();
+  const thread = await startThread('make notes');
+  expect(thread.people).toEqual([admin.id]);
+  await tab.open(thread.id);
+  await tab.status(thread.id, 'done');
+
+  await as(jordan.cookie, () => say(thread, 'read both files'));
+  const joined = await tab.until('thread', (e) => e.thread.people.length === 2);
+  expect(joined.thread.people).toEqual([admin.id, jordan.id]);
+  await tab.status(thread.id, 'done');
+  const wrote = tab
+    .items(thread.id)
+    .flatMap((item) => (item.kind === 'message' ? [[item.by, item.text.slice(0, 15), item.userId]] : []));
+  expect(wrote).toEqual([
+    ['user', 'make notes', admin.id],
+    ['claude', 'Done — notes.tx', undefined],
+    ['user', 'read both files', jordan.id],
+    ['claude', 'math.js is a si', undefined],
+  ]);
+
+  // Writing again does not list a person twice. A tab opened later is told the same.
+  await say(thread, 'thanks');
+  await as(jordan.cookie, () => say(thread, 'thanks'));
+  const late = await as(jordan.cookie, connect);
+  expect(late.hello.threads[0].people).toEqual([admin.id, jordan.id]);
+  expect(late.hello.people.map((person) => person.name)).toEqual(['Admin', 'Jordan']);
+  expect(db.select().from(threads).get()!.createdBy).toBe(admin.id);
+});
+
+test('a new display name is told to everyone', async () => {
+  const tab = await connect();
+  const me = await whoAmI();
+  expect((await post(ME_PATH, { name: '  Marcho  ' })).status).toBe(200);
+  expect((await tab.until('person')).person).toEqual({ ...tab.hello.people[0], name: 'Marcho' });
+  expect((await whoAmI()).name).toBe('Marcho');
+  expect((await connect()).hello.people).toMatchObject([{ id: me.id, name: 'Marcho', username: 'admin' }]);
+
+  for (const name of ['', '   ', 'x'.repeat(51), 7, undefined]) {
+    expect((await post(ME_PATH, { name })).status, String(name)).toBe(400);
+  }
+  expect((await whoAmI()).name).toBe('Marcho');
+  expect((await addUser('jordan', 'x'.repeat(51))).status).toBe(400);
+});
+
+test('a login that is used does not run out, and a site that is not ours cannot log anyone in or out', async () => {
+  // Three days on, the login has four of its seven days left.
+  const [row] = db.select().from(sessions).all();
+  db.update(sessions)
+    .set({ updatedAt: new Date(Date.now() - 3 * DAY), expiresAt: new Date(Date.now() + 4 * DAY) })
+    .run();
+  const res = await ask('/api/folders');
+  expect(res.status).toBe(200);
+  // The browser gets a cookie that lasts the full week again, and the login itself does too.
+  expect(res.headers.getSetCookie().join()).toMatch(/Max-Age=604800/);
+  expect(db.select().from(sessions).get()!.expiresAt.getTime()).toBeGreaterThan(row.expiresAt.getTime() - DAY);
+
+  // Behind a tunnel, our own pages come from the address the tunnel has.
+  const viaProxy = { origin: 'https://team.example', 'x-forwarded-host': 'team.example' };
+  const login = { method: 'POST', body: JSON.stringify({ username: FIRST_ADMIN.username, password: PASSWORD }) };
+  expect((await ask(LOGIN_PATH, { ...login, headers: viaProxy })).status).toBe(200);
+  expect((await ask(LOGIN_PATH, { ...login, headers: { origin: 'https://evil.example' } })).status).toBe(403);
+  const logout = { method: 'POST', body: '{}' };
+  expect((await ask(LOGOUT_PATH, { ...logout, headers: { origin: 'https://evil.example' } })).status).toBe(403);
+  // Neither can a request that does not say which site it comes from.
+  const { origin: _, ...noSite } = browser();
+  expect((await fetch(url(LOGOUT_PATH), { ...logout, headers: noSite })).status).toBe(403);
+  expect((await ask(ME_PATH)).status).toBe(200);
+});
+
+test('admins make and unmake admins, but one always stays', async () => {
+  const admin = await whoAmI();
+  const jordan = await teammate('jordan');
+  const tab = await connect();
+  const setAdmin = (id: string, admin: boolean) => post(`${USERS_PATH}/${id}/admin`, { admin });
+
+  expect((await as(jordan.cookie, () => addUser('robin'))).status).toBe(403);
+  expect((await setAdmin(jordan.id, true)).status).toBe(200);
+  expect((await tab.until('person')).person).toMatchObject({ id: jordan.id, admin: true });
+  expect((await as(jordan.cookie, () => addUser('robin'))).status).toBe(200);
+
+  // With two admins, either can step down or be taken down. The one left cannot.
+  expect((await as(jordan.cookie, () => setAdmin(admin.id, false))).status).toBe(200);
+  expect((await addUser('sam')).status).toBe(403);
+  expect(await error(await as(jordan.cookie, () => setAdmin(jordan.id, false)))).toMatch(/at least one admin/);
+  expect((await as(jordan.cookie, whoAmI)).admin).toBe(true);
+  expect((await as(jordan.cookie, () => setAdmin('nobody', true))).status).toBe(404);
+});
+
+test('a deleted account is logged out at once, keeps its name on what it wrote, and frees its username', async () => {
+  const admin = await whoAmI();
+  const jordan = await teammate('jordan', 'Jordan');
+  const thread = await startThread('make notes');
+  await as(jordan.cookie, () => say(thread, 'read both files'));
+  const theirs = await as(jordan.cookie, connect);
+  const tab = await connect();
+  const remove = (id: string) => post(`${USERS_PATH}/${id}/delete`);
+
+  expect(await error(await remove(admin.id))).toMatch(/your own account/);
+  expect((await remove(jordan.id)).status).toBe(200);
+  await theirs.closed;
+  expect((await as(jordan.cookie, () => ask(ME_PATH))).status).toBe(401);
+  expect(await as(jordan.cookie, socketFrom)).toBe(401);
+  expect(await logIn('jordan', 'jordan password')).toBe('');
+
+  // Everyone still knows whose messages those were.
+  const left = { id: jordan.id, name: 'Jordan', username: null, admin: false, deleted: true };
+  expect((await tab.until('person')).person).toEqual(left);
+  const late = await connect();
+  expect(late.hello.people).toEqual([tab.hello.people[0], left]);
+  expect(late.hello.threads[0].people).toEqual([admin.id, jordan.id]);
+  await late.open(thread.id);
+  expect(late.items(thread.id).filter((item) => item.kind === 'message' && item.userId === jordan.id)).toHaveLength(1);
+
+  // An account that is gone cannot be changed, and its username can go to someone new.
+  expect((await remove(jordan.id)).status).toBe(404);
+  expect((await post(`${USERS_PATH}/${jordan.id}/admin`, { admin: true })).status).toBe(404);
+  expect((await post(`${USERS_PATH}/${jordan.id}/password`, { password: TEMPORARY })).status).toBe(404);
+  const next = await teammate('jordan', 'Jordan B');
+  expect(next.id).not.toBe(jordan.id);
+  expect((await as(next.cookie, () => ask('/api/folders'))).status).toBe(200);
+});
+
+test('a password reset by an admin logs the person out and makes them pick a new one', async () => {
+  const jordan = await teammate('jordan');
+  const theirs = await as(jordan.cookie, connect);
+  const reset = (password: unknown) => post(`${USERS_PATH}/${jordan.id}/password`, { password });
+
+  expect(await error(await reset('short'))).toMatch(/too short/i);
+  expect((await reset(undefined)).status).toBe(400);
+  expect((await as(jordan.cookie, () => ask('/api/folders'))).status).toBe(200);
+
+  expect((await reset('second temporary')).status).toBe(200);
+  await theirs.closed;
+  expect((await as(jordan.cookie, () => ask(ME_PATH))).status).toBe(401);
+  expect(await logIn('jordan', 'jordan password')).toBe('');
+
+  cookie = await logIn('jordan', 'second temporary');
+  expect((await whoAmI()).mustChangePassword).toBe(true);
+  expect((await ask('/api/folders')).status).toBe(403);
+  expect((await setPassword('second temporary', 'jordan password 2')).status).toBe(200);
+  expect((await ask('/api/folders')).status).toBe(200);
+});
+
+test('told that people come in over https, the login cookie is for https only', async () => {
+  const cookieLine = async () =>
+    (await post(LOGIN_PATH, { username: FIRST_ADMIN.username, password: PASSWORD })).headers.getSetCookie()[0];
+  expect(await cookieLine()).not.toMatch(/Secure/);
+
+  server.close();
+  const deps = { db, query: claude.query, home, images, worktrees, secret: 'test' };
+  server = await startServer(0, { ...deps, https: true });
+  const secure = await cookieLine();
+  expect(secure).toMatch(/; Secure/);
+  // The cookie from before the switch has another name and no longer counts. The new one does.
+  expect((await ask(ME_PATH)).status).toBe(401);
+  cookie = secure.split(';')[0];
+  expect((await ask(ME_PATH)).status).toBe(200);
+  expect(await socketFrom()).toBe('open');
 });

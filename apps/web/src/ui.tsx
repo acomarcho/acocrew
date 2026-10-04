@@ -8,6 +8,7 @@ import {
   type Channel,
   type Command,
   type NewMessage,
+  type Person,
   type Places,
   type Status,
 } from '@acocrew/shared';
@@ -23,9 +24,11 @@ import {
   ImagePlus,
   Layers,
   LoaderCircle,
+  LogOut,
   Menu,
   Plus,
   Search,
+  Settings as Cog,
   ShieldCheck,
   Sparkles,
   Square,
@@ -36,12 +39,86 @@ import { CommandMenu, suggest, useCommands } from './commands';
 import { imageUrl, uploadImage } from './images';
 import { request, useApp } from './store';
 
-export function Avatar({ agent }: { agent: boolean }) {
+// Each person keeps one of these colors everywhere, worked out from their id.
+const COLORS = [
+  'bg-indigo-500',
+  'bg-sky-500',
+  'bg-emerald-500',
+  'bg-amber-500',
+  'bg-rose-500',
+  'bg-violet-500',
+  'bg-teal-500',
+  'bg-fuchsia-500',
+];
+const colorOf = (id: string) => COLORS[[...id].reduce((sum, letter) => sum + letter.charCodeAt(0), 0) % COLORS.length];
+
+// Claude's picture, or a person's: the first letter of their name on their color.
+export function Avatar({ agent, person, small }: { agent?: boolean; person?: Person; small?: boolean }) {
+  const color = agent ? 'bg-[#d97757]' : person ? colorOf(person.id) : 'bg-muted-foreground';
   return (
     <div
-      className={`grid size-9 shrink-0 place-items-center rounded-lg font-semibold text-white ${agent ? 'bg-[#d97757]' : 'bg-indigo-500'}`}
+      title={agent ? 'Claude' : person?.name}
+      className={`grid shrink-0 place-items-center font-semibold text-white uppercase ${color} ${
+        small ? 'size-6 rounded-md text-xs' : 'size-9 rounded-lg'
+      }`}
     >
-      {agent ? <Sparkles size={18} /> : 'Y'}
+      {agent ? <Sparkles size={18} /> : (person?.name[0] ?? '?')}
+    </div>
+  );
+}
+
+// How many faces a stack shows before the rest becomes a number.
+const STACK = 4;
+
+// The people who wrote in a thread, as overlapping pictures.
+export function AvatarStack({ ids }: { ids: string[] }) {
+  const { people } = useApp();
+  const faces = ids.flatMap((id) => people.find((person) => person.id === id) ?? []);
+  return (
+    <span className="flex shrink-0 items-center -space-x-1.5">
+      {faces.slice(0, STACK).map((person) => (
+        <span key={person.id} className="rounded-lg ring-2 ring-background">
+          <Avatar person={person} small />
+        </span>
+      ))}
+      {faces.length > STACK && <span className="pl-3 text-xs text-muted-foreground">+{faces.length - STACK}</span>}
+    </span>
+  );
+}
+
+// Who is logged in, at the bottom of the sidebar. Opens a small menu with Settings and Log out.
+export function UserMenu() {
+  const { me, logOut, setNavOpen } = useApp();
+  const [open, setOpen] = useState(false);
+  const row = 'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted';
+  return (
+    <div className="relative mt-auto border-t border-white/10 p-2">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        aria-label="Your account"
+        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-sidebar-accent"
+      >
+        <Avatar person={me} small />
+        <span className="min-w-0 flex-1 truncate font-medium">{me.name}</span>
+        <ChevronDown size={14} className="shrink-0 rotate-180 opacity-60" />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute inset-x-2 bottom-full z-50 mb-1 rounded-lg border border-border bg-card p-1 text-foreground shadow-xl">
+            <div className="truncate px-2 py-1 text-xs text-muted-foreground">@{me.username}</div>
+            <Link to="/settings" onClick={() => setNavOpen(false)} className={row}>
+              <Cog size={15} className="text-muted-foreground" />
+              Settings
+            </Link>
+            <button type="button" onClick={() => void logOut()} className={row}>
+              <LogOut size={15} className="text-muted-foreground" />
+              Log out
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -49,7 +126,7 @@ export function Avatar({ agent }: { agent: boolean }) {
 const STATUS: Record<Status, { label: string; text: string; dot: string }> = {
   working: { label: 'Working', text: 'text-amber-500 bg-amber-500/10', dot: 'bg-amber-500 animate-pulse' },
   waiting: { label: 'Waiting', text: 'text-sky-500 bg-sky-500/10', dot: 'bg-sky-500' },
-  needs: { label: 'Needs you', text: 'text-rose-500 bg-rose-500/10', dot: 'bg-rose-500' },
+  needs: { label: 'Needs attention', text: 'text-rose-500 bg-rose-500/10', dot: 'bg-rose-500' },
   done: { label: 'Done', text: 'text-emerald-500 bg-emerald-500/10', dot: 'bg-emerald-500' },
 };
 export const STATUS_ORDER: Status[] = ['needs', 'working', 'waiting', 'done'];

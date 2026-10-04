@@ -7,6 +7,13 @@ export type Status = 'working' | 'waiting' | 'needs' | 'done';
 // full: Claude acts without asking. ask: Claude asks before anything that is not just reading.
 export type Access = 'full' | 'ask';
 
+// Someone with an account. `username` is what they log in with, `name` is what everyone sees.
+// A deleted account stays in the list (without a username), so what the person wrote keeps their name.
+export type Person = { id: string; name: string; username: string | null; admin: boolean; deleted: boolean };
+
+// The person logged in on this browser. While `mustChangePassword` is on, the app only lets them set a new one.
+export type Me = Person & { mustChangePassword: boolean };
+
 // A channel is one git repository on the server machine.
 export type Channel = { id: string; name: string; path: string };
 
@@ -25,6 +32,8 @@ export type Thread = {
   // The branch its folder was on when Claude last finished a turn there. Null when it was on no branch.
   branch: string | null;
   updatedAt: number;
+  // Everyone who sent a message in the thread, as user ids. Whoever started it comes first.
+  people: string[];
   // What Claude is waiting on in the background right now, in its own words. Not stored.
   tasks: string[];
 };
@@ -42,8 +51,9 @@ export type Todo = { id: string; subject: string; status: string };
 // One thing shown in a thread. `at` is a timestamp in milliseconds.
 // `parent` is set on things a subagent did: it is the id of the tool card that started that subagent.
 // `images` on a message are ids of uploaded images, each one served at `IMAGES_PATH/<id>`.
+// `userId` on a message says which person wrote it. Claude's own messages have none.
 export type Item = { id: string; at: number; parent?: string } & (
-  | { kind: 'message'; by: 'user' | 'claude'; text: string; images?: string[] }
+  | { kind: 'message'; by: 'user' | 'claude'; userId?: string; text: string; images?: string[] }
   | {
       kind: 'tool';
       name: string;
@@ -91,10 +101,11 @@ export const ACCESS = [
 
 // What the server pushes over the WebSocket. `item` carries the whole item, so getting it twice is harmless.
 export type ServerEvent =
-  | { type: 'hello'; channels: Channel[]; threads: Thread[] }
+  | { type: 'hello'; channels: Channel[]; threads: Thread[]; people: Person[] }
   | { type: 'channel'; channel: Channel }
   // The ids of all channels, in the order the sidebar shows them.
   | { type: 'order'; ids: string[] }
+  | { type: 'person'; person: Person }
   | { type: 'thread'; thread: Thread }
   | { type: 'items'; threadId: string; items: Item[] }
   | { type: 'item'; threadId: string; item: Item }
@@ -150,8 +161,16 @@ export type Answer = { toolId: string; decision: (typeof DECISIONS)[number]; ans
 // A skill is also picked up when `/name` comes later in the message. Other commands are not.
 export type Command = { name: string; description: string; hint: string; skill: boolean };
 
+// What an admin fills in to make an account. The password is a temporary one.
+export type NewUser = { username: string; name: string; password: string };
+
 export const SERVER_PORT = 5274;
 export const HEALTH_PATH = '/api/health';
 export const WS_PATH = '/ws';
 export const IMAGES_PATH = '/api/images';
 export const COMMANDS_PATH = '/api/commands';
+export const ME_PATH = '/api/me';
+export const USERS_PATH = '/api/users';
+// These two are answered by Better Auth itself.
+export const LOGIN_PATH = '/api/auth/sign-in/username';
+export const LOGOUT_PATH = '/api/auth/sign-out';
