@@ -129,7 +129,7 @@ export const ACCESS = [
 ];
 
 // When an automation runs: at `time` ('HH:MM', 24 hours) on `days` of the week (0 is Monday, 6 is Sunday).
-// The time is the server machine's own clock.
+// The time is the server machine's own clock. The first WebSocket message says which clock that is (`utcOffset`).
 export type Schedule = { time: string; days: number[] };
 
 // What an automation sends, when, and how Claude runs. Every run is a fresh thread in a new worktree that
@@ -142,8 +142,17 @@ export type NewAutomation = Omit<NewMessage, 'images'> &
 export type Automation = NewAutomation & { id: string; on: boolean; createdBy: string; nextAt: number | null };
 
 // What the server pushes over the WebSocket. `item` carries the whole item, so getting it twice is harmless.
+// `utcOffset` is how many minutes the server machine's clock is ahead of UTC right now (420 for UTC+7).
 export type ServerEvent =
-  | { type: 'hello'; channels: Channel[]; threads: Thread[]; people: Person[]; seen: Seen; automations: Automation[] }
+  | {
+      type: 'hello';
+      channels: Channel[];
+      threads: Thread[];
+      people: Person[];
+      seen: Seen;
+      automations: Automation[];
+      utcOffset: number;
+    }
   // An automation was made or changed, or has just run (so it runs next at another time).
   | { type: 'automation'; automation: Automation }
   // It was deleted, or the person may no longer see it.

@@ -35,15 +35,43 @@ const EVERY_DAY = [0, 1, 2, 3, 4, 5, 6];
 const WEEKDAYS = [0, 1, 2, 3, 4];
 const same = (a: number[], b: number[]) => a.length === b.length && a.every((day) => b.includes(day));
 
-// A schedule in words: "Weekdays at 9:00 AM".
-export function describe({ time, days }: Schedule) {
+// Days of the week in words: "Weekdays".
+function daysOf(days: number[]) {
+  if (same(days, EVERY_DAY)) return 'Every day';
+  if (same(days, WEEKDAYS)) return 'Weekdays';
+  if (same(days, [5, 6])) return 'Weekends';
+  return days.map((day) => DAYS[day]).join(', ') || 'No day picked';
+}
+
+// A time of day in words: "9:00 AM". It is counted in minutes since midnight. Minutes before midnight or
+// after the day is over give the time on the day before or after.
+const clockOf = (minutes: number) =>
+  new Date(2000, 0, 1, 0, minutes).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+const minutesOf = (time: string) => {
   const [hours, minutes] = time.split(':').map(Number);
-  const clock = new Date(2000, 0, 1, hours, minutes).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-  let which = days.map((day) => DAYS[day]).join(', ');
-  if (same(days, EVERY_DAY)) which = 'Every day';
-  else if (same(days, WEEKDAYS)) which = 'Weekdays';
-  else if (same(days, [5, 6])) which = 'Weekends';
-  return `${which || 'No day picked'} at ${clock}`;
+  return hours * 60 + minutes;
+};
+
+// The name of a clock that is `utcOffset` minutes ahead of UTC: "UTC", "UTC+7", "UTC-3:30".
+export function zoneName(utcOffset: number) {
+  if (!utcOffset) return 'UTC';
+  const hours = Math.floor(Math.abs(utcOffset) / 60);
+  const minutes = Math.abs(utcOffset) % 60;
+  return `UTC${utcOffset < 0 ? '-' : '+'}${hours}${minutes ? `:${String(minutes).padStart(2, '0')}` : ''}`;
+}
+
+// A schedule in words, on the server's clock: "Weekdays at 9:00 AM UTC".
+export const describe = ({ time, days }: Schedule, utcOffset: number) =>
+  `${daysOf(days)} at ${clockOf(minutesOf(time))} ${zoneName(utcOffset)}`;
+
+// What goes behind that for a reader whose own clock is another one: " (4:00 PM your time)". Past midnight
+// the days move along with the time, and are said too: " (Tue at 3:00 AM your time)".
+export function inYourTime({ time, days }: Schedule, utcOffset: number, own = -new Date().getTimezoneOffset()) {
+  if (own === utcOffset) return '';
+  const theirs = minutesOf(time) + own - utcOffset;
+  const daysOn = Math.floor(theirs / (24 * 60));
+  const moved = days.map((day) => (day + daysOn + 7) % 7).sort();
+  return ` (${same(moved, days) ? '' : `${daysOf(moved)} at `}${clockOf(theirs)} your time)`;
 }
 
 // The name an automation goes by: the first line of what it sends.
@@ -176,7 +204,7 @@ type EditorProps = {
 
 // Making or changing an automation, in the same message box a thread is started with.
 export function AutomationEditor({ channel, automation, title, onDone, onCancel }: EditorProps) {
-  const { saveAutomation, me } = useApp();
+  const { saveAutomation, me, utcOffset } = useApp();
   const commands = useCommands(`channel=${channel.id}`);
   // Who sees it, and each thread it starts from now on. Only whoever made it can change that.
   const [visibility, setVisibility] = useState<Visibility>(automation?.visibility ?? 'private');
@@ -221,7 +249,8 @@ export function AutomationEditor({ channel, automation, title, onDone, onCancel 
       <div className="mb-2 flex items-center gap-1.5 text-xs text-muted-foreground">
         <FolderGit2 size={12} className="shrink-0" />
         <span className="min-w-0 flex-1">
-          {describe(schedule)} (the server's clock), this is sent in a fresh thread in{' '}
+          {describe(schedule, utcOffset)}
+          {inYourTime(schedule, utcOffset)}, this is sent in a fresh thread in{' '}
           <b className="text-foreground">#{channel.name}</b>. A run is skipped if the server is off at that time.
         </span>
         <button type="button" onClick={onCancel} className="rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground">
@@ -250,7 +279,7 @@ export function AutomationEditor({ channel, automation, title, onDone, onCancel 
 
 // The automations of a repository, pinned above its threads. It can be folded away.
 export function AutomationSection({ channelId }: { channelId: string }) {
-  const { automations } = useApp();
+  const { automations, utcOffset } = useApp();
   const [folded, setFolded] = useState(false);
   const mine = automations.filter((automation) => automation.channelId === channelId);
   return (
@@ -292,7 +321,7 @@ export function AutomationSection({ channelId }: { channelId: string }) {
                 <PrivateMark visibility={automation.visibility} />
               </span>
               <span className="block truncate text-xs text-muted-foreground">
-                {describe(automation)}
+                {describe(automation, utcOffset)}
                 {!automation.on && ' · Paused'}
               </span>
             </span>
@@ -307,7 +336,7 @@ const ACTION =
 
 // One automation: what it sends and when, what can be done with it, and the threads it started.
 export function AutomationPage({ channel, automation }: { channel: Channel; automation: Automation }) {
-  const { threads, saveAutomation, deleteAutomation, runAutomation } = useApp();
+  const { threads, saveAutomation, deleteAutomation, runAutomation, utcOffset } = useApp();
   const navigate = useNavigate();
   const [editing, setEditing] = useState(false);
   const [asking, setAsking] = useState(false);
@@ -363,10 +392,11 @@ export function AutomationPage({ channel, automation }: { channel: Channel; auto
           />
         </div>
         <p className="mt-1 text-sm">
-          <b className="font-medium">{describe(automation)}</b>{' '}
+          <b className="font-medium">{describe(automation, utcOffset)}</b>
           <span className="text-muted-foreground">
-            · {automation.nextAt ? `Next run ${when(automation.nextAt)}` : 'Paused'} · {model} · from {automation.from}{' '}
-            · {VISIBILITY.find((option) => option.id === automation.visibility)!.name}
+            {inYourTime(automation, utcOffset)} · {automation.nextAt ? `Next run ${when(automation.nextAt)}` : 'Paused'}{' '}
+            · {model} · from {automation.from} ·{' '}
+            {VISIBILITY.find((option) => option.id === automation.visibility)!.name}
           </span>
         </p>
         <p className="mt-4 rounded-lg border border-border bg-card p-3 text-sm break-words whitespace-pre-wrap">

@@ -646,7 +646,8 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
         const seen = listSeen(db, id);
         const automated = listAutomations(db).filter(mine).map(shown);
         const lists = { channels: listChannels(db), threads, people: listPeople(db), seen, automations: automated };
-        hub.send(ws, { type: 'hello', ...lists });
+        // JavaScript counts how far UTC is ahead of this machine. We say it the other way around.
+        hub.send(ws, { type: 'hello', ...lists, utcOffset: -new Date().getTimezoneOffset() });
       },
       // The browser says which thread it is looking at. It is signed up for that thread's events and gets
       // everything so far in the same step, so nothing can slip in between.

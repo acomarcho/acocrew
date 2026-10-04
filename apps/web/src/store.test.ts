@@ -60,9 +60,11 @@ test('what was seen comes with the first message, and is added to as threads are
     people: [],
     seen: { a: 1, b: 2 },
     automations: [],
+    utcOffset: 420,
   };
   const state = reduce(reduce(START, hello), { type: 'seen', seen: { b: 5, c: 7 } });
   expect(state.seen).toEqual({ a: 1, b: 5, c: 7 });
+  expect(state.utcOffset).toBe(420);
   // A reconnect brings what the server has, which is what counts.
   expect(reduce(state, hello).seen).toEqual(hello.seen);
 });
