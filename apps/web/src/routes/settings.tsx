@@ -2,10 +2,10 @@
 import type { Person, Temporary } from '@acocrew/shared';
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { Check, ChevronLeft, Copy } from 'lucide-react';
-import { useId, useState, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Field, Form, PasswordForm } from '../login';
 import { useApp } from '../store';
-import { Avatar } from '../ui';
+import { Avatar, Popup } from '../ui';
 
 export const Route = createFileRoute('/settings')({ component: Settings });
 
@@ -68,26 +68,6 @@ function Password() {
 const ACTION = 'rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground';
 
 const BUTTON = 'rounded-lg px-3.5 py-2 text-sm font-semibold hover:opacity-90';
-
-// A box on top of the page that has to be answered before anything else. It closes with its own buttons only.
-function Popup({ title, children }: { title: string; children: ReactNode }) {
-  const id = useId();
-  return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby={id}
-      className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4"
-    >
-      <div className="w-full max-w-sm space-y-3 rounded-xl border border-border bg-card p-5 shadow-xl">
-        <h3 id={id} className="font-semibold">
-          {title}
-        </h3>
-        {children}
-      </div>
-    </div>
-  );
-}
 
 // An account, with the temporary password the server just made for it.
 type Given = Person & Temporary;

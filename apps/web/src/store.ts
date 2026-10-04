@@ -1,14 +1,17 @@
 import {
+  AUTOMATIONS_PATH,
   LOGOUT_PATH,
   ME_PATH,
   USERS_PATH,
   WS_PATH,
   type Answer,
+  type Automation,
   type Channel,
   type ClientEvent,
   type FolderList,
   type Item,
   type Me,
+  type NewAutomation,
   type NewMessage,
   type NewThread,
   type NewUser,
@@ -26,6 +29,8 @@ type State = {
   online: boolean;
   channels: Channel[];
   threads: Thread[];
+  // The automations of every repository.
+  automations: Automation[];
   // Everyone who has or had an account.
   people: Person[];
   // What the person logged in has seen of each thread.
@@ -42,6 +47,7 @@ export const START: State = {
   online: false,
   channels: [],
   threads: [],
+  automations: [],
   people: [],
   seen: {},
   openId: null,
@@ -56,8 +62,8 @@ export function reduce(state: State, action: Action): State {
   if ('threadId' in action && action.type !== 'open' && action.threadId !== state.openId) return state;
   switch (action.type) {
     case 'hello': {
-      const { channels, threads, people, seen } = action;
-      return { ...state, ready: true, online: true, channels, threads, people, seen };
+      const { channels, threads, people, seen, automations } = action;
+      return { ...state, ready: true, online: true, channels, threads, people, seen, automations };
     }
     case 'offline':
       return { ...state, online: false };
@@ -78,6 +84,15 @@ export function reduce(state: State, action: Action): State {
     }
     case 'seen':
       return { ...state, seen: { ...state.seen, ...action.seen } };
+    case 'automation':
+      return { ...state, automations: upsert(state.automations, action.automation) };
+    case 'automation-gone': {
+      // The threads it started stay, and no longer say that an automation started them.
+      const loose = (thread: Thread) =>
+        thread.automationId === action.id ? { ...thread, automationId: null } : thread;
+      const automations = state.automations.filter((automation) => automation.id !== action.id);
+      return { ...state, automations, threads: state.threads.map(loose) };
+    }
     case 'open':
       return { ...state, openId: action.threadId, items: null };
     case 'items':
@@ -203,6 +218,20 @@ export function useAppState(login: Me, recheck: () => Promise<unknown>) {
     return thread;
   };
 
+  // Makes an automation, or with an `id` changes that one (`on` says whether it stays switched on).
+  const saveAutomation = async (body: NewAutomation & { on?: boolean }, id?: string) => {
+    const automation = await request<Automation>(id ? `${AUTOMATIONS_PATH}/${id}` : AUTOMATIONS_PATH, body);
+    dispatch({ type: 'automation', automation });
+    return automation;
+  };
+  const deleteAutomation = (id: string) => request(`${AUTOMATIONS_PATH}/${id}/delete`, {});
+  // Runs it right now, whatever its schedule says. Gives back the thread that started.
+  const runAutomation = async (id: string) => {
+    const thread = await request<Thread>(`${AUTOMATIONS_PATH}/${id}/run`, {});
+    dispatch({ type: 'thread', thread });
+    return thread;
+  };
+
   const sendMessage = (threadId: string, body: NewMessage) => request(`/api/threads/${threadId}/messages`, body);
   const answer = (threadId: string, body: Answer) => request(`/api/threads/${threadId}/answers`, body);
   const stopThread = (threadId: string) => request(`/api/threads/${threadId}/stop`, {});
@@ -234,6 +263,9 @@ export function useAppState(login: Me, recheck: () => Promise<unknown>) {
     addChannel,
     orderChannels,
     createThread,
+    saveAutomation,
+    deleteAutomation,
+    runAutomation,
     sendMessage,
     answer,
     stopThread,

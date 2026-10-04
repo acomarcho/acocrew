@@ -1,4 +1,5 @@
 import {
+  AUTOMATIONS_PATH,
   COMMANDS_PATH,
   HEALTH_PATH,
   LOGIN_PATH,
@@ -7,6 +8,7 @@ import {
   USERS_PATH,
   WS_PATH,
   type Answer,
+  type Automation,
   type Channel,
   type Command,
   type FolderList,
@@ -28,6 +30,7 @@ import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from 'vite-plus/test';
 import { WebSocket } from 'ws';
 import { FIRST_ADMIN } from './auth.ts';
+import { CHECK_MS } from './automations.ts';
 import { openDb, type Db } from './db.ts';
 import type { QueryFn } from './runner.ts';
 import { channels, events, session as sessions, threads } from './schema.ts';
@@ -1736,4 +1739,196 @@ test('told that people come in over https, the login cookie is for https only', 
   cookie = secure.split(';')[0];
   expect((await ask(ME_PATH)).status).toBe(200);
   expect(await socketFrom()).toBe('open');
+});
+
+// What an automation is made with. It runs every day unless a test says otherwise.
+const EVERY_DAY = [0, 1, 2, 3, 4, 5, 6];
+const DIGEST = { text: 'write a digest', time: '09:00', days: EVERY_DAY, from: 'main', ...HAIKU };
+async function automate(parts: object = {}) {
+  const channel = await addChannel();
+  const res = await post(AUTOMATIONS_PATH, { channelId: channel.id, ...DIGEST, ...parts });
+  return (await res.json()) as Automation;
+}
+const change = (automation: Automation, parts: object) =>
+  post(`${AUTOMATIONS_PATH}/${automation.id}`, { ...automation, ...parts });
+const remove = (automation: Automation) => post(`${AUTOMATIONS_PATH}/${automation.id}/delete`);
+const allThreads = () => db.select().from(threads).all();
+
+// Stops the clock at half a minute past a minute, so that the server's next look falls in the minute after.
+// Gives back what a schedule needs to name a moment that many minutes from now.
+function stopClock() {
+  const now = new Date();
+  now.setSeconds(30, 0);
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'], now });
+  return (minutes: number) => {
+    const at = new Date(now.getTime() + minutes * 60_000 - 30_000);
+    return { time: at.toTimeString().slice(0, 5), days: [(at.getDay() + 6) % 7] };
+  };
+}
+const aMinuteLater = () => vi.advanceTimersByTime(CHECK_MS);
+
+test('an automation is made, changed, paused and deleted, and every device hears of it', async () => {
+  const tab = await connect();
+  const made = await automate();
+  expect(made).toMatchObject({ ...DIGEST, on: true, createdBy: tab.hello.people[0].id });
+  // It runs next at nine, today or tomorrow (a day that can be an hour longer when the clocks change).
+  expect(new Date(made.nextAt!).toTimeString().slice(0, 5)).toBe('09:00');
+  expect(made.nextAt! - Date.now()).toBeLessThanOrEqual(DAY + 60 * 60_000);
+  expect((await tab.until('automation')).automation).toEqual(made);
+
+  const paused = {
+    ...made,
+    text: 'write a long digest',
+    time: '18:30',
+    days: [0, 4],
+    ...OPUS,
+    on: false,
+    nextAt: null,
+  };
+  expect(await (await change(made, paused)).json()).toEqual(paused);
+  expect((await tab.until('automation')).automation).toEqual(paused);
+  // A device that connects later gets it too.
+  expect((await connect()).hello.automations).toEqual([paused]);
+
+  expect((await remove(made)).status).toBe(200);
+  expect(await tab.until('automation-gone')).toMatchObject({ id: made.id });
+  expect((await connect()).hello.automations).toEqual([]);
+  expect((await remove(made)).status).toBe(404);
+});
+
+test('when its time comes, an automation sends its message in a fresh thread in a new worktree, as whoever made it', async () => {
+  const at = stopClock();
+  await serve(TWO_TURNS, NAMING);
+  const jordan = await teammate('jordan', 'Jordan');
+  const tab = await connect();
+  const digest = await as(jordan.cookie, () => automate(at(1)));
+  // These three are due at the same moment, and must not run: one is paused, one is deleted, one is for another day.
+  await automate({ ...at(1), text: 'paused' }).then((made) => change(made, { on: false }));
+  await automate({ ...at(1), text: 'deleted' }).then(remove);
+  await automate({ ...at(1), text: 'another day', days: [(at(1).days[0] + 1) % 7] });
+
+  aMinuteLater();
+  const { thread } = await tab.until('thread', (e) => e.thread.automationId !== null);
+  expect(thread).toMatchObject({ automationId: digest.id, title: 'write a digest', people: [jordan.id], ...HAIKU });
+  expect(thread).toMatchObject({
+    branch: `acocrew/${thread.id.slice(0, 8)}`,
+    path: join(worktrees, 'shop', thread.id.slice(0, 8)),
+  });
+  // Every device is told when it runs next: at the same time on that day a week later.
+  const next = await tab.until(
+    'automation',
+    (e) => e.automation.id === digest.id && e.automation.nextAt !== digest.nextAt,
+  );
+  expect(Math.round((next.automation.nextAt! - digest.nextAt!) / DAY)).toBe(7);
+
+  await tab.open(thread.id);
+  await tab.status(thread.id, 'done');
+  expect(tab.screen(thread.id)[0]).toBe('message: write a digest');
+  expect(claude.calls).toMatchObject([{ cwd: thread.path, model: HAIKU.model, resume: undefined }]);
+  expect(claude.said).toEqual(['write a digest']);
+  // Like any new thread, it gets a proper name.
+  expect(claude.named).toHaveLength(1);
+
+  // One run per moment, and only of what was due: a minute later it is another automation's turn.
+  const second = await automate({ ...at(2), text: 'second' });
+  aMinuteLater();
+  await tab.until('thread', (e) => e.thread.automationId === second.id);
+  expect(allThreads().map((row) => row.automationId)).toEqual([digest.id, second.id]);
+});
+
+test('a run that was missed while the server was off is skipped', async () => {
+  const at = stopClock();
+  await serve(TWO_TURNS);
+  const tab = await connect();
+  await automate({ ...at(1), text: 'missed' });
+  const later = await automate({ ...at(6), text: 'on time' });
+  server.close();
+  vi.advanceTimersByTime(5 * CHECK_MS);
+
+  await serve(TWO_TURNS);
+  const back = await connect();
+  aMinuteLater();
+  const { thread } = await back.until('thread', (e) => e.thread.automationId !== null);
+  expect(thread).toMatchObject({ automationId: later.id, title: 'on time' });
+  // Long enough for the missed one to have started too, if it were going to.
+  await back.status(thread.id, 'done');
+  expect(allThreads()).toHaveLength(1);
+  expect(tab.events.filter((e) => e.type === 'thread')).toEqual([]);
+});
+
+test('an automation can be run right away, also while paused, and its threads stay when it is deleted', async () => {
+  const tab = await connect();
+  const made = await automate();
+  await change(made, { on: false });
+  const thread = (await (await post(`${AUTOMATIONS_PATH}/${made.id}/run`)).json()) as Thread;
+  expect(thread).toMatchObject({ automationId: made.id, title: 'write a digest', status: 'working' });
+  await tab.status(thread.id, 'done');
+
+  await remove(made);
+  expect((await connect()).hello.threads).toMatchObject([{ id: thread.id, automationId: null }]);
+  expect((await post(`${AUTOMATIONS_PATH}/${made.id}/run`)).status).toBe(404);
+});
+
+test('an automation whose branch is gone starts no thread and says why, and can still be paused', async () => {
+  git(shop, 'branch', 'short-lived');
+  const made = await automate({ from: 'short-lived' });
+  git(shop, 'branch', '-D', 'short-lived');
+  const res = await post(`${AUTOMATIONS_PATH}/${made.id}/run`);
+  expect([res.status, await error(res)]).toEqual([400, 'Pick a branch to start from, or a worktree that exists.']);
+  expect(allThreads()).toEqual([]);
+  expect(await (await change(made, { on: false })).json()).toMatchObject({ on: false, from: 'short-lived' });
+});
+
+test('a time that had passed already when the automation was saved waits for its next day', async () => {
+  const at = stopClock();
+  await serve(TWO_TURNS);
+  const tab = await connect();
+  // Half a minute after its time, one is made and another is switched back on. Both say they run next week.
+  const paused = await automate({ ...at(1), text: 'switched on late' }).then(async (made) => {
+    await change(made, { on: false });
+    return made;
+  });
+  vi.advanceTimersByTime(CHECK_MS / 2 + 1000);
+  const late = await automate({ ...at(1), text: 'made late' });
+  await change(paused, { on: true });
+  expect(Math.round((late.nextAt! - Date.now()) / DAY)).toBe(7);
+  const due = await automate({ ...at(2), text: 'on time' });
+
+  // The server's next look comes half a minute after that time. Neither runs. A look later, the one for the
+  // minute after does.
+  vi.advanceTimersByTime(CHECK_MS / 2 - 1000);
+  aMinuteLater();
+  const { thread } = await tab.until('thread', (e) => e.thread.automationId !== null);
+  await tab.status(thread.id, 'done');
+  expect(allThreads().map((row) => row.automationId)).toEqual([due.id]);
+});
+
+test('an automation needs a message, a real time, a day, a branch git lists and a full set of settings', async () => {
+  const made = await automate();
+  const bad = [
+    { channelId: 'nope' },
+    { text: '  ' },
+    { time: '9:00' },
+    { time: '24:00' },
+    { time: '09:60' },
+    { days: [] },
+    { days: [7] },
+    { days: 'monday' },
+    { from: 'nope' },
+    { from: undefined },
+    { model: 'gpt' },
+    { access: 'root' },
+  ];
+  for (const parts of bad) {
+    const body = { channelId: made.channelId, ...DIGEST, ...parts };
+    expect((await post(AUTOMATIONS_PATH, body)).status, JSON.stringify(parts)).toBe(400);
+  }
+  expect((await change(made, { time: 'noon' })).status).toBe(400);
+  expect((await change(made, { on: 'yes' })).status).toBe(400);
+  expect((await post(`${AUTOMATIONS_PATH}/nope`, made)).status).toBe(404);
+  expect((await connect()).hello.automations).toEqual([made]);
+  // Without a login there is nothing to make, change, run or delete.
+  cookie = '';
+  for (const path of ['', `/${made.id}`, `/${made.id}/run`, `/${made.id}/delete`])
+    expect((await post(AUTOMATIONS_PATH + path, made)).status, path).toBe(401);
 });

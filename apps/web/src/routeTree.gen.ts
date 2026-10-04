@@ -15,6 +15,7 @@ import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as CChannelIdRouteImport } from './routes/c.$channelId'
 import { Route as CChannelIdIndexRouteImport } from './routes/c.$channelId.index'
 import { Route as CChannelIdNewRouteImport } from './routes/c.$channelId.new'
+import { Route as CChannelIdAAutomationIdRouteImport } from './routes/c.$channelId.a.$automationId'
 import { Route as CChannelIdTThreadIdRouteImport } from './routes/c.$channelId.t.$threadId'
 
 const IndexRoute = IndexRouteImport.update({
@@ -47,6 +48,11 @@ const CChannelIdNewRoute = CChannelIdNewRouteImport.update({
   path: '/new',
   getParentRoute: () => CChannelIdRoute,
 } as any)
+const CChannelIdAAutomationIdRoute = CChannelIdAAutomationIdRouteImport.update({
+  id: '/a/$automationId',
+  path: '/a/$automationId',
+  getParentRoute: () => CChannelIdRoute,
+} as any)
 const CChannelIdTThreadIdRoute = CChannelIdTThreadIdRouteImport.update({
   id: '/t/$threadId',
   path: '/t/$threadId',
@@ -60,6 +66,7 @@ export interface FileRoutesByFullPath {
   '/c/$channelId': typeof CChannelIdRouteWithChildren
   '/c/$channelId/new': typeof CChannelIdNewRoute
   '/c/$channelId/': typeof CChannelIdIndexRoute
+  '/c/$channelId/a/$automationId': typeof CChannelIdAAutomationIdRoute
   '/c/$channelId/t/$threadId': typeof CChannelIdTThreadIdRoute
 }
 export interface FileRoutesByTo {
@@ -68,6 +75,7 @@ export interface FileRoutesByTo {
   '/settings': typeof SettingsRoute
   '/c/$channelId/new': typeof CChannelIdNewRoute
   '/c/$channelId': typeof CChannelIdIndexRoute
+  '/c/$channelId/a/$automationId': typeof CChannelIdAAutomationIdRoute
   '/c/$channelId/t/$threadId': typeof CChannelIdTThreadIdRoute
 }
 export interface FileRoutesById {
@@ -78,6 +86,7 @@ export interface FileRoutesById {
   '/c/$channelId': typeof CChannelIdRouteWithChildren
   '/c/$channelId/new': typeof CChannelIdNewRoute
   '/c/$channelId/': typeof CChannelIdIndexRoute
+  '/c/$channelId/a/$automationId': typeof CChannelIdAAutomationIdRoute
   '/c/$channelId/t/$threadId': typeof CChannelIdTThreadIdRoute
 }
 export interface FileRouteTypes {
@@ -89,6 +98,7 @@ export interface FileRouteTypes {
     | '/c/$channelId'
     | '/c/$channelId/new'
     | '/c/$channelId/'
+    | '/c/$channelId/a/$automationId'
     | '/c/$channelId/t/$threadId'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -97,6 +107,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/c/$channelId/new'
     | '/c/$channelId'
+    | '/c/$channelId/a/$automationId'
     | '/c/$channelId/t/$threadId'
   id:
     | '__root__'
@@ -106,6 +117,7 @@ export interface FileRouteTypes {
     | '/c/$channelId'
     | '/c/$channelId/new'
     | '/c/$channelId/'
+    | '/c/$channelId/a/$automationId'
     | '/c/$channelId/t/$threadId'
   fileRoutesById: FileRoutesById
 }
@@ -160,6 +172,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof CChannelIdNewRouteImport
       parentRoute: typeof CChannelIdRoute
     }
+    '/c/$channelId/a/$automationId': {
+      id: '/c/$channelId/a/$automationId'
+      path: '/a/$automationId'
+      fullPath: '/c/$channelId/a/$automationId'
+      preLoaderRoute: typeof CChannelIdAAutomationIdRouteImport
+      parentRoute: typeof CChannelIdRoute
+    }
     '/c/$channelId/t/$threadId': {
       id: '/c/$channelId/t/$threadId'
       path: '/t/$threadId'
@@ -173,12 +192,14 @@ declare module '@tanstack/react-router' {
 interface CChannelIdRouteChildren {
   CChannelIdNewRoute: typeof CChannelIdNewRoute
   CChannelIdIndexRoute: typeof CChannelIdIndexRoute
+  CChannelIdAAutomationIdRoute: typeof CChannelIdAAutomationIdRoute
   CChannelIdTThreadIdRoute: typeof CChannelIdTThreadIdRoute
 }
 
 const CChannelIdRouteChildren: CChannelIdRouteChildren = {
   CChannelIdNewRoute: CChannelIdNewRoute,
   CChannelIdIndexRoute: CChannelIdIndexRoute,
+  CChannelIdAAutomationIdRoute: CChannelIdAAutomationIdRoute,
   CChannelIdTThreadIdRoute: CChannelIdTThreadIdRoute,
 }
 

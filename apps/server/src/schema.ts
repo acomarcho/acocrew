@@ -74,6 +74,31 @@ export const channels = sqliteTable('channels', {
   createdAt: integer('created_at').notNull(),
 });
 
+// A message that is sent in a fresh thread of a repository at set times. See automations.ts.
+export const automations = sqliteTable('automations', {
+  id: text('id').primaryKey(),
+  channelId: text('channel_id')
+    .notNull()
+    .references(() => channels.id),
+  text: text('text').notNull(),
+  // 'HH:MM' on the server machine's clock, and the days of the week it runs on (0 is Monday).
+  time: text('time').notNull(),
+  days: text('days', { mode: 'json' }).$type<number[]>().notNull(),
+  // The branch each run's new worktree starts from.
+  from: text('from_branch').notNull(),
+  on: integer('is_on', { mode: 'boolean' }).notNull().default(true),
+  model: text('model').notNull(),
+  effort: text('effort').notNull(),
+  context: text('context').notNull(),
+  fast: integer('fast', { mode: 'boolean' }).notNull(),
+  access: text('access').$type<Access>().notNull(),
+  // Who made it. Its threads are started as this person.
+  createdBy: text('created_by')
+    .notNull()
+    .references(() => user.id),
+  createdAt: integer('created_at').notNull(),
+});
+
 export const threads = sqliteTable('threads', {
   id: text('id').primaryKey(),
   channelId: text('channel_id')
@@ -94,6 +119,8 @@ export const threads = sqliteTable('threads', {
   sessionId: text('session_id'),
   // Who started the thread.
   createdBy: text('created_by').references(() => user.id),
+  // The automation that started it. Empty when a person did, and emptied when that automation is deleted.
+  automationId: text('automation_id').references(() => automations.id, { onDelete: 'set null' }),
   // Everyone who sent a message in the thread, as user ids, in the order they first did.
   people: text('people', { mode: 'json' }).$type<string[]>().notNull().default([]),
   createdAt: integer('created_at').notNull(),

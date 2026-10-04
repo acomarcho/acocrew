@@ -1,28 +1,15 @@
 // The Inbox screen: channels, then a thread list, then the open thread, like an email app.
-import type { Channel, Thread } from '@acocrew/shared';
+import type { Channel } from '@acocrew/shared';
 import { DragDropProvider, KeyboardSensor, PointerSensor } from '@dnd-kit/react';
 import { isSortable, useSortable } from '@dnd-kit/react/sortable';
 import { createFileRoute, Link, Navigate, Outlet, useChildMatches } from '@tanstack/react-router';
-import { GitBranch, Hash, ListFilter, Plus, Users } from 'lucide-react';
+import { Hash, ListFilter, Plus, Users } from 'lucide-react';
 import { useState } from 'react';
 import { needsYou, useApp } from '../store';
-import {
-  AvatarStack,
-  Drawer,
-  Elapsed,
-  NavButton,
-  NewThreadButton,
-  Picker,
-  StatusDot,
-  statusLabel,
-  statusColor,
-  UserMenu,
-} from '../ui';
+import { AutomationSection } from '../automations';
+import { Drawer, NavButton, NewThreadButton, Picker, statusLabel, ThreadRow, UserMenu } from '../ui';
 
 export const Route = createFileRoute('/c/$channelId')({ component: Inbox });
-
-const when = (at: number) =>
-  new Date(at).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 
 // Space picks a repository up with the keyboard. Enter is left alone so that it still opens the repository.
 const SENSORS = [
@@ -87,50 +74,6 @@ const STATES = [
   { id: 'failed', name: statusLabel('failed'), hint: 'Broke off with an error' },
   { id: 'done', name: statusLabel('done'), hint: 'Nothing going on' },
 ];
-
-// One thread in the list. A thread that needs this person stands out. The others stay calm: one that Claude
-// is busy in says for how long, and one with nothing new only keeps a hollow dot.
-function ThreadRow({ thread: t }: { thread: Thread }) {
-  const { seen, me } = useApp();
-  const flagged = needsYou(t, seen, me.id);
-  const calm = !flagged && !t.since;
-  const stopped = t.status === 'done' || t.status === 'failed';
-  return (
-    <Link
-      to="/c/$channelId/t/$threadId"
-      params={{ channelId: t.channelId, threadId: t.id }}
-      className="block border-b border-border px-3.5 py-3 hover:bg-muted"
-      activeProps={{ className: 'bg-muted' }}
-      inactiveProps={{ className: flagged ? 'bg-primary/[0.07]' : '' }}
-    >
-      <span className="flex items-center gap-2">
-        {calm ? (
-          <span className="size-2 shrink-0 rounded-full border border-muted-foreground/50" />
-        ) : (
-          <StatusDot status={t.status} />
-        )}
-        <span className={`min-w-0 flex-1 truncate ${flagged ? 'font-semibold' : 'font-medium text-foreground/70'}`}>
-          {t.title}
-        </span>
-      </span>
-      <span className="mt-1.5 flex items-center gap-2 text-xs text-muted-foreground">
-        <AvatarStack ids={t.people} />
-        {/* The branch the thread was last on. Nothing when it was on no branch. */}
-        <span className="flex min-w-0 flex-1 items-center gap-1">
-          {t.branch && <GitBranch size={12} className="shrink-0" />}
-          <span className="truncate font-mono">{t.branch}</span>
-        </span>
-        {/* What state it is in, in words, unless it just sits there finished. */}
-        <span className={`shrink-0 ${calm ? '' : `font-medium ${statusColor(t.status)}`}`}>
-          {t.since && <Elapsed from={t.since} label={statusLabel(t.status)} />}
-          {t.status === 'needs' && (flagged ? 'Needs you' : statusLabel(t.status))}
-          {stopped && (flagged || t.status === 'failed') && `${statusLabel(t.status)} · `}
-          {stopped && when(t.updatedAt)}
-        </span>
-      </span>
-    </Link>
-  );
-}
 
 function Inbox() {
   const { channelId } = Route.useParams();
@@ -197,6 +140,7 @@ function Inbox() {
           <Picker icon={<ListFilter size={14} />} value={state} options={STATES} onChange={setState} down fullLabel />
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto">
+          <AutomationSection channelId={channel.id} />
           {rows.map((t) => (
             <ThreadRow key={t.id} thread={t} />
           ))}

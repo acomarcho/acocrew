@@ -1,4 +1,4 @@
-import type { Channel, ServerEvent, Status, Thread } from '@acocrew/shared';
+import type { Automation, Channel, ServerEvent, Status, Thread } from '@acocrew/shared';
 import { expect, test } from 'vite-plus/test';
 import { needsYou, reduce, START } from './store';
 
@@ -39,9 +39,29 @@ test('a thread needs you when Claude waits for an answer, or stopped with someth
 });
 
 test('what was seen comes with the first message, and is added to as threads are looked at', () => {
-  const hello: ServerEvent = { type: 'hello', channels: [], threads: [], people: [], seen: { a: 1, b: 2 } };
+  const hello: ServerEvent = {
+    type: 'hello',
+    channels: [],
+    threads: [],
+    people: [],
+    seen: { a: 1, b: 2 },
+    automations: [],
+  };
   const state = reduce(reduce(START, hello), { type: 'seen', seen: { b: 5, c: 7 } });
   expect(state.seen).toEqual({ a: 1, b: 5, c: 7 });
   // A reconnect brings what the server has, which is what counts.
   expect(reduce(state, hello).seen).toEqual(hello.seen);
+});
+
+test('an automation is added, changed and taken away, and the threads it started stay without it', () => {
+  const digest = { id: 'a', text: 'write a digest', on: true } as Automation;
+  const started = { ...thread('done'), automationId: 'a' };
+  const other = { ...thread('done'), id: 'u', automationId: 'b' };
+  let state = reduce({ ...START, threads: [started, other] }, { type: 'automation', automation: digest });
+  state = reduce(state, { type: 'automation', automation: { ...digest, on: false } });
+  expect(state.automations).toEqual([{ ...digest, on: false }]);
+
+  state = reduce(state, { type: 'automation-gone', id: 'a' });
+  expect(state.automations).toEqual([]);
+  expect(state.threads.map((t) => t.automationId)).toEqual([null, 'b']);
 });

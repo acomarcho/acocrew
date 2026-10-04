@@ -11,14 +11,16 @@ import {
   type Person,
   type Places,
   type Status,
+  type Thread,
 } from '@acocrew/shared';
 import { Link, useNavigate } from '@tanstack/react-router';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import {
   ArrowUp,
   Brain,
   Check,
   ChevronDown,
+  Clock,
   FolderGit2,
   GitBranch,
   ImagePlus,
@@ -37,7 +39,7 @@ import {
 } from 'lucide-react';
 import { CommandMenu, suggest, useCommands } from './commands';
 import { imageUrl, uploadImage } from './images';
-import { request, useApp } from './store';
+import { needsYou, request, useApp } from './store';
 
 // Each person keeps one of these colors everywhere, worked out from their id.
 const COLORS = [
@@ -343,7 +345,13 @@ export function Picker({
 // whether it runs in fast mode, and whether it asks first.
 export type Settings = Omit<NewMessage, 'text' | 'images'>;
 
-const NEW_THREAD: Settings = { model: MODELS[0].id, effort: 'medium', context: '1m', fast: false, access: 'full' };
+export const NEW_THREAD: Settings = {
+  model: MODELS[0].id,
+  effort: 'medium',
+  context: '1m',
+  fast: false,
+  access: 'full',
+};
 
 const SPEEDS = [
   { id: 'off', name: 'Standard', hint: 'Normal speed and price' },
@@ -361,9 +369,15 @@ type ComposerProps = {
   canSendEmpty?: boolean;
   // The box takes words only (an answer to Claude's question cannot carry images or run a command).
   textOnly?: boolean;
+  // The box takes words and commands but no images.
+  noImages?: boolean;
   // Given while Claude is doing something that can be stopped.
   onStop?: () => void;
   autoFocus?: boolean;
+  // What the box holds to begin with, for changing something written before.
+  initialText?: string;
+  // The send button says this word instead of showing an arrow.
+  sendLabel?: string;
 };
 
 export function Composer({
@@ -374,16 +388,19 @@ export function Composer({
   commands,
   canSendEmpty,
   textOnly,
+  noImages = textOnly,
   onStop,
   autoFocus,
+  initialText = '',
+  sendLabel,
 }: ComposerProps) {
-  const [text, setText] = useState('');
+  const [text, setText] = useState(initialText);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
   // Images are uploaded as soon as they are added. These are the ids the server gave back.
   // While the box takes words only, images added before are set aside until it takes them again.
   const [added, setImages] = useState<string[]>([]);
-  const images = textOnly ? [] : added;
+  const images = noImages ? [] : added;
   const [uploading, setUploading] = useState(0);
   const picker = useRef<HTMLInputElement>(null);
   const box = useRef<HTMLTextAreaElement>(null);
@@ -410,7 +427,7 @@ export function Composer({
   const ready = Boolean(clean || images.length || canSendEmpty) && !sending && !uploading;
   // Pasting, dropping and the attach button all end up here. Whether this did anything with the files.
   const addImages = (files: Iterable<File>) => {
-    const picked = textOnly ? [] : [...files].filter((file) => file.type.startsWith('image/'));
+    const picked = noImages ? [] : [...files].filter((file) => file.type.startsWith('image/'));
     if (!picked.length) return false;
     setError('');
     setUploading((count) => count + 1);
@@ -508,7 +525,7 @@ export function Composer({
       />
       {error && <p className="px-3.5 pb-1 text-xs text-rose-500">{error}</p>}
       <div className="flex items-center gap-0.5 px-1.5 pb-1.5">
-        {!textOnly && (
+        {!noImages && (
           <>
             <input
               ref={picker}
@@ -592,10 +609,10 @@ export function Composer({
           type="button"
           onClick={() => void submit()}
           disabled={!ready}
-          aria-label="Send"
-          className="grid size-8 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground disabled:opacity-40"
+          aria-label={sendLabel ?? 'Send'}
+          className={`shrink-0 rounded-full bg-primary text-primary-foreground disabled:opacity-40 ${sendLabel ? 'px-3.5 py-1.5 text-sm font-semibold' : 'grid size-8 place-items-center'}`}
         >
-          <ArrowUp size={16} />
+          {sendLabel ?? <ArrowUp size={16} />}
         </button>
       </div>
     </div>
@@ -626,24 +643,32 @@ const PLACES = [
   { id: 'existing', name: 'Existing worktree', hint: 'Carry on where a thread left off' },
 ];
 
-// The only way to post in a channel: start a thread.
-export function NewThread({ channel }: { channel: Channel }) {
+// What git has in a repository: the branches and worktrees a thread can start from. Empty until the server answers.
+export function usePlaces(channelId: string) {
+  const [places, setPlaces] = useState<Places>({ branches: [], worktrees: [] });
+  useEffect(() => {
+    request<Places>(`/api/channels/${channelId}/places`).then(setPlaces, () => {});
+  }, [channelId]);
+  return places;
+}
+
+// A branch as a row of a picker.
+export const branchOption = ({ name, remote }: Places['branches'][number]) => ({
+  id: name,
+  name,
+  hint: remote ? `On ${remote}. The newest commit is fetched first` : 'On this machine',
+});
+
+// The only way to post in a channel: start a thread. `title` goes where "Start a thread" would be.
+export function NewThread({ channel, title }: { channel: Channel; title?: ReactNode }) {
   const { createThread, threads } = useApp();
   const navigate = useNavigate();
   const [settings, setSettings] = useState(NEW_THREAD);
   const [place, setPlace] = useState(PLACES[0].id);
   const channelId = channel.id;
   const commands = useCommands(`channel=${channelId}`);
-  // What git has in this repository. Empty until the server answers.
-  const [places, setPlaces] = useState<Places>({ branches: [], worktrees: [] });
-  useEffect(() => {
-    request<Places>(`/api/channels/${channelId}/places`).then(setPlaces, () => {});
-  }, [channelId]);
-  const branches = places.branches.map(({ name, remote }) => ({
-    id: name,
-    name,
-    hint: remote ? `On ${remote}. The newest commit is fetched first` : 'On this machine',
-  }));
+  const places = usePlaces(channelId);
+  const branches = places.branches.map(branchOption);
   // A worktree is easier to tell by what its last thread was about than by its branch. The worktrees used
   // last come first.
   const worktrees = places.worktrees
@@ -663,7 +688,7 @@ export function NewThread({ channel }: { channel: Channel }) {
   const list = fresh ? branches : worktrees;
   return (
     <div>
-      <h2 className="text-xl font-bold">Start a thread</h2>
+      {title ?? <h2 className="text-xl font-bold">Start a thread</h2>}
       {/* Pulled left so the first picker's words line up with the title above it. */}
       <div className="mt-1 mb-2 -ml-2 flex items-center">
         <Picker icon={<GitBranch size={14} />} value={place} options={PLACES} onChange={setPlace} fullLabel />
@@ -704,6 +729,83 @@ export function NewThread({ channel }: { channel: Channel }) {
           void navigate({ to: '/c/$channelId/t/$threadId', params: { channelId, threadId: thread.id }, replace: true });
         }}
       />
+    </div>
+  );
+}
+
+// A moment as a short date and time.
+export const when = (at: number) =>
+  new Date(at).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+
+// One thread in the list. A thread that needs this person stands out. The others stay calm: one that Claude
+// is busy in says for how long, and one with nothing new only keeps a hollow dot.
+export function ThreadRow({ thread: t }: { thread: Thread }) {
+  const { seen, me } = useApp();
+  const flagged = needsYou(t, seen, me.id);
+  const calm = !flagged && !t.since;
+  const stopped = t.status === 'done' || t.status === 'failed';
+  return (
+    <Link
+      to="/c/$channelId/t/$threadId"
+      params={{ channelId: t.channelId, threadId: t.id }}
+      className="block border-b border-border px-3.5 py-3 hover:bg-muted"
+      activeProps={{ className: 'bg-muted' }}
+      inactiveProps={{ className: flagged ? 'bg-primary/[0.07]' : '' }}
+    >
+      <span className="flex items-center gap-2">
+        {calm ? (
+          <span className="size-2 shrink-0 rounded-full border border-muted-foreground/50" />
+        ) : (
+          <StatusDot status={t.status} />
+        )}
+        <span className={`min-w-0 flex-1 truncate ${flagged ? 'font-semibold' : 'font-medium text-foreground/70'}`}>
+          {t.title}
+        </span>
+        {t.automationId && (
+          <span
+            title="Started by an automation"
+            className="flex shrink-0 items-center gap-1 rounded-full bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground"
+          >
+            <Clock size={11} />
+            Auto
+          </span>
+        )}
+      </span>
+      <span className="mt-1.5 flex items-center gap-2 text-xs text-muted-foreground">
+        <AvatarStack ids={t.people} />
+        {/* The branch the thread was last on. Nothing when it was on no branch. */}
+        <span className="flex min-w-0 flex-1 items-center gap-1">
+          {t.branch && <GitBranch size={12} className="shrink-0" />}
+          <span className="truncate font-mono">{t.branch}</span>
+        </span>
+        {/* What state it is in, in words, unless it just sits there finished. */}
+        <span className={`shrink-0 ${calm ? '' : `font-medium ${statusColor(t.status)}`}`}>
+          {t.since && <Elapsed from={t.since} label={statusLabel(t.status)} />}
+          {t.status === 'needs' && (flagged ? 'Needs you' : statusLabel(t.status))}
+          {stopped && (flagged || t.status === 'failed') && `${statusLabel(t.status)} · `}
+          {stopped && when(t.updatedAt)}
+        </span>
+      </span>
+    </Link>
+  );
+}
+
+// A box on top of the page that has to be answered before anything else. It closes with its own buttons only.
+export function Popup({ title, children }: { title: string; children: ReactNode }) {
+  const id = useId();
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={id}
+      className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4"
+    >
+      <div className="w-full max-w-sm space-y-3 rounded-xl border border-border bg-card p-5 shadow-xl">
+        <h3 id={id} className="font-semibold">
+          {title}
+        </h3>
+        {children}
+      </div>
     </div>
   );
 }
