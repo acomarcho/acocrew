@@ -295,7 +295,7 @@ Rules of the UI:
 
 - A channel is one git repository. "Add repository" lets you pick a folder under the home folder of the server machine. Only folders that are git repositories can be added.
 - The bottom of the sidebar shows who is logged in. Clicking it opens a small menu with Settings and Log out. On a phone it is at the bottom of the slide-out sidebar.
-- The thread list has two filters, each on its own row: whose threads (All threads, or Yours: the ones you started or wrote in) and their state (All, Needs you, Working, Waiting, Failed, Done).
+- The thread list has two filters side by side in one row, each a dropdown with an icon: whose threads (All threads, or Yours: the ones you started or wrote in) and their state (Any state, Needs you, Working, Waiting, Failed, Done).
 - A thread that needs you (Decision 9) stands out in the list: a light tint, a bold title, a filled dot, and the reason in words ("Needs you", "Done", "Failed"). A thread Claude is busy in shows a colored dot and for how long ("Working 2m 05s"). Every other thread stays calm: a hollow dot, a lighter title and the time it last changed.
 - A repository in the sidebar shows how many of its threads need you, as a number in a colored pill. A small pulsing dot next to it means Claude is busy in at least one thread there.
 - A thread in the list shows the people who wrote in it as small overlapping pictures: the first letter of the name, on a color that person keeps everywhere. The first four show, the rest become a number.

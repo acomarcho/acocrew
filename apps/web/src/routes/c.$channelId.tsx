@@ -3,7 +3,7 @@ import type { Channel, Thread } from '@acocrew/shared';
 import { DragDropProvider, KeyboardSensor, PointerSensor } from '@dnd-kit/react';
 import { isSortable, useSortable } from '@dnd-kit/react/sortable';
 import { createFileRoute, Link, Navigate, Outlet, useChildMatches } from '@tanstack/react-router';
-import { GitBranch, Hash, Plus } from 'lucide-react';
+import { GitBranch, Hash, ListFilter, Plus, Users } from 'lucide-react';
 import { useState } from 'react';
 import { needsYou, useApp } from '../store';
 import {
@@ -12,6 +12,7 @@ import {
   Elapsed,
   NavButton,
   NewThreadButton,
+  Picker,
   StatusDot,
   statusLabel,
   statusColor,
@@ -72,9 +73,20 @@ function Repo({ channel, index }: { channel: Channel; index: number }) {
   );
 }
 
-// What the list can be narrowed to. 'you' is only the threads that need this person, which covers the ones
-// where Claude waits for an answer.
-const FILTERS = [null, 'you', 'working', 'waiting', 'failed', 'done'] as const;
+// The two things the list can be narrowed by: whose threads, and in which state.
+const WHOSE = [
+  { id: 'all', name: 'All threads', hint: "Everyone's" },
+  { id: 'mine', name: 'Yours', hint: 'You started it or wrote in it' },
+];
+// 'you' is only the threads that need this person, which covers the ones where Claude waits for an answer.
+const STATES = [
+  { id: 'all', name: 'Any state', hint: 'Nothing is left out' },
+  { id: 'you', name: 'Needs you', hint: 'Your answer, or new to you' },
+  { id: 'working', name: statusLabel('working'), hint: 'Claude is at it' },
+  { id: 'waiting', name: statusLabel('waiting'), hint: 'Background work is running' },
+  { id: 'failed', name: statusLabel('failed'), hint: 'Broke off with an error' },
+  { id: 'done', name: statusLabel('done'), hint: 'Nothing going on' },
+];
 
 // One thread in the list. A thread that needs this person stands out. The others stay calm: one that Claude
 // is busy in says for how long, and one with nothing new only keeps a hollow dot.
@@ -123,17 +135,16 @@ function ThreadRow({ thread: t }: { thread: Thread }) {
 function Inbox() {
   const { channelId } = Route.useParams();
   const { channels, threads, seen, me, setNavOpen, orderChannels } = useApp();
-  const [filter, setFilter] = useState<(typeof FILTERS)[number]>(null);
-  // Only the threads this person started or wrote in.
-  const [mine, setMine] = useState(false);
+  const [whose, setWhose] = useState('all');
+  const [state, setState] = useState('all');
   // On phones the list and the detail take turns. The detail shows when a thread or "new" is open.
   const detailOpen = useChildMatches({ select: (matches) => matches.some((m) => m.routeId !== '/c/$channelId/') });
   const channel = channels.find((c) => c.id === channelId);
   if (!channel) return <Navigate to="/" replace />;
   const rows = threads
     .filter((t) => t.channelId === channel.id)
-    .filter((t) => !filter || (filter === 'you' ? needsYou(t, seen, me.id) : t.status === filter))
-    .filter((t) => !mine || t.people.includes(me.id))
+    .filter((t) => state === 'all' || (state === 'you' ? needsYou(t, seen, me.id) : t.status === state))
+    .filter((t) => whose === 'all' || t.people.includes(me.id))
     .sort((a, b) => b.updatedAt - a.updatedAt);
 
   return (
@@ -179,32 +190,11 @@ function Inbox() {
           </div>
           <NewThreadButton channelId={channel.id} />
         </header>
-        {/* Two filters, each on a row of its own: whose threads, then in which state. */}
-        <div className="mx-3 flex rounded-lg bg-muted p-0.5 text-xs font-medium">
-          {[false, true].map((own) => (
-            <button
-              key={String(own)}
-              onClick={() => setMine(own)}
-              className={`flex-1 rounded-md py-1 ${
-                mine === own ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              {own ? 'Yours' : 'All threads'}
-            </button>
-          ))}
-        </div>
-        <div className="flex gap-1 overflow-x-auto border-b border-border px-3 py-2.5">
-          {FILTERS.map((s) => (
-            <button
-              key={s ?? 'all'}
-              onClick={() => setFilter(s)}
-              className={`shrink-0 rounded-full px-2 py-1 text-xs font-medium ${
-                filter === s ? 'bg-foreground text-background' : 'bg-muted text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              {s === 'you' ? 'Needs you' : s ? statusLabel(s) : 'All'}
-            </button>
-          ))}
+        {/* Two filters side by side: whose threads, then in which state. */}
+        <div className="flex items-center gap-1 border-b border-border px-1.5 pb-1.5">
+          <Picker icon={<Users size={14} />} value={whose} options={WHOSE} onChange={setWhose} down fullLabel />
+          <span className="h-4 w-px shrink-0 bg-border" />
+          <Picker icon={<ListFilter size={14} />} value={state} options={STATES} onChange={setState} down fullLabel />
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto">
           {rows.map((t) => (
