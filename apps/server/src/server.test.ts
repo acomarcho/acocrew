@@ -1817,6 +1817,9 @@ test('an automation is made, changed, paused and deleted, and every device hears
   // It runs next at nine, today or tomorrow (a day that can be an hour longer when the clocks change).
   expect(new Date(made.nextAt!).toTimeString().slice(0, 5)).toBe('09:00');
   expect(made.nextAt! - Date.now()).toBeLessThanOrEqual(DAY + 60 * 60_000);
+  // The first message says how far the server's clock is ahead of UTC, so the web app can name that nine.
+  // JavaScript counts the other way around, so the two add up to nothing.
+  expect(tab.hello.utcOffset + new Date().getTimezoneOffset()).toBe(0);
   expect((await tab.until('automation')).automation).toEqual(made);
 
   const paused = {

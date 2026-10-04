@@ -32,6 +32,8 @@ type State = {
   threads: Thread[];
   // The automations of every repository.
   automations: Automation[];
+  // How many minutes the server's clock is ahead of UTC. Automations run on that clock.
+  utcOffset: number;
   // Everyone who has or had an account.
   people: Person[];
   // What the person logged in has seen of each thread.
@@ -49,6 +51,7 @@ export const START: State = {
   channels: [],
   threads: [],
   automations: [],
+  utcOffset: 0,
   people: [],
   seen: {},
   openId: null,
@@ -63,8 +66,8 @@ export function reduce(state: State, action: Action): State {
   if ('threadId' in action && action.type !== 'open' && action.threadId !== state.openId) return state;
   switch (action.type) {
     case 'hello': {
-      const { channels, threads, people, seen, automations } = action;
-      return { ...state, ready: true, online: true, channels, threads, people, seen, automations };
+      const { channels, threads, people, seen, automations, utcOffset } = action;
+      return { ...state, ready: true, online: true, channels, threads, people, seen, automations, utcOffset };
     }
     case 'offline':
       return { ...state, online: false };
