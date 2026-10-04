@@ -168,7 +168,7 @@ Most people use acocrew from a different machine than the one Claude runs on, so
 1. Pasting, dropping, or the attach button in the message box all give the browser the image as a file.
 2. The browser sends that file to the server on its own (`POST /api/images`), right away. If the image is wider or taller than 2048 pixels, or of a kind the server does not take, the browser first redraws it as a smaller JPEG. The server takes PNG, JPEG, GIF and WebP up to 10MB.
 3. The server saves it in an `attachments` folder next to the database and answers with an id. The id is the file name.
-4. The message carries only the ids. They are saved with the message, so every device shows the image by asking the server for it (`GET /api/images/<id>`).
+4. The message carries only the ids. They are saved with the message, so every device shows the image by asking the server for it (`GET /api/images/<id>`). A click on an image, in the message box or in a sent message, opens it big over the page.
 5. When the message is handed to Claude, the server reads the files and puts the images in front of the words.
 
 Left out for now: other file types, cleaning up images that were uploaded but never sent, and telling Claude where the file is on disk so it can copy it into the repository.
