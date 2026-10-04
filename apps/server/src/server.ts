@@ -17,7 +17,7 @@ import {
 } from '@acocrew/shared';
 import { serve, upgradeWebSocket } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { randomUUID } from 'node:crypto';
@@ -86,10 +86,24 @@ export function createApp({ db, query, home, images, worktrees, web }: Deps) {
     if (!path || !isRepo(path)) return c.json({ error: 'Pick a git repository inside the home folder.' }, 400);
     const existing = db.select(channelCols).from(channels).where(eq(channels.path, path)).get();
     if (existing) return c.json(existing);
-    const row = { id: randomUUID(), name: basename(path), path, createdAt: Date.now() };
+    const position = sql`(select count(*) from ${channels})`;
+    const row = { id: randomUUID(), name: basename(path), path, position, createdAt: Date.now() };
     const channel = db.insert(channels).values(row).returning(channelCols).get();
     hub.toAll({ type: 'channel', channel });
     return c.json(channel);
+  });
+
+  // The sidebar's new order: the id of every channel, each one once.
+  app.post('/api/channels/order', async (c) => {
+    const { ids } = await c.req.json().catch(() => ({}));
+    const known = new Set(listChannels(db).map((channel) => channel.id));
+    const full = Array.isArray(ids) && ids.length === known.size && new Set(ids).size === known.size;
+    if (!full || !ids.every((id) => known.has(id))) return c.json({ error: 'Needs every repository once.' }, 400);
+    db.transaction((tx) => {
+      ids.forEach((id, position) => tx.update(channels).set({ position }).where(eq(channels.id, id)).run());
+    });
+    hub.toAll({ type: 'order', ids });
+    return c.json({ ok: true });
   });
 
   // What the start screen offers: branches a new worktree can start from, and worktrees that exist.

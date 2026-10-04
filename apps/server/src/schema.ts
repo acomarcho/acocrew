@@ -6,6 +6,8 @@ export const channels = sqliteTable('channels', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
   path: text('path').notNull().unique(),
+  // Where it sits in the sidebar, counted from 0.
+  position: integer('position').notNull().default(0),
   createdAt: integer('created_at').notNull(),
 });
 

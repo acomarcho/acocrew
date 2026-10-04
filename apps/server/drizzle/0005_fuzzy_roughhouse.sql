@@ -1,0 +1,2 @@
+ALTER TABLE `channels` ADD `position` integer DEFAULT 0 NOT NULL;--> statement-breakpoint
+UPDATE `channels` SET `position` = (SELECT count(*) FROM `channels` AS `c` WHERE (`c`.`created_at`, `c`.`rowid`) < (`channels`.`created_at`, `channels`.`rowid`));

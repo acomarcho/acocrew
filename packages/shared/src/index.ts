@@ -93,6 +93,8 @@ export const ACCESS = [
 export type ServerEvent =
   | { type: 'hello'; channels: Channel[]; threads: Thread[] }
   | { type: 'channel'; channel: Channel }
+  // The ids of all channels, in the order the sidebar shows them.
+  | { type: 'order'; ids: string[] }
   | { type: 'thread'; thread: Thread }
   | { type: 'items'; threadId: string; items: Item[] }
   | { type: 'item'; threadId: string; item: Item }
