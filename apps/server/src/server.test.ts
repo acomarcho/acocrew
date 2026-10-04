@@ -16,6 +16,7 @@ import {
   type Places,
   type ServerEvent,
   type Status,
+  type Temporary,
   type Thread,
 } from '@acocrew/shared';
 import type { PermissionResult, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
@@ -1335,16 +1336,20 @@ async function as<T>(theirs: string, what: () => Promise<T>) {
 
 const error = async (res: Response) => ((await res.json()) as { error: string }).error;
 const whoAmI = async () => (await (await ask(ME_PATH)).json()) as Me;
-const TEMPORARY = 'temporary';
-const addUser = (username: string, name?: string) => post(USERS_PATH, { username, name, password: TEMPORARY });
+const addUser = (username: string, name?: string) => post(USERS_PATH, { username, name });
+// What the server answers when it has made a temporary password: the password, once.
+const given = async (res: Response) => (await res.json()) as Person & Temporary;
 const setPassword = (currentPassword: string, newPassword: string) =>
   post(`${ME_PATH}/password`, { currentPassword, newPassword });
+const NEW = { username: 'Jordan.Lee', name: 'Jordan' };
+// Long and random enough that nobody guesses it, in letters, digits, - and _.
+const STRONG = /^[\w-]{16,}$/;
 
 // A teammate who got an account from the admin, logged in and picked a password. Gives back their cookie.
 async function teammate(username: string, name?: string) {
-  const person = (await (await addUser(username, name)).json()) as Person;
-  const theirs = await logIn(username, TEMPORARY);
-  await as(theirs, () => setPassword(TEMPORARY, `${username} password`));
+  const { password, ...person } = await given(await addUser(username, name));
+  const theirs = await logIn(username, password);
+  await as(theirs, () => setPassword(password, `${username} password`));
   return { ...person, cookie: theirs };
 }
 
@@ -1466,9 +1471,11 @@ test('the first start makes an admin who owns what was there before, and who mus
 
 test('an admin makes an account, and its owner picks a password of their own on first login', async () => {
   const tab = await connect();
-  const res = await addUser('Jordan.Lee', 'Jordan');
-  const jordan = (await res.json()) as Person;
-  // Usernames are kept in small letters. Everyone connected hears about the new teammate.
+  // The admin does not pick the temporary password. The server makes one and says it in its answer only.
+  const { password, ...jordan } = await given(await post(USERS_PATH, { ...NEW, password: 'typed by the admin' }));
+  expect(password).toMatch(STRONG);
+  expect(await logIn('jordan.lee', 'typed by the admin')).toBe('');
+  // Usernames are kept in small letters. Everyone connected hears about the new teammate, not the password.
   expect(jordan).toEqual({ id: jordan.id, name: 'Jordan', username: 'jordan.lee', admin: false, deleted: false });
   expect((await tab.until('person')).person).toEqual(jordan);
 
@@ -1476,27 +1483,27 @@ test('an admin makes an account, and its owner picks a password of their own on 
   expect(await error(await addUser('jordan.lee'))).toMatch(/already taken/i);
   expect(await error(await addUser('jo'))).toMatch(/too short/i);
   expect(await error(await addUser('jordan lee'))).toMatch(/username/i);
-  expect(await error(await post(USERS_PATH, { username: 'robin', password: 'short' }))).toMatch(/too short/i);
   expect((await post(USERS_PATH, {})).status).toBe(400);
-  // Without a display name, the username stands in for it.
-  expect(await (await post(USERS_PATH, { username: 'robin', name: '  ', password: TEMPORARY })).json()).toMatchObject({
-    name: 'robin',
-  });
+  // Without a display name, the username stands in for it. Every account gets a password of its own.
+  const robin = await given(await addUser('robin', '  '));
+  expect(robin.name).toBe('robin');
+  expect(robin.password).toMatch(STRONG);
+  expect(robin.password).not.toBe(password);
 
   // The temporary password only opens the screen that asks for a new one.
-  cookie = await logIn('JORDAN.LEE', TEMPORARY);
+  cookie = await logIn('JORDAN.LEE', password);
   expect(await whoAmI()).toEqual({ ...jordan, mustChangePassword: true });
   expect((await ask('/api/folders')).status).toBe(403);
   expect(await socketFrom()).toBe(403);
-  expect((await setPassword(TEMPORARY, 'jordan password')).status).toBe(200);
+  expect((await setPassword(password, 'jordan password')).status).toBe(200);
   expect((await ask('/api/folders')).status).toBe(200);
   expect(await socketFrom()).toBe('open');
 
   // Someone who is not an admin cannot make or change accounts.
   for (const path of [USERS_PATH, `${USERS_PATH}/${jordan.id}/admin`, `${USERS_PATH}/${jordan.id}/delete`]) {
-    expect((await post(path, { username: 'sam', password: TEMPORARY, admin: true })).status, path).toBe(403);
+    expect((await post(path, { username: 'sam', admin: true })).status, path).toBe(403);
   }
-  expect((await post(`${USERS_PATH}/${tab.hello.people[0].id}/password`, { password: TEMPORARY })).status).toBe(403);
+  expect((await post(`${USERS_PATH}/${tab.hello.people[0].id}/password`, {})).status).toBe(403);
   expect((await connect()).hello.people.map((person) => person.username)).toEqual(['admin', 'jordan.lee', 'robin']);
 });
 
@@ -1619,7 +1626,7 @@ test('a deleted account is logged out at once, keeps its name on what it wrote, 
   // An account that is gone cannot be changed, and its username can go to someone new.
   expect((await remove(jordan.id)).status).toBe(404);
   expect((await post(`${USERS_PATH}/${jordan.id}/admin`, { admin: true })).status).toBe(404);
-  expect((await post(`${USERS_PATH}/${jordan.id}/password`, { password: TEMPORARY })).status).toBe(404);
+  expect((await post(`${USERS_PATH}/${jordan.id}/password`, {})).status).toBe(404);
   const next = await teammate('jordan', 'Jordan B');
   expect(next.id).not.toBe(jordan.id);
   expect((await as(next.cookie, () => ask('/api/folders'))).status).toBe(200);
@@ -1628,22 +1635,29 @@ test('a deleted account is logged out at once, keeps its name on what it wrote, 
 test('a password reset by an admin logs the person out and makes them pick a new one', async () => {
   const jordan = await teammate('jordan');
   const theirs = await as(jordan.cookie, connect);
-  const reset = (password: unknown) => post(`${USERS_PATH}/${jordan.id}/password`, { password });
+  const reset = async (body: object) => given(await post(`${USERS_PATH}/${jordan.id}/password`, body));
 
-  expect(await error(await reset('short'))).toMatch(/too short/i);
-  expect((await reset(undefined)).status).toBe(400);
-  expect((await as(jordan.cookie, () => ask('/api/folders'))).status).toBe(200);
-
-  expect((await reset('second temporary')).status).toBe(200);
+  // The admin does not pick this one either. The server's answer is the password it made and nothing else.
+  const { password: first, ...rest } = await reset({ password: 'typed by the admin' });
+  expect(first).toMatch(STRONG);
+  expect(rest).toEqual({});
   await theirs.closed;
   expect((await as(jordan.cookie, () => ask(ME_PATH))).status).toBe(401);
   expect(await logIn('jordan', 'jordan password')).toBe('');
+  expect(await logIn('jordan', 'typed by the admin')).toBe('');
 
-  cookie = await logIn('jordan', 'second temporary');
+  // A password that was shown and lost is replaced by resetting again. Only the newest one works.
+  const { password: second } = await reset({});
+  expect(second).toMatch(STRONG);
+  expect(second).not.toBe(first);
+  expect(await logIn('jordan', first)).toBe('');
+
+  cookie = await logIn('jordan', second);
   expect((await whoAmI()).mustChangePassword).toBe(true);
   expect((await ask('/api/folders')).status).toBe(403);
-  expect((await setPassword('second temporary', 'jordan password 2')).status).toBe(200);
+  expect((await setPassword(second, 'jordan password 2')).status).toBe(200);
   expect((await ask('/api/folders')).status).toBe(200);
+  expect(await logIn('jordan', second)).toBe('');
 });
 
 test('told that people come in over https, the login cookie is for https only', async () => {

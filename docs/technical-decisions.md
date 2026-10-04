@@ -251,9 +251,10 @@ How it is wired (`apps/server/src/auth.ts` and the top of `server.ts`):
 The rules:
 
 - **First start.** When there are no users, the server makes one admin: username `admin`, password `changeme`. Every thread and every message from before logins becomes theirs.
-- **Temporary passwords.** A password someone else set (the first admin's, a new account's, an admin's reset) only opens one screen: "Pick a new password". The server refuses everything else with 403 until that is done.
+- **Temporary passwords.** A password the person did not pick themselves (the first admin's, a new account's, an admin's reset) only opens one screen: "Pick a new password". The server refuses everything else with 403 until that is done.
+- **The server makes them.** When an admin adds a user or resets a password, nobody types the temporary password. The server makes 16 random characters and sends them back once, in the answer to that admin. Settings shows them in a popup with a Copy button, and the admin passes them on. They are not kept anywhere readable and not sent to anyone else. Once the popup is closed, the way to get a password is to reset again. Only the first admin's `changeme` is a fixed one.
 - **Accounts come from admins.** In Settings, an admin can add a user, reset a password, make or unmake an admin, and delete a user. There is always at least one admin, and nobody can delete their own account.
-- **Forgot your password?** Ask an admin to reset it. A reset logs that person out everywhere.
+- **Forgot your password?** Ask an admin to reset it. Settings asks "are you sure" first, because a reset logs that person out everywhere.
 - **Deleting keeps the name.** A deleted account loses its password, its logins and its username (which can be given out again), but the row stays. So messages it wrote still show who wrote them.
 - **Who wrote what.** A message from a person carries their user id (`userId` on the item). A thread keeps who started it (`threads.created_by`) and everyone who wrote in it (`threads.people`).
 - **Everyone sees everyone.** The WebSocket's first message carries the list of people (id, display name, username, admin, deleted). A change to anyone is sent to all browsers. There are no per-channel permissions.
