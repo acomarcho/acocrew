@@ -10,9 +10,10 @@ import { channels, events, threads } from './schema.ts';
 
 const MIGRATIONS = fileURLToPath(new URL('../drizzle', import.meta.url));
 
-// Opens the database file (or ':memory:') and applies any migrations that have not run yet.
-export function openDb(file: string) {
-  if (file !== ':memory:') mkdirSync(dirname(file), { recursive: true });
+// Opens the database file (or ':memory:', or a copy of a database held in memory) and applies any migrations
+// that have not run yet.
+export function openDb(file: string | Buffer) {
+  if (typeof file === 'string' && file !== ':memory:') mkdirSync(dirname(file), { recursive: true });
   const sqlite = new Database(file);
   sqlite.pragma('foreign_keys = ON');
   const db = drizzle(sqlite);
@@ -36,6 +37,7 @@ export const threadCols = {
   status: threads.status,
   path: threads.path,
   branch: threads.branch,
+  people: threads.people,
   updatedAt: threads.updatedAt,
 };
 

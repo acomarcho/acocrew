@@ -6,7 +6,7 @@ import { createFileRoute, Link, Navigate, Outlet, useChildMatches } from '@tanst
 import { GitBranch, Hash, Plus } from 'lucide-react';
 import { useState } from 'react';
 import { useApp } from '../store';
-import { Drawer, NavButton, NewThreadButton, STATUS_ORDER, StatusDot, statusLabel } from '../ui';
+import { AvatarStack, Drawer, NavButton, NewThreadButton, STATUS_ORDER, StatusDot, statusLabel, UserMenu } from '../ui';
 
 export const Route = createFileRoute('/c/$channelId')({ component: Inbox });
 
@@ -48,14 +48,17 @@ function Repo({ channel, index }: { channel: Channel; index: number }) {
 
 function Inbox() {
   const { channelId } = Route.useParams();
-  const { channels, threads, setNavOpen, orderChannels } = useApp();
+  const { channels, threads, me, setNavOpen, orderChannels } = useApp();
   const [filter, setFilter] = useState<Status | null>(null);
+  // Only the threads this person started or wrote in.
+  const [mine, setMine] = useState(false);
   // On phones the list and the detail take turns. The detail shows when a thread or "new" is open.
   const detailOpen = useChildMatches({ select: (matches) => matches.some((m) => m.routeId !== '/c/$channelId/') });
   const channel = channels.find((c) => c.id === channelId);
   if (!channel) return <Navigate to="/" replace />;
   const rows = threads
     .filter((t) => t.channelId === channel.id && (!filter || t.status === filter))
+    .filter((t) => !mine || t.people.includes(me.id))
     .sort((a, b) => b.updatedAt - a.updatedAt);
 
   return (
@@ -87,6 +90,7 @@ function Inbox() {
           <Plus size={15} />
           Add repository
         </Link>
+        <UserMenu />
       </Drawer>
 
       <section
@@ -100,12 +104,26 @@ function Inbox() {
           </div>
           <NewThreadButton channelId={channel.id} />
         </header>
-        <div className="flex gap-1.5 overflow-x-auto border-b border-border px-3 pb-2.5">
+        {/* Two filters, each on a row of its own: whose threads, then in which state. */}
+        <div className="mx-3 flex rounded-lg bg-muted p-0.5 text-xs font-medium">
+          {[false, true].map((own) => (
+            <button
+              key={String(own)}
+              onClick={() => setMine(own)}
+              className={`flex-1 rounded-md py-1 ${
+                mine === own ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              {own ? 'Yours' : 'All threads'}
+            </button>
+          ))}
+        </div>
+        <div className="flex gap-1 overflow-x-auto border-b border-border px-3 py-2.5">
           {[null, ...STATUS_ORDER].map((s) => (
             <button
               key={s ?? 'all'}
               onClick={() => setFilter(s)}
-              className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${
+              className={`shrink-0 rounded-full px-2 py-1 text-xs font-medium ${
                 filter === s ? 'bg-foreground text-background' : 'bg-muted text-muted-foreground hover:text-foreground'
               }`}
             >
@@ -126,7 +144,8 @@ function Inbox() {
                 <StatusDot status={t.status} />
                 <span className="min-w-0 flex-1 truncate font-semibold">{t.title}</span>
               </span>
-              <span className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+              <span className="mt-1.5 flex items-center gap-2 text-xs text-muted-foreground">
+                <AvatarStack ids={t.people} />
                 {/* The branch the thread was last on. Nothing when it was on no branch. */}
                 <span className="flex min-w-0 flex-1 items-center gap-1">
                   {t.branch && <GitBranch size={12} className="shrink-0" />}

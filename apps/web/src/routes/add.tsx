@@ -46,7 +46,11 @@ function AddRepository() {
             <ChevronLeft size={20} />
           </Link>
         )}
-        <h2 className="text-xl font-bold">Add a repository</h2>
+        <h2 className="flex-1 text-xl font-bold">Add a repository</h2>
+        {/* With no repository yet there is no sidebar, so this is the way to your account and the team's. */}
+        <Link to="/settings" className="rounded-md px-2 py-1 text-sm text-muted-foreground hover:bg-muted">
+          Settings
+        </Link>
       </div>
       <p className="mt-1 text-sm text-muted-foreground">
         Pick a git repository on this machine. It becomes a channel, and Claude works inside that folder.

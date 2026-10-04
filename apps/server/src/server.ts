@@ -8,36 +8,62 @@ import {
   IMAGE_MAX_BYTES,
   IMAGE_TYPES,
   IMAGES_PATH,
+  LOGIN_PATH,
+  LOGOUT_PATH,
+  ME_PATH,
   MODELS,
+  USERS_PATH,
   WS_PATH,
   type Answer,
   type ClientEvent,
+  type Me,
   type NewMessage,
   type Places,
 } from '@acocrew/shared';
 import { serve, upgradeWebSocket } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
-import { eq, sql } from 'drizzle-orm';
-import { Hono } from 'hono';
+import { and, eq, ne, sql } from 'drizzle-orm';
+import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { WebSocketServer } from 'ws';
+import { createAuth, createUser, deleteUser, findPerson, listPeople, resetPassword, seedAdmin } from './auth.ts';
 import { channelCols, listChannels, listThreads, loadItems, threadCols, type Db } from './db.ts';
 import { folderInside, isRepo, listFolders } from './folders.ts';
 import { addWorktree, listPlaces } from './git.ts';
 import { createHub } from './hub.ts';
 import { openImages, type Images } from './images.ts';
 import { createRunner, type QueryFn } from './runner.ts';
-import { channels, threads } from './schema.ts';
+import { channels, session as sessions, threads, user } from './schema.ts';
 import { firstLine } from './title.ts';
 
 // `home` is the only folder tree that repositories can be picked from.
 // `images` is the folder where images attached to messages are kept.
 // `worktrees` is the folder where threads get their own working copy of a repository.
 // `web` is the folder with the built web app. Without it the server only answers `/api` and `/ws`.
-export type Deps = { db: Db; query: QueryFn; home: string; images: string; worktrees: string; web?: string };
+// `secret` signs the login cookies. `https` marks them as for https only.
+export type Deps = {
+  db: Db;
+  query: QueryFn;
+  home: string;
+  images: string;
+  worktrees: string;
+  secret: string;
+  https?: boolean;
+  web?: string;
+};
+
+const NAME_MAX = 50;
+// A display name as it is kept, or nothing when it cannot be used.
+function readName(value: unknown) {
+  const name = typeof value === 'string' ? value.trim() : '';
+  return name.length <= NAME_MAX ? name : '';
+}
+
+// Says no to a request, with the reason as words a person can read.
+const refuse = (c: Context, err: unknown) => c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
 
 // The parts of a message, or null if any of them is not usable.
 function readMessage(body: Partial<NewMessage>, store: Images): NewMessage | null {
@@ -57,11 +83,14 @@ function readMessage(body: Partial<NewMessage>, store: Images): NewMessage | nul
   return { text, images, model: model!, effort: effort!, context: context!, fast, access: access! };
 }
 
-export function createApp({ db, query, home, images, worktrees, web }: Deps) {
+export async function createApp({ db, query, home, images, worktrees, secret, https = false, web }: Deps) {
+  const auth = createAuth(db, secret, https);
+  await seedAdmin(auth, db);
   const hub = createHub();
   const store = openImages(images);
   const runner = createRunner(db, hub, query, store);
-  const app = new Hono();
+  // `user` is whoever is logged in on the browser that sent the request, and `login` is the id of that login.
+  const app = new Hono<{ Variables: { user: Me; login: string } }>();
 
   // Browsers say which site a request comes from. Only our own pages may talk to the server, so that some
   // other website open in a teammate's browser cannot start threads here. A proxy in front (Tailscale, the
@@ -74,6 +103,139 @@ export function createApp({ db, query, home, images, worktrees, web }: Deps) {
   });
 
   app.get(HEALTH_PATH, (c) => c.json({ ok: true }));
+
+  // Logging in and out is Better Auth's. Nothing else of it can be reached from outside: accounts are made
+  // and changed only through the routes below, which follow our own rules.
+  app.post(LOGIN_PATH, (c) => auth.handler(c.req.raw));
+  // Logging out also hangs up on the person's open tabs. The ones still logged in connect again by themselves.
+  app.post(LOGOUT_PATH, async (c) => {
+    const session = await auth.api.getSession({ headers: c.req.raw.headers });
+    const res = await auth.handler(c.req.raw);
+    if (session) hub.kick(session.user.id);
+    return res;
+  });
+
+  // From here on, everything needs a login.
+  for (const path of ['/api/*', WS_PATH]) {
+    app.use(path, async (c, next) => {
+      const found = await auth.api.getSession({ headers: c.req.raw.headers, returnHeaders: true });
+      if (!found.response) return c.json({ error: 'Log in first.' }, 401);
+      const { id, name, username = null, admin, deleted, mustChangePassword } = found.response.user;
+      c.set('user', { id, name, username, admin, deleted, mustChangePassword });
+      c.set('login', found.response.session.id);
+      // A login that is used keeps getting longer. The browser is handed the cookie that says so.
+      for (const cookie of found.headers.getSetCookie()) c.header('set-cookie', cookie, { append: true });
+      await next();
+    });
+  }
+
+  app.get(ME_PATH, (c) => c.json(c.get('user')));
+
+  app.post(`${ME_PATH}/password`, async (c) => {
+    const { currentPassword, newPassword } = await c.req.json().catch(() => ({}));
+    if (currentPassword === newPassword) return refuse(c, 'The new password has to be a different one.');
+    try {
+      await auth.api.changePassword({ body: { currentPassword, newPassword }, headers: c.req.raw.headers });
+    } catch (err) {
+      return refuse(c, err);
+    }
+    const { id } = c.get('user');
+    db.update(user).set({ mustChangePassword: false }).where(eq(user.id, id)).run();
+    // Whoever else was logged in to this account (with the old password) is not any more.
+    db.delete(sessions)
+      .where(and(eq(sessions.userId, id), ne(sessions.id, c.get('login'))))
+      .run();
+    hub.kick(id);
+    return c.json({ ok: true });
+  });
+
+  // And everything from here on needs a password the person picked themselves.
+  for (const path of ['/api/*', WS_PATH]) {
+    app.use(path, async (c, next) => {
+      if (c.get('user').mustChangePassword) return c.json({ error: 'Set a new password first.' }, 403);
+      await next();
+    });
+  }
+
+  const changed = (id: string) => hub.toAll({ type: 'person', person: findPerson(db, id)! });
+
+  app.post(ME_PATH, async (c) => {
+    const name = readName((await c.req.json().catch(() => ({}))).name);
+    if (!name) return refuse(c, `A name needs 1 to ${NAME_MAX} characters.`);
+    db.update(user)
+      .set({ name })
+      .where(eq(user.id, c.get('user').id))
+      .run();
+    changed(c.get('user').id);
+    return c.json({ ok: true });
+  });
+
+  // Accounts are made and changed by admins only.
+  for (const path of [USERS_PATH, `${USERS_PATH}/*`]) {
+    app.use(path, async (c, next) => {
+      if (!c.get('user').admin) return c.json({ error: 'Only an admin can do this.' }, 403);
+      await next();
+    });
+  }
+  // The account a request is about, unless it is gone.
+  const target = (c: Context) => {
+    const person = findPerson(db, c.req.param('id')!);
+    return person && !person.deleted ? person : null;
+  };
+  const gone = (c: Context) => c.json({ error: 'User not found.' }, 404);
+
+  app.post(USERS_PATH, async (c) => {
+    const { username, name, password } = await c.req.json().catch(() => ({}));
+    // Without a display name, the username stands in for it.
+    const typed = typeof name === 'string' ? name.trim() : '';
+    const shown = typed ? readName(typed) : username;
+    if (!shown) return refuse(c, `A name can have ${NAME_MAX} characters at most.`);
+    try {
+      const id = await createUser(auth, { username, password, name: shown });
+      changed(id);
+      return c.json(findPerson(db, id));
+    } catch (err) {
+      return refuse(c, err);
+    }
+  });
+
+  app.post(`${USERS_PATH}/:id/password`, async (c) => {
+    const person = target(c);
+    if (!person) return gone(c);
+    try {
+      await resetPassword(auth, db, person.id, String((await c.req.json().catch(() => ({}))).password ?? ''));
+    } catch (err) {
+      return refuse(c, err);
+    }
+    hub.kick(person.id);
+    return c.json({ ok: true });
+  });
+
+  app.post(`${USERS_PATH}/:id/admin`, async (c) => {
+    const person = target(c);
+    if (!person) return gone(c);
+    const admin = (await c.req.json().catch(() => ({}))).admin === true;
+    const others = db
+      .select({ id: user.id })
+      .from(user)
+      .where(and(eq(user.admin, true), ne(user.id, person.id)))
+      .all();
+    if (!admin && !others.length) return refuse(c, 'There has to be at least one admin.');
+    db.update(user).set({ admin }).where(eq(user.id, person.id)).run();
+    changed(person.id);
+    return c.json({ ok: true });
+  });
+
+  // Whoever deletes is an admin and cannot delete themselves, so an admin is always left.
+  app.post(`${USERS_PATH}/:id/delete`, (c) => {
+    const person = target(c);
+    if (!person) return gone(c);
+    if (person.id === c.get('user').id) return refuse(c, 'You cannot delete your own account.');
+    deleteUser(db, person.id);
+    hub.kick(person.id);
+    changed(person.id);
+    return c.json({ ok: true });
+  });
 
   app.get('/api/folders', (c) => {
     const list = listFolders(home, c.req.query('path') ?? home);
@@ -154,12 +316,14 @@ export function createApp({ db, query, home, images, worktrees, web }: Deps) {
       fast: message.fast,
       access: message.access,
       status: 'working' as const,
+      createdBy: c.get('user').id,
+      people: [c.get('user').id],
       createdAt: now,
       updatedAt: now,
     };
     const thread = runner.withTasks(db.insert(threads).values(row).returning(threadCols).get());
     hub.toAll({ type: 'thread', thread });
-    runner.send(thread.id, message);
+    runner.send(thread.id, message, c.get('user').id);
     if (message.text) runner.name(thread.id, message.text);
     return c.json(thread);
   });
@@ -172,7 +336,7 @@ export function createApp({ db, query, home, images, worktrees, web }: Deps) {
       .where(eq(threads.id, c.req.param('id')))
       .get();
     if (!message || !thread) return c.json({ error: 'Needs a thread, a message and a full set of settings.' }, 400);
-    runner.send(thread.id, message);
+    runner.send(thread.id, message, c.get('user').id);
     return c.json({ ok: true });
   });
 
@@ -231,11 +395,11 @@ export function createApp({ db, query, home, images, worktrees, web }: Deps) {
 
   app.get(
     WS_PATH,
-    upgradeWebSocket(() => ({
+    upgradeWebSocket((c) => ({
       onOpen(_, ws) {
-        hub.add(ws);
+        hub.add(ws, c.get('user').id);
         const threads = listThreads(db).map(runner.withTasks);
-        hub.send(ws, { type: 'hello', channels: listChannels(db), threads });
+        hub.send(ws, { type: 'hello', channels: listChannels(db), threads, people: listPeople(db) });
       },
       // The browser says which thread it is looking at. It is signed up for that thread's events and gets
       // everything so far in the same step, so nothing can slip in between.
@@ -260,8 +424,8 @@ export function createApp({ db, query, home, images, worktrees, web }: Deps) {
 }
 
 // Listens on localhost only. Tailscale or a tunnel sits in front of it.
-export function startServer(port: number, deps: Deps) {
-  const app = createApp(deps);
+export async function startServer(port: number, deps: Deps) {
+  const app = await createApp(deps);
   const websocket = { server: new WebSocketServer({ noServer: true }) };
   return new Promise<{ port: number; close: () => void }>((resolve) => {
     const server = serve({ fetch: app.fetch, port, hostname: '127.0.0.1', websocket }, (info) =>

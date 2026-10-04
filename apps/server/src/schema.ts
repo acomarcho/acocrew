@@ -2,6 +2,69 @@
 import type { Access, Item, Status } from '@acocrew/shared';
 import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
+// The four tables below are Better Auth's own (see auth.ts). It reads and writes them by these names.
+// `admin`, `mustChangePassword` and `deleted` are ours.
+export const user = sqliteTable('user', {
+  id: text('id').primaryKey(),
+  // The display name. Each person picks their own.
+  name: text('name').notNull(),
+  // Better Auth needs an email for every user. We never show or use it, so it is a made-up one.
+  email: text('email').notNull().unique(),
+  emailVerified: integer('email_verified', { mode: 'boolean' }).notNull().default(false),
+  image: text('image'),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+  // What the person logs in with. Empty once the account is deleted, so the name can be given out again.
+  username: text('username').unique(),
+  admin: integer('admin', { mode: 'boolean' }).notNull().default(false),
+  // The password was set by someone else (the first admin's default, or an admin). It has to be changed
+  // before the app can be used.
+  mustChangePassword: integer('must_change_password', { mode: 'boolean' }).notNull().default(true),
+  // A deleted account can no longer log in. The row stays, so what the person wrote keeps their name.
+  deleted: integer('deleted', { mode: 'boolean' }).notNull().default(false),
+});
+
+export const session = sqliteTable('session', {
+  id: text('id').primaryKey(),
+  expiresAt: integer('expires_at', { mode: 'timestamp_ms' }).notNull(),
+  token: text('token').notNull().unique(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+  ipAddress: text('ip_address'),
+  userAgent: text('user_agent'),
+  userId: text('user_id')
+    .notNull()
+    .references(() => user.id),
+});
+
+// Holds the password (hashed) of a user.
+export const account = sqliteTable('account', {
+  id: text('id').primaryKey(),
+  accountId: text('account_id').notNull(),
+  providerId: text('provider_id').notNull(),
+  userId: text('user_id')
+    .notNull()
+    .references(() => user.id),
+  accessToken: text('access_token'),
+  refreshToken: text('refresh_token'),
+  idToken: text('id_token'),
+  accessTokenExpiresAt: integer('access_token_expires_at', { mode: 'timestamp_ms' }),
+  refreshTokenExpiresAt: integer('refresh_token_expires_at', { mode: 'timestamp_ms' }),
+  scope: text('scope'),
+  password: text('password'),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+});
+
+export const verification = sqliteTable('verification', {
+  id: text('id').primaryKey(),
+  identifier: text('identifier').notNull(),
+  value: text('value').notNull(),
+  expiresAt: integer('expires_at', { mode: 'timestamp_ms' }).notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+});
+
 export const channels = sqliteTable('channels', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
@@ -29,6 +92,10 @@ export const threads = sqliteTable('threads', {
   branch: text('branch'),
   // Claude's own id for the conversation. Lets a new Claude process pick up where the last one stopped.
   sessionId: text('session_id'),
+  // Who started the thread.
+  createdBy: text('created_by').references(() => user.id),
+  // Everyone who sent a message in the thread, as user ids, in the order they first did.
+  people: text('people', { mode: 'json' }).$type<string[]>().notNull().default([]),
   createdAt: integer('created_at').notNull(),
   updatedAt: integer('updated_at').notNull(),
 });

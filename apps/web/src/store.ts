@@ -1,12 +1,18 @@
 import {
+  LOGOUT_PATH,
+  ME_PATH,
+  USERS_PATH,
   WS_PATH,
   type Answer,
   type Channel,
   type ClientEvent,
   type FolderList,
   type Item,
+  type Me,
   type NewMessage,
   type NewThread,
+  type NewUser,
+  type Person,
   type ServerEvent,
   type Thread,
 } from '@acocrew/shared';
@@ -18,6 +24,8 @@ type State = {
   online: boolean;
   channels: Channel[];
   threads: Thread[];
+  // Everyone who has or had an account.
+  people: Person[];
   // The thread on screen. `items` is null until the server has sent what is in it.
   openId: string | null;
   items: Item[] | null;
@@ -25,7 +33,15 @@ type State = {
 
 type Action = ServerEvent | { type: 'open'; threadId: string } | { type: 'offline' };
 
-export const START: State = { ready: false, online: false, channels: [], threads: [], openId: null, items: null };
+export const START: State = {
+  ready: false,
+  online: false,
+  channels: [],
+  threads: [],
+  people: [],
+  openId: null,
+  items: null,
+};
 
 const upsert = <T extends { id: string }>(list: T[], next: T) =>
   list.some((x) => x.id === next.id) ? list.map((x) => (x.id === next.id ? next : x)) : [...list, next];
@@ -34,8 +50,10 @@ export function reduce(state: State, action: Action): State {
   // Thread content only matters for the thread on screen.
   if ('threadId' in action && action.type !== 'open' && action.threadId !== state.openId) return state;
   switch (action.type) {
-    case 'hello':
-      return { ...state, ready: true, online: true, channels: action.channels, threads: action.threads };
+    case 'hello': {
+      const { channels, threads, people } = action;
+      return { ...state, ready: true, online: true, channels, threads, people };
+    }
     case 'offline':
       return { ...state, online: false };
     case 'channel':
@@ -45,6 +63,8 @@ export function reduce(state: State, action: Action): State {
       const at = (channel: Channel) => action.ids.indexOf(channel.id) + 1 || action.ids.length + 1;
       return { ...state, channels: state.channels.toSorted((a, b) => at(a) - at(b)) };
     }
+    case 'person':
+      return { ...state, people: upsert(state.people, action.person) };
     case 'thread': {
       // The same row can arrive twice (as the answer to a request and over the socket). The newest wins.
       const known = state.threads.find((t) => t.id === action.thread.id);
@@ -67,15 +87,35 @@ export function reduce(state: State, action: Action): State {
   }
 }
 
+const JSON_BODY = { 'content-type': 'application/json' };
+
 export async function request<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(path, body ? { method: 'POST', body: JSON.stringify(body) } : undefined);
+  const post = { method: 'POST', body: JSON.stringify(body), headers: JSON_BODY };
+  const res = await fetch(path, body ? post : undefined);
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error);
+  // The login has run out, or was ended from somewhere else. The app is told, and shows the login screen.
+  if (res.status === 401) window.dispatchEvent(new Event(LOGGED_OUT));
+  // The login library words its refusals as `message`, our own routes as `error`.
+  if (!res.ok) throw new Error(data.error ?? data.message);
   return data;
 }
 
+// What the window is told when the server says nobody is logged in.
+export const LOGGED_OUT = 'acocrew:logged-out';
+
+// Who is logged in on this browser. null: nobody. undefined: the server did not say (it cannot be reached).
+export async function whoAmI(): Promise<Me | null | undefined> {
+  const res = await fetch(ME_PATH).catch(() => null);
+  if (res?.ok) return res.json();
+  return res?.status === 401 ? null : undefined;
+}
+
+export const changePassword = (currentPassword: string, newPassword: string) =>
+  request(`${ME_PATH}/password`, { currentPassword, newPassword });
+
 // Everything the screens know comes down the WebSocket. Changes go up as plain requests.
-export function useAppState() {
+// `login` is who is logged in. `recheck` asks the server again whether they still are.
+export function useAppState(login: Me, recheck: () => Promise<unknown>) {
   const [state, dispatch] = useReducer(reduce, START);
   const [navOpen, setNavOpen] = useState(false);
   const socket = useRef<WebSocket | null>(null);
@@ -97,6 +137,8 @@ export function useAppState() {
       ws.onclose = () => {
         if (stopped) return;
         dispatch({ type: 'offline' });
+        // The server also hangs up on someone it logged out (a deleted account, a password reset).
+        void recheck();
         retry = setTimeout(connect, 1000);
       };
     };
@@ -106,7 +148,7 @@ export function useAppState() {
       clearTimeout(retry);
       socket.current?.close();
     };
-  }, []);
+  }, [recheck]);
 
   const openThread = useCallback((threadId: string) => {
     openId.current = threadId;
@@ -142,8 +184,24 @@ export function useAppState() {
   const answer = (threadId: string, body: Answer) => request(`/api/threads/${threadId}/answers`, body);
   const stopThread = (threadId: string) => request(`/api/threads/${threadId}/stop`, {});
 
+  const rename = (name: string) => request(ME_PATH, { name });
+  const logOut = () => request(LOGOUT_PATH, {}).then(recheck);
+  // What an admin does to accounts. The list itself updates when the server tells everyone.
+  const addUser = (body: NewUser) => request<Person>(USERS_PATH, body);
+  const resetPassword = (id: string, password: string) => request(`${USERS_PATH}/${id}/password`, { password });
+  const setAdmin = (id: string, admin: boolean) => request(`${USERS_PATH}/${id}/admin`, { admin });
+  const deleteUser = (id: string) => request(`${USERS_PATH}/${id}/delete`, {});
+
   return {
     ...state,
+    // The person logged in, as everyone sees them right now (the name or admin rights may have changed).
+    me: state.people.find((person) => person.id === login.id) ?? login,
+    rename,
+    logOut,
+    addUser,
+    resetPassword,
+    setAdmin,
+    deleteUser,
     navOpen,
     setNavOpen,
     openThread,

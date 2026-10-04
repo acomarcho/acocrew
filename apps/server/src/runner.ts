@@ -394,10 +394,13 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images) {
     },
 
     // Saves the user's message and hands it to Claude. If Claude is busy, it picks the message up when it can.
-    send(threadId: string, message: NewMessage) {
+    send(threadId: string, message: NewMessage, userId: string) {
       const { text, model, effort, context, fast, access } = message;
-      addItem(threadId, { id: randomUUID(), kind: 'message', by: 'user', text, images: message.images, at: nextAt() });
-      db.update(threads).set({ model, effort, context, fast, access }).where(eq(threads.id, threadId)).run();
+      const item = { id: randomUUID(), kind: 'message', by: 'user', userId, text, images: message.images } as const;
+      addItem(threadId, { ...item, at: nextAt() });
+      const { people } = db.select({ people: threads.people }).from(threads).where(eq(threads.id, threadId)).get()!;
+      if (!people.includes(userId)) people.push(userId);
+      db.update(threads).set({ model, effort, context, fast, access, people }).where(eq(threads.id, threadId)).run();
       try {
         // The model, reasoning level, context window and fast mode are fixed when a process starts. A change
         // takes a fresh process, which would kill whatever the current one is doing, so it only happens when
