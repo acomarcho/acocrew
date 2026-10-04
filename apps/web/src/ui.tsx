@@ -245,6 +245,8 @@ type PickerProps = {
   options: Option[];
   onChange: (v: string) => void;
   menuClass?: string;
+  // The menu opens under the button. Without this it opens above, as in the message box.
+  down?: boolean;
   // There is no room for every label, so some pickers show only their icon: on phones, or everywhere.
   labelClass?: string;
   // The label is short and has room, so it is not cut off on phones.
@@ -255,7 +257,17 @@ type PickerProps = {
 
 const ICON_ON_PHONE = 'hidden sm:flex';
 
-function Picker({ icon, value, options, onChange, menuClass = 'left-0', labelClass, fullLabel, search }: PickerProps) {
+export function Picker({
+  icon,
+  value,
+  options,
+  onChange,
+  menuClass = 'left-0',
+  down,
+  labelClass,
+  fullLabel,
+  search,
+}: PickerProps) {
   const [open, setOpen] = useState(false);
   const [typed, setTyped] = useState('');
   const picked = options.find((o) => o.id === value)?.name;
@@ -287,9 +299,9 @@ function Picker({ icon, value, options, onChange, menuClass = 'left-0', labelCla
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
           <div
-            className={`absolute bottom-full z-50 mb-1 rounded-lg border border-border bg-card p-1 text-foreground shadow-xl ${search ? 'w-72' : 'w-52'} ${menuClass}`}
+            className={`absolute z-50 rounded-lg border border-border bg-card p-1 text-foreground shadow-xl ${down ? 'top-full mt-1' : 'bottom-full mb-1'} ${search ? 'w-72' : 'w-52'} ${menuClass}`}
           >
-            <div className="max-h-64 overflow-y-auto">
+            <div className="max-h-80 overflow-y-auto">
               {shown.map((o) => (
                 <button
                   key={o.id}
