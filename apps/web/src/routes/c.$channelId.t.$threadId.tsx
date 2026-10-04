@@ -6,7 +6,8 @@ export const Route = createFileRoute('/c/$channelId/t/$threadId')({ component: O
 
 function OpenThread() {
   const { channelId, threadId } = Route.useParams();
-  const { channels, threads } = useApp();
+  const channels = useApp((state) => state.channels);
+  const threads = useApp((state) => state.threads);
   // The parent route only shows this page when the channel exists.
   const channel = channels.find((c) => c.id === channelId)!;
   const thread = threads.find((t) => t.id === threadId && t.channelId === channelId);

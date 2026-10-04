@@ -2,13 +2,14 @@
 import { VISIBILITY, type Thread, type Visibility } from '@acocrew/shared';
 import { Check, Search, X } from 'lucide-react';
 import { useState } from 'react';
-import { useApp } from './store';
+import { shareThread, showThread, useApp, useMe } from './store';
 import { Avatar, VisibilityIcon } from './ui';
 
 const ROW = 'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm';
 
 export function ShareButton({ thread }: { thread: Thread }) {
-  const { me, people, showThread, shareThread } = useApp();
+  const me = useMe();
+  const people = useApp((state) => state.people);
   const [open, setOpen] = useState(false);
   const [typed, setTyped] = useState('');
   const [error, setError] = useState('');

@@ -29,7 +29,8 @@ import {
 import { defaultRehypePlugins, Streamdown, type StreamdownProps } from 'streamdown';
 import { ApprovalPanel, isAsking, QuestionPanel, useQuestions } from './pending';
 import { useCommands } from './commands';
-import { useApp } from './store';
+import { draftOf, editDraft, useDraft } from './drafts';
+import { answer, markSeen, openThread, sendMessage, stopThread, useApp } from './store';
 import { ShareButton } from './sharing';
 import { Avatar, Composer, Elapsed, Picture, PinButton, StatusBadge, type Settings } from './ui';
 
@@ -57,7 +58,7 @@ const ThreadCtx = createContext<(id: string) => Item[]>(null!);
 // The speaker is Claude (`agent`), or the person whose user id is `by`.
 type Speaker = { agent?: boolean; by?: string };
 function Row({ agent, by, lead, at, children }: Speaker & { lead: boolean; at?: number; children: ReactNode }) {
-  const { people } = useApp();
+  const people = useApp((state) => state.people);
   const person: Person | undefined = people.find((known) => known.id === by);
   return (
     <div className={`flex gap-3 px-4 ${lead ? 'pt-2 pb-1' : 'py-1'}`}>
@@ -270,13 +271,14 @@ const tabVisible = () => !document.hidden;
 
 // The full chat for one thread.
 export function ThreadView({ thread, channel }: { thread: Thread; channel: Channel }) {
-  const { items, seen, openThread, markSeen, sendMessage, stopThread, answer } = useApp();
+  const items = useApp((state) => state.items);
+  const seenAt = useApp((state) => state.seen[thread.id] ?? 0);
   const commands = useCommands(`thread=${thread.id}`);
-  // Only what this person changed and has not sent yet. The rest follows the thread, so a teammate's change
-  // shows up here and is not undone by the next reply.
-  const [picked, setPicked] = useState<Partial<Settings>>({});
+  // What this person typed and has not sent yet. Of the settings it holds only what they changed. The rest
+  // follows the thread, so a teammate's change shows up here and is not undone by the next reply.
+  const draft = useDraft(thread.id);
   const { model, effort, context, fast, access } = thread;
-  const settings: Settings = { model, effort, context, fast, access, ...picked };
+  const settings: Settings = { model, effort, context, fast, access, ...draft.settings };
   // Follow new content only while the reader is at the bottom, so reading further up is not interrupted.
   const stick = useRef(true);
   const scroller = useRef<HTMLDivElement>(null);
@@ -291,15 +293,15 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
   const active =
     thread.status === 'working' || thread.status === 'waiting' || all.some((i) => i.kind === 'tool' && !i.done);
 
-  useEffect(() => openThread(thread.id), [openThread, thread.id]);
+  useEffect(() => openThread(thread.id), [thread.id]);
 
   // Whatever happens in the thread while the person has it in front of them is seen. Said before the screen
   // is drawn, so the thread never shows as new in the list while it is being looked at.
   const visible = useSyncExternalStore(watchTab, tabVisible);
-  const unseen = thread.updatedAt > (seen[thread.id] ?? 0);
+  const unseen = thread.updatedAt > seenAt;
   useLayoutEffect(() => {
     if (visible && unseen) markSeen(thread);
-  }, [visible, unseen, markSeen, thread]);
+  }, [visible, unseen, thread]);
 
   useEffect(() => {
     const el = scroller.current;
@@ -356,10 +358,12 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
             placeholder={
               questions ? 'Type your own answer, or leave this blank to use the selected option' : 'Reply in thread'
             }
+            value={draft}
+            onChange={(change) => editDraft(thread.id, change(draftOf(thread.id)))}
             settings={settings}
             onSettings={(next) => {
               const changed = Object.entries(next).filter(([key, value]) => thread[key as keyof Settings] !== value);
-              setPicked(Object.fromEntries(changed));
+              editDraft(thread.id, { settings: Object.fromEntries(changed) });
             }}
             commands={commands}
             canSendEmpty={questions?.canSend}
@@ -369,7 +373,7 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
               // While Claude has a question open, the message box answers it.
               if (questions) return questions.send(text);
               await sendMessage(thread.id, { text, images, ...settings });
-              setPicked({});
+              editDraft(thread.id, { settings: {} });
             }}
             onStop={active ? () => void stopThread(thread.id).catch(() => {}) : undefined}
           />

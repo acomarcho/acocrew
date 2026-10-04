@@ -1,6 +1,6 @@
-import type { Automation, Channel, ServerEvent, Status, Thread } from '@acocrew/shared';
-import { expect, test } from 'vite-plus/test';
-import { needsYou, pinnedOf, reduce, START } from './store';
+import type { Automation, Channel, Item, ServerEvent, Status, Thread } from '@acocrew/shared';
+import { expect, test, vi } from 'vite-plus/test';
+import { connect, needsYou, openThread, orderChannels, pinnedOf, reduce, START, useApp } from './store';
 
 const repo = (name: string): Channel => ({ id: name, name, path: `/home/me/${name}` });
 const names = (state: typeof START) => state.channels.map((channel) => channel.name);
@@ -92,4 +92,80 @@ test('a thread the person may no longer see leaves the list, and comes back when
   // Sharing is not news, so the thread comes back no newer than it left.
   state = reduce(state, { type: 'thread', thread: rows[0] });
   expect(state.threads.map((t) => t.id)).toEqual(['b', 'a']);
+});
+
+// A stand-in for the browser's socket, which a test can speak through as the server.
+class Socket {
+  static OPEN = 1;
+  static last: Socket;
+  readyState = 1;
+  sent: string[] = [];
+  onopen = () => {};
+  onmessage: (message: { data: string }) => void = () => {};
+  onclose = () => {};
+  constructor() {
+    Socket.last = this;
+  }
+  send(text: string) {
+    this.sent.push(text);
+  }
+  close() {}
+  says(event: ServerEvent) {
+    this.onmessage({ data: JSON.stringify(event) });
+  }
+}
+
+const HELLO: ServerEvent = {
+  type: 'hello',
+  channels: ['shop', 'blog'].map(repo),
+  threads: [],
+  people: [],
+  seen: {},
+  automations: [],
+  utcOffset: 0,
+};
+
+test('the app fills up from the socket, follows the open thread, and forgets it all when it hangs up', () => {
+  vi.stubGlobal('WebSocket', Socket);
+  vi.stubGlobal('location', { origin: 'http://here' });
+  const recheck = vi.fn(async () => {});
+  const hangUp = connect(recheck);
+  expect(useApp.getState().ready).toBe(false);
+
+  Socket.last.says(HELLO);
+  expect(useApp.getState()).toMatchObject({ ready: true, online: true, channels: HELLO.channels });
+
+  openThread('t');
+  expect(JSON.parse(Socket.last.sent[0])).toEqual({ type: 'open', threadId: 't' });
+  Socket.last.says({ type: 'items', threadId: 't', items: [] });
+  // What happens in a thread that is not on screen is left out.
+  Socket.last.says({ type: 'items', threadId: 'other', items: [{ id: 'i' } as Item] });
+  expect(useApp.getState().items).toEqual([]);
+
+  // The line drops: the screens stay, the server is asked who is logged in, and the open thread is asked for again.
+  const first = Socket.last;
+  vi.useFakeTimers();
+  first.onclose();
+  expect(useApp.getState()).toMatchObject({ ready: true, online: false });
+  expect(recheck).toHaveBeenCalledTimes(1);
+  vi.advanceTimersByTime(1000);
+  vi.useRealTimers();
+  expect(Socket.last).not.toBe(first);
+  Socket.last.onopen();
+  expect(JSON.parse(Socket.last.sent[0])).toEqual({ type: 'open', threadId: 't' });
+
+  hangUp();
+  expect(useApp.getState()).toMatchObject({ ...START, navOpen: false });
+});
+
+test('a new order shows right away, and the old one comes back when the server turns it down', async () => {
+  useApp.setState({ channels: ['shop', 'blog'].map(repo) });
+  const shown = () => useApp.getState().channels.map((channel) => channel.name);
+  let refuse = () => {};
+  const refused = new Promise<Response>((_, reject) => (refuse = () => reject(new Error('no'))));
+  vi.stubGlobal('fetch', () => refused);
+  orderChannels(['blog', 'shop']);
+  expect(shown()).toEqual(['blog', 'shop']);
+  refuse();
+  await vi.waitFor(() => expect(shown()).toEqual(['shop', 'blog']));
 });

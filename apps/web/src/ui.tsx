@@ -40,12 +40,14 @@ import {
   ShieldCheck,
   Sparkles,
   Square,
+  SquarePen,
   X,
   Zap,
 } from 'lucide-react';
 import { CommandMenu, suggest, useCommands } from './commands';
+import { draftOf, draftsIn, dropDraft, editDraft, hasContent, useDraft, useDrafts, type Draft } from './drafts';
 import { imageUrl, uploadImage } from './images';
-import { needsYou, request, useApp } from './store';
+import { createThread, logOut, needsYou, pinThread, request, setNavOpen, useApp, useMe } from './store';
 
 // Each person keeps one of these colors everywhere, worked out from their id.
 const COLORS = [
@@ -80,7 +82,7 @@ const STACK = 4;
 
 // The people who wrote in a thread, as overlapping pictures.
 export function AvatarStack({ ids }: { ids: string[] }) {
-  const { people } = useApp();
+  const people = useApp((state) => state.people);
   const faces = ids.flatMap((id) => people.find((person) => person.id === id) ?? []);
   return (
     <span className="flex shrink-0 items-center -space-x-1.5">
@@ -96,7 +98,7 @@ export function AvatarStack({ ids }: { ids: string[] }) {
 
 // Who is logged in, at the bottom of the sidebar. Opens a small menu with Settings and Log out.
 export function UserMenu() {
-  const { me, logOut, setNavOpen } = useApp();
+  const me = useMe();
   const [open, setOpen] = useState(false);
   const row = 'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted';
   return (
@@ -183,7 +185,6 @@ export function StatusBadge({ status }: { status: Status }) {
 }
 
 export function NavButton() {
-  const { setNavOpen } = useApp();
   return (
     <button
       onClick={() => setNavOpen(true)}
@@ -197,7 +198,7 @@ export function NavButton() {
 
 // Sidebar that is always visible on desktop and slides in on phones.
 export function Drawer({ children, className = '' }: { children: ReactNode; className?: string }) {
-  const { navOpen, setNavOpen } = useApp();
+  const navOpen = useApp((state) => state.navOpen);
   return (
     <>
       {navOpen && <div className="absolute inset-0 z-30 bg-black/50 md:hidden" onClick={() => setNavOpen(false)} />}
@@ -395,8 +396,14 @@ const SPEEDS = [
   { id: 'on', name: 'Fast', hint: 'Quicker answers, costs more' },
 ];
 
+// What a message box holds: the words, and the ids of the images added to them.
+export type Box = { text: string; images: string[] };
+
 type ComposerProps = {
   placeholder: string;
+  // The box does not keep what it holds. Whoever shows it does, so it can outlive the screen.
+  value: Box;
+  onChange: (change: (value: Box) => Box) => void;
   settings: Settings;
   onSettings: (settings: Settings) => void;
   onSend: (text: string, images: string[]) => Promise<unknown>;
@@ -411,14 +418,14 @@ type ComposerProps = {
   // Given while Claude is doing something that can be stopped.
   onStop?: () => void;
   autoFocus?: boolean;
-  // What the box holds to begin with, for changing something written before.
-  initialText?: string;
   // The send button says this word instead of showing an arrow.
   sendLabel?: string;
 };
 
 export function Composer({
   placeholder,
+  value,
+  onChange,
   settings,
   onSettings,
   onSend,
@@ -428,16 +435,14 @@ export function Composer({
   noImages = textOnly,
   onStop,
   autoFocus,
-  initialText = '',
   sendLabel,
 }: ComposerProps) {
-  const [text, setText] = useState(initialText);
+  const { text } = value;
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
   // Images are uploaded as soon as they are added. These are the ids the server gave back.
   // While the box takes words only, images added before are set aside until it takes them again.
-  const [added, setImages] = useState<string[]>([]);
-  const images = noImages ? [] : added;
+  const images = noImages ? [] : value.images;
   const [uploading, setUploading] = useState(0);
   const picker = useRef<HTMLInputElement>(null);
   const box = useRef<HTMLTextAreaElement>(null);
@@ -448,7 +453,8 @@ export function Composer({
   const [closed, setClosed] = useState(false);
   const menu = closed || textOnly ? null : suggest(commands, text, caret);
   const edited = () => {
-    setText(box.current!.value);
+    const text = box.current!.value;
+    onChange((value) => ({ ...value, text }));
     setCaret(box.current!.selectionStart);
     setLit(0);
     setClosed(false);
@@ -471,7 +477,7 @@ export function Composer({
     void Promise.allSettled(picked.map(uploadImage)).then((results) => {
       const ids = results.flatMap((result) => (result.status === 'fulfilled' ? [result.value] : []));
       const failed = results.find((result) => result.status === 'rejected');
-      setImages((list) => [...list, ...ids]);
+      onChange((value) => ({ ...value, images: [...value.images, ...ids] }));
       if (failed) setError(failed.reason.message);
       setUploading((count) => count - 1);
     });
@@ -485,8 +491,7 @@ export function Composer({
     setError('');
     try {
       await onSend(clean, images);
-      setText('');
-      setImages((list) => list.filter((id) => !images.includes(id)));
+      onChange((value) => ({ text: '', images: value.images.filter((id) => !images.includes(id)) }));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not send.');
     }
@@ -511,7 +516,9 @@ export function Composer({
               <Picture id={id} className="size-16 object-cover" />
               <button
                 type="button"
-                onClick={() => setImages(added.filter((other) => other !== id))}
+                onClick={() =>
+                  onChange((value) => ({ ...value, images: value.images.filter((other) => other !== id) }))
+                }
                 aria-label="Remove image"
                 className="absolute -top-1.5 -right-1.5 grid size-5 place-items-center rounded-full border border-border bg-card text-muted-foreground hover:text-foreground"
               >
@@ -662,8 +669,9 @@ export function NewThreadButton({ channelId, iconOnly }: { channelId: string; ic
   const label = iconOnly ? 'New thread' : undefined;
   return (
     <Link
-      to="/c/$channelId/new"
-      params={{ channelId }}
+      to="/c/$channelId/new/{-$draftId}"
+      // No draft is named, so a fresh one is begun, also when a draft is on screen.
+      params={{ channelId, draftId: undefined }}
       aria-label={label}
       title={label}
       className={`inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-primary text-sm font-semibold text-primary-foreground hover:opacity-90 ${iconOnly ? 'size-9' : 'px-3.5 py-2'}`}
@@ -697,13 +705,17 @@ export const branchOption = ({ name, remote }: Places['branches'][number]) => ({
 });
 
 // The only way to post in a channel: start a thread. `title` goes where "Start a thread" would be.
-export function NewThread({ channel, title }: { channel: Channel; title?: ReactNode }) {
-  const { createThread, threads } = useApp();
+// Everything typed and picked is kept as the draft `draftId`, so it is still there when the person comes back.
+type NewThreadProps = { channel: Channel; draftId: string; title?: ReactNode };
+export function NewThread({ channel, draftId, title }: NewThreadProps) {
+  const threads = useApp((state) => state.threads);
   const navigate = useNavigate();
-  const [settings, setSettings] = useState(NEW_THREAD);
-  const [place, setPlace] = useState(PLACES[0].id);
-  const [visibility, setVisibility] = useState<Visibility>('private');
   const channelId = channel.id;
+  const draft = useDraft(draftId);
+  const edit = (patch: Partial<Draft>) => editDraft(draftId, { channelId, ...patch });
+  const settings = { ...NEW_THREAD, ...draft.settings };
+  const place = draft.place ?? PLACES[0].id;
+  const visibility = draft.visibility ?? 'private';
   const commands = useCommands(`channel=${channelId}`);
   const places = usePlaces(channelId);
   const branches = places.branches.map(branchOption);
@@ -719,9 +731,10 @@ export function NewThread({ channel, title }: { channel: Channel; title?: ReactN
     })
     .sort((a, b) => b.usedAt - a.usedAt);
   // Until something is picked, a new worktree starts from the first branch, and an existing one is the first.
-  const [picked, setPicked] = useState<{ from?: string; path?: string }>({});
-  const from = picked.from ?? branches[0]?.id;
-  const path = picked.path ?? worktrees[0]?.id;
+  // The same goes for a pick that git no longer has (a draft can be older than a branch or a worktree).
+  const pickOf = (list: Option[], id?: string) => (list.find((option) => option.id === id) ?? list[0])?.id;
+  const from = pickOf(branches, draft.from);
+  const path = pickOf(worktrees, draft.path);
   const fresh = place === 'new';
   const list = fresh ? branches : worktrees;
   return (
@@ -729,19 +742,25 @@ export function NewThread({ channel, title }: { channel: Channel; title?: ReactN
       {title ?? <h2 className="text-xl font-bold">Start a thread</h2>}
       {/* Pulled left so the first picker's words line up with the title above it. */}
       <div className="mt-1 mb-2 -ml-2 flex items-center">
-        <Picker icon={<GitBranch size={14} />} value={place} options={PLACES} onChange={setPlace} fullLabel />
+        <Picker
+          icon={<GitBranch size={14} />}
+          value={place}
+          options={PLACES}
+          onChange={(place) => edit({ place })}
+          fullLabel
+        />
         {list.length > 0 && (
           <Picker
             key={place}
             icon={<span className="opacity-70">{fresh ? 'from' : 'on'}</span>}
             value={fresh ? from : path}
             options={list}
-            onChange={(id) => setPicked(fresh ? { ...picked, from: id } : { ...picked, path: id })}
+            onChange={(id) => edit(fresh ? { from: id } : { path: id })}
             search={fresh ? 'Search branches' : 'Search worktrees'}
             menuClass="-left-32 sm:left-0"
           />
         )}
-        <VisibilityPicker value={visibility} onChange={setVisibility} />
+        <VisibilityPicker value={visibility} onChange={(visibility) => edit({ visibility })} />
       </div>
       <div className="mb-2 flex items-center gap-1.5 text-xs text-muted-foreground">
         <FolderGit2 size={12} className="shrink-0" />
@@ -759,8 +778,10 @@ export function NewThread({ channel, title }: { channel: Channel; title?: ReactN
       <Composer
         autoFocus
         placeholder="What should Claude work on?"
+        value={draft}
+        onChange={(change) => edit(change(draftOf(draftId)))}
         settings={settings}
-        onSettings={setSettings}
+        onSettings={(settings) => edit({ settings })}
         commands={commands}
         onSend={async (text, images) => {
           const where = fresh ? { from } : { path };
@@ -778,7 +799,6 @@ export const when = (at: number) =>
 
 // Pins the thread to the top of the list for everyone, or unpins it. Big enough for a finger.
 export function PinButton({ thread, className = '' }: { thread: Thread; className?: string }) {
-  const { pinThread } = useApp();
   const pinned = thread.pinnedAt !== null;
   const label = pinned ? 'Unpin' : 'Pin to the top of the list';
   return (
@@ -799,11 +819,13 @@ export function PinButton({ thread, className = '' }: { thread: Thread; classNam
 // One thread in the list. A thread that needs this person stands out. The others stay calm: one that Claude
 // is busy in says for how long, and one with nothing new only keeps a hollow dot.
 export function ThreadRow({ thread: t }: { thread: Thread }) {
-  const { seen, me } = useApp();
+  const seen = useApp((state) => state.seen);
+  const me = useMe();
   const flagged = needsYou(t, seen, me.id);
   const calm = !flagged && !t.since;
   const stopped = t.status === 'done' || t.status === 'failed';
   const pinned = t.pinnedAt !== null;
+  const unsent = hasContent(useDraft(t.id));
   return (
     <div className="relative">
       <Link
@@ -822,6 +844,11 @@ export function ThreadRow({ thread: t }: { thread: Thread }) {
           <span className={`min-w-0 flex-1 truncate ${flagged ? 'font-semibold' : 'font-medium text-foreground/70'}`}>
             {t.title}
           </span>
+          {unsent && (
+            <span title="You have a reply here that is not sent yet" className="shrink-0 text-amber-600">
+              <SquarePen size={12} />
+            </span>
+          )}
           <PrivateMark visibility={t.visibility} />
           {t.automationId && (
             <span
@@ -902,6 +929,42 @@ export function Section({ title, count, startFolded = false, short, action, chil
       {!folded && !short && children}
     </>
   );
+}
+
+// The threads this person began in a repository and has not sent yet. A row opens one again where it was
+// left, and its button throws it away.
+export function DraftRows({ channelId }: { channelId: string }) {
+  const drafts = useDrafts((state) => state.drafts);
+  return draftsIn(drafts, channelId).map(([id, draft]) => (
+    <div key={id} className="relative">
+      <Link
+        to="/c/$channelId/new/{-$draftId}"
+        params={{ channelId, draftId: id }}
+        className="block border-b border-border py-3 pr-12 pl-3.5 hover:bg-muted"
+        activeProps={{ className: 'bg-muted' }}
+      >
+        <span className="flex items-center gap-2">
+          <SquarePen size={13} className="shrink-0 text-amber-600" />
+          <span className="min-w-0 flex-1 truncate font-medium">
+            {draft.text.trim().split('\n')[0] || 'New thread'}
+          </span>
+        </span>
+        <span className="mt-1.5 block text-xs text-muted-foreground">
+          Not sent yet
+          {draft.images.length > 0 && ` · ${draft.images.length} ${draft.images.length === 1 ? 'image' : 'images'}`}
+        </span>
+      </Link>
+      <button
+        type="button"
+        aria-label="Discard draft"
+        title="Discard draft"
+        onClick={() => dropDraft(id)}
+        className="absolute top-1 right-1.5 grid size-9 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+      >
+        <X size={16} />
+      </button>
+    </div>
+  ));
 }
 
 // A box on top of the page that has to be answered before anything else. It closes with its own buttons only.
