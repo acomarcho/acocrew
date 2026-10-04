@@ -49,6 +49,8 @@ type Session = {
   failed: boolean;
   // Background work Claude is waiting on, in its own words.
   tasks: string[];
+  // Since when Claude has been at it without a break. Null while it has nothing going on or waits for the user.
+  since: number | null;
   // Approval prompts and questions waiting for the user: tool id -> how to hand over the answer.
   asks: Map<string, (answer: Answer | null) => void>;
   // We closed it on purpose, so whatever it still says is ignored.
@@ -132,12 +134,18 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images) {
   }
 
   // Adds what is only known while the process runs to a stored thread row.
-  const withTasks = (row: Omit<Thread, 'tasks'>): Thread => ({ ...row, tasks: sessions.get(row.id)?.tasks ?? [] });
+  type Stored = Omit<Thread, 'tasks' | 'since'>;
+  const withLive = (row: Stored): Thread => {
+    const session = sessions.get(row.id);
+    return { ...row, tasks: session?.tasks ?? [], since: session?.since ?? null };
+  };
 
-  function setThread(threadId: string, patch: Partial<Omit<Thread, 'tasks'>>) {
-    const set = { ...patch, updatedAt: Date.now() };
+  // Saves a change to a thread and tells everyone. `news` is a change people want to look at: it moves the
+  // thread to the top of the list, and makes it unseen for whoever does not have it on screen.
+  function setThread(threadId: string, patch: Partial<Stored>, news = true) {
+    const set = news ? { ...patch, updatedAt: Date.now() } : patch;
     const row = db.update(threads).set(set).where(eq(threads.id, threadId)).returning(threadCols).get();
-    hub.toAll({ type: 'thread', thread: withTasks(row) });
+    hub.toAll({ type: 'thread', thread: withLive(row) });
   }
 
   // Claude can switch branches while it works, so the branch is read again after it did something.
@@ -149,10 +157,7 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images) {
       .where(eq(threads.id, threadId))
       .get()!;
     const branch = await branchOf(folder.path ?? folder.repo);
-    if (branch === folder.branch) return;
-    // Nothing happened in the thread, so it keeps its place in the list.
-    const row = db.update(threads).set({ branch }).where(eq(threads.id, threadId)).returning(threadCols).get();
-    hub.toAll({ type: 'thread', thread: withTasks(row) });
+    if (branch !== folder.branch) setThread(threadId, { branch }, false);
   }
 
   // Tools that never finished are marked failed, and `closing` says why.
@@ -174,7 +179,9 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images) {
     let status: Status = 'done';
     if (session.tasks.length) status = 'waiting';
     if (session.busy) status = 'working';
-    if (waitingOnUser || (quiet && session.failed)) status = 'needs';
+    if (quiet && session.failed) status = 'failed';
+    if (waitingOnUser) status = 'needs';
+    session.since = quiet || waitingOnUser ? null : (session.since ?? Date.now());
 
     clearTimeout(session.idle);
     if (quiet) session.idle = setTimeout(() => close(threadId), IDLE_MS).unref();
@@ -255,6 +262,7 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images) {
       busy: false,
       failed: false,
       tasks: [],
+      since: null,
       asks: new Map(),
       closed: false,
     };
@@ -278,11 +286,11 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images) {
     }
   }
 
-  // The process died or could not start: say why, and ask for attention.
+  // The process died or could not start: say why.
   function fail(threadId: string, err: unknown) {
     close(threadId);
     cutShort(threadId, () => note('error', err instanceof Error ? err.message : String(err)));
-    setThread(threadId, { status: 'needs' });
+    setThread(threadId, { status: 'failed' });
   }
 
   function hear(threadId: string, session: Session, msg: SDKMessage) {
@@ -364,23 +372,24 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images) {
   }
   const asked = new Map<string, { at: number; list: Promise<Command[]> }>();
 
-  // Threads that were in the middle of something when the server last stopped.
+  // Threads that were in the middle of something when the server last stopped. Claude waiting for an answer
+  // counts: nobody can give it any more.
   for (const { id, status } of db.select(threadCols).from(threads).where(ne(threads.status, 'done')).all()) {
-    const interrupted = status === 'working' || status === 'waiting';
+    const interrupted = status !== 'failed';
     cutShort(
       id,
       (wasOpen) =>
         (interrupted || wasOpen) &&
         note('error', 'The server restarted while Claude was busy. Send a message to continue.'),
     );
-    if (interrupted) setThread(id, { status: 'needs' });
+    if (interrupted) setThread(id, { status: 'failed' });
   }
 
   // Threads from before branches were kept, and threads that were on no branch.
   for (const { id } of db.select(threadCols).from(threads).where(isNull(threads.branch)).all()) void noteBranch(id);
 
   return {
-    withTasks,
+    withLive,
 
     // What a message can ask Claude to run with `/name` when Claude works in this folder.
     commands(folder: string) {
@@ -439,7 +448,7 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images) {
     // Gives a new thread a proper name, in the background. If that does not work out, it keeps the name it has.
     name(threadId: string, text: string) {
       inferTitle(query, text)
-        .then((title) => title && setThread(threadId, { title }))
+        .then((title) => title && setThread(threadId, { title }, false))
         .catch((err) => console.error('Could not name the thread:', err));
     },
 

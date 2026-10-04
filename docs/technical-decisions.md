@@ -141,6 +141,7 @@ Tables:
 | `threads`  | Title, model, reasoning level, status, folder, branch, and Claude's session id for resuming.    |
 | `events`   | A numbered log per thread. Each row is one whole item: a chat bubble, a tool card, or an error. |
 | `user`     | One row per account: display name, username, whether it is an admin. See Decision 8.            |
+| `seen`     | One row per person and thread they opened: how far they have seen it. See Decision 9.           |
 
 The `events` log is only ever added to. A tool card is written twice (started, finished). When a thread is loaded, the newest row per item wins.
 
@@ -206,8 +207,11 @@ So the server does not count messages and answers. It listens all the time and w
 | --------------- | ----------------------------------------------------------------------------------------- |
 | Working         | A turn is on                                                                              |
 | Waiting         | No turn, but background work is still running. The thread lists what Claude is waiting on |
-| Needs attention | Claude is waiting for a yes or an answer, or the last turn failed                         |
+| Needs an answer | Claude is waiting for a yes or an answer                                                  |
+| Failed          | The last turn broke off with an error, or the server restarted while Claude was busy      |
 | Done            | Nothing going on                                                                          |
+
+While a thread is Working or Waiting, the server also says since when (`since` on the thread, kept in memory only). The clock starts when Claude goes from nothing going on to busy, and starts again after a question to the user is answered. The list shows it as "Working 2m 05s", the open thread as "Working for 2m 05s".
 
 We checked the SDK for a ready-made "running / idle" signal. It exists in the type definitions (`session_state_changed`) but was not sent in a live run, so we do not rely on it.
 
@@ -224,7 +228,7 @@ Other rules that follow from listening all the time:
 Claude always runs in its normal mode, where it asks before any action that is not plainly safe (reading files never asks). It asks through a function of ours, `canUseTool`:
 
 - **Full access** (the default): we say yes right away.
-- **Ask first**: a panel pinned above the message box shows what Claude wants to do, with Approve and Decline. The thread goes to Needs attention until someone answers. A "..." menu holds two rarer choices:
+- **Ask first**: a panel pinned above the message box shows what Claude wants to do, with Approve and Decline. The thread goes to Needs an answer until someone answers. A "..." menu holds two rarer choices:
   - **Always allow this session** is a yes that also stops Claude asking about that kind of action. Which actions it covers is Claude's own suggestion, and it can be wider than it sounds: after one file edit it covers all file edits, and also shell commands that only move or delete files in the repository. It lasts as long as that Claude process lives, so after a restart Claude asks again.
   - **Cancel** is a no that also ends Claude's turn.
 - **Claude's own questions** (multiple choice) come through the same function and show in the same spot, in both modes. One question at a time. Clicking a choice moves to the next question, number keys pick a choice, and the message box doubles as "type your own answer". On the last question you press Send.
@@ -265,6 +269,20 @@ The rules:
 
 Not built: email, Google login, a "forgot password" link, profile pictures, per-channel permissions, and a limit on login attempts. Better Auth has such a limit built in. It counts per caller address, and behind a tunnel that address has to be read from a header the tunnel sets, which differs per setup. Until that is set up it is off.
 
+## Decision 9: "Needs you" is worked out per person, from what they have seen
+
+The status says what Claude is doing. It does not say whether a given person still has to look. For that the server keeps one more fact per person and thread: the thread's `updatedAt` when they last had it on screen (the `seen` table).
+
+- **What counts as seen.** The thread is open and the browser tab is visible. The browser then tells the server which `updatedAt` it is showing (`POST /api/threads/<id>/seen`), also for everything that happens while it stays open. A thread left open in a tab nobody looks at is not seen until the tab is looked at again.
+- **What makes it unseen again.** Anything that changes `updatedAt`: a new message, a status change. Getting its name and switching branches do not change it, so they are not news.
+- **The rule** (`needsYou` in `apps/web/src/store.ts`). A thread needs you when you wrote in it, and either Claude waits for an answer (until someone answers), or Claude stopped (Done or Failed) and you have not seen that yet.
+- **How it travels.** The WebSocket's first message carries the person's own list (`seen`). When they see a thread, all their open browsers are told (`seen` event), so the phone and the laptop agree. Nobody is told what someone else has seen.
+- **Old threads.** The migration marks every thread that existed as seen by everyone, so nothing old asks to be looked at.
+
+We keep it per person on the server, not in the browser's own storage: people use a phone and a laptop, and those would disagree.
+
+Not built: marking a thread as not seen by hand, notifications outside the app, and a count in the browser tab's title.
+
 ## UI direction: the Inbox layout
 
 We mocked five layouts (Slack, Topics, Inbox, Board, Focus). Marcho likes the Inbox one, so `apps/web` now holds only that. The other four are still in git history, in commit `d98b9b7`.
@@ -277,7 +295,9 @@ Rules of the UI:
 
 - A channel is one git repository. "Add repository" lets you pick a folder under the home folder of the server machine. Only folders that are git repositories can be added.
 - The bottom of the sidebar shows who is logged in. Clicking it opens a small menu with Settings and Log out. On a phone it is at the bottom of the slide-out sidebar.
-- The thread list has two filters, each on its own row: whose threads (All threads, or Yours: the ones you started or wrote in) and their status (All, Needs attention, Working, Waiting, Done).
+- The thread list has two filters, each on its own row: whose threads (All threads, or Yours: the ones you started or wrote in) and their state (All, Needs you, Working, Waiting, Failed, Done).
+- A thread that needs you (Decision 9) stands out in the list: a light tint, a bold title, a filled dot, and the reason in words ("Needs you", "Done", "Failed"). A thread Claude is busy in shows a colored dot and for how long ("Working 2m 05s"). Every other thread stays calm: a hollow dot, a lighter title and the time it last changed.
+- A repository in the sidebar shows how many of its threads need you, as a number in a colored pill. A small pulsing dot next to it means Claude is busy in at least one thread there.
 - A thread in the list shows the people who wrote in it as small overlapping pictures: the first letter of the name, on a color that person keeps everywhere. The first four show, the rest become a number.
 - A message shows the display name of who wrote it. Changing your display name in Settings changes it on your old messages too.
 - You cannot post a loose message in a channel. Every message starts a thread ("New Thread") or replies inside one.

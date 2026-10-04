@@ -16,12 +16,21 @@ import {
   LoaderCircle,
   X,
 } from 'lucide-react';
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from 'react';
 import { defaultRehypePlugins, Streamdown, type StreamdownProps } from 'streamdown';
 import { ApprovalPanel, isAsking, QuestionPanel, useQuestions } from './pending';
 import { useCommands } from './commands';
 import { useApp } from './store';
-import { Avatar, Composer, Picture, StatusBadge, type Settings } from './ui';
+import { Avatar, Composer, Elapsed, Picture, StatusBadge, type Settings } from './ui';
 
 type Tool = Extract<Item, { kind: 'tool' }>;
 
@@ -94,20 +103,6 @@ function Copyable({ text, children }: { text: string; children: ReactNode }) {
   );
 }
 
-// How long something took, or has been taking. Short things show nothing.
-function Elapsed({ from, to }: { from: number; to?: number }) {
-  const [now, setNow] = useState(Date.now);
-  useEffect(() => {
-    if (to) return;
-    const tick = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(tick);
-  }, [to]);
-  const seconds = Math.floor(((to ?? now) - from) / 1000);
-  if (seconds < (to ? 1 : 3)) return null;
-  const text = seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`;
-  return <span className="shrink-0 text-muted-foreground tabular-nums">{text}</span>;
-}
-
 function Block({ label, text }: { label: string; text: string }) {
   if (!text) return null;
   return (
@@ -148,7 +143,9 @@ function ToolCard({ tool }: { tool: Tool }) {
           </span>
         )}
         {tool.ask === 'declined' && <span className="shrink-0 text-rose-500">Declined</span>}
-        {!tool.ask && (tool.endAt || !tool.done) && <Elapsed from={tool.at} to={tool.endAt} />}
+        {!tool.ask && (tool.endAt || !tool.done) && (
+          <Elapsed from={tool.at} to={tool.endAt} className="text-muted-foreground" />
+        )}
         <ChevronRight
           size={13}
           className={`shrink-0 text-muted-foreground transition-transform ${open ? 'rotate-90' : ''}`}
@@ -221,11 +218,11 @@ function ItemView({ item, lead, nested }: { item: Item; lead: boolean; nested?: 
   );
 }
 
-function Working({ lead }: { lead: boolean }) {
+function Working({ lead, since }: { lead: boolean; since: number | null }) {
   return (
     <Row agent lead={lead}>
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
-        <span>Working</span>
+        <span>Working {since && <Elapsed from={since} label="for" />}</span>
         <span className="flex gap-1">
           {[0, 150, 300].map((d) => (
             <span
@@ -263,9 +260,16 @@ function Todos({ todos }: { todos: Todo[] }) {
   );
 }
 
+// Whether the person can see this browser tab right now.
+const watchTab = (changed: () => void) => {
+  document.addEventListener('visibilitychange', changed);
+  return () => document.removeEventListener('visibilitychange', changed);
+};
+const tabVisible = () => !document.hidden;
+
 // The full chat for one thread.
 export function ThreadView({ thread, channel }: { thread: Thread; channel: Channel }) {
-  const { items, openThread, sendMessage, stopThread, answer } = useApp();
+  const { items, seen, openThread, markSeen, sendMessage, stopThread, answer } = useApp();
   const commands = useCommands(`thread=${thread.id}`);
   // Only what this person changed and has not sent yet. The rest follows the thread, so a teammate's change
   // shows up here and is not undone by the next reply.
@@ -287,6 +291,14 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
     thread.status === 'working' || thread.status === 'waiting' || all.some((i) => i.kind === 'tool' && !i.done);
 
   useEffect(() => openThread(thread.id), [openThread, thread.id]);
+
+  // Whatever happens in the thread while the person has it in front of them is seen. Said before the screen
+  // is drawn, so the thread never shows as new in the list while it is being looked at.
+  const visible = useSyncExternalStore(watchTab, tabVisible);
+  const unseen = thread.updatedAt > (seen[thread.id] ?? 0);
+  useLayoutEffect(() => {
+    if (visible && unseen) markSeen(thread);
+  }, [visible, unseen, markSeen, thread]);
 
   useEffect(() => {
     const el = scroller.current;
@@ -322,7 +334,7 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
           {top.map((item, i) => (
             <ItemView key={item.id} item={item} lead={byUser(top[i - 1])} />
           ))}
-          {thread.status === 'working' && <Working lead={byUser(top.at(-1))} />}
+          {thread.status === 'working' && <Working lead={byUser(top.at(-1))} since={thread.since} />}
         </div>
         <div className="p-3 pt-0">
           {todos?.kind === 'todos' && <Todos todos={todos.todos} />}

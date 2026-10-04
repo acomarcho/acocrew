@@ -1,4 +1,4 @@
-import type { Item } from '@acocrew/shared';
+import type { Item, Seen } from '@acocrew/shared';
 import Database from 'better-sqlite3';
 import { asc, eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
@@ -6,7 +6,7 @@ import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { channels, events, threads } from './schema.ts';
+import { channels, events, seen, threads } from './schema.ts';
 
 const MIGRATIONS = fileURLToPath(new URL('../drizzle', import.meta.url));
 
@@ -43,6 +43,17 @@ export const threadCols = {
 
 export const listChannels = (db: Db) => db.select(channelCols).from(channels).orderBy(asc(channels.position)).all();
 export const listThreads = (db: Db) => db.select(threadCols).from(threads).orderBy(asc(threads.createdAt)).all();
+
+// What this person has seen of every thread they ever opened.
+export const listSeen = (db: Db, userId: string): Seen =>
+  Object.fromEntries(
+    db
+      .select()
+      .from(seen)
+      .where(eq(seen.userId, userId))
+      .all()
+      .map((row) => [row.threadId, row.at]),
+  );
 
 export const saveItem = (db: Db, threadId: string, item: Item) => db.insert(events).values({ threadId, item }).run();
 

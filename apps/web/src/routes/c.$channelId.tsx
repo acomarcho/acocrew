@@ -1,12 +1,22 @@
 // The Inbox screen: channels, then a thread list, then the open thread, like an email app.
-import type { Channel, Status } from '@acocrew/shared';
+import type { Channel, Thread } from '@acocrew/shared';
 import { DragDropProvider, KeyboardSensor, PointerSensor } from '@dnd-kit/react';
 import { isSortable, useSortable } from '@dnd-kit/react/sortable';
 import { createFileRoute, Link, Navigate, Outlet, useChildMatches } from '@tanstack/react-router';
 import { GitBranch, Hash, Plus } from 'lucide-react';
 import { useState } from 'react';
-import { useApp } from '../store';
-import { AvatarStack, Drawer, NavButton, NewThreadButton, STATUS_ORDER, StatusDot, statusLabel, UserMenu } from '../ui';
+import { needsYou, useApp } from '../store';
+import {
+  AvatarStack,
+  Drawer,
+  Elapsed,
+  NavButton,
+  NewThreadButton,
+  StatusDot,
+  statusLabel,
+  statusColor,
+  UserMenu,
+} from '../ui';
 
 export const Route = createFileRoute('/c/$channelId')({ component: Inbox });
 
@@ -21,9 +31,12 @@ const SENSORS = [
 
 // One repository in the sidebar. It can be dragged to another place in the list.
 function Repo({ channel, index }: { channel: Channel; index: number }) {
-  const { threads, setNavOpen } = useApp();
+  const { threads, seen, me, setNavOpen } = useApp();
   const { ref, isDragging } = useSortable({ id: channel.id, index });
-  const count = threads.filter((t) => t.channelId === channel.id && t.status !== 'done').length;
+  const here = threads.filter((t) => t.channelId === channel.id);
+  // The number is what waits for this person. Claude being busy only gets a small dot.
+  const count = here.filter((t) => needsYou(t, seen, me.id)).length;
+  const busy = here.filter((t) => t.since).length;
   return (
     <Link
       ref={ref}
@@ -41,15 +54,76 @@ function Repo({ channel, index }: { channel: Channel; index: number }) {
     >
       <Hash size={15} className="opacity-60" />
       <span className="flex-1 truncate">{channel.name}</span>
-      {count > 0 && <span className="text-xs opacity-70">{count}</span>}
+      {busy > 0 && (
+        <span
+          title={`Claude is busy in ${busy} ${busy === 1 ? 'thread' : 'threads'}`}
+          className="size-1.5 shrink-0 animate-pulse rounded-full bg-amber-500"
+        />
+      )}
+      {count > 0 && (
+        <span
+          title={`${count} ${count === 1 ? 'thread needs' : 'threads need'} you`}
+          className="shrink-0 rounded-full bg-primary px-1.5 text-xs font-semibold text-primary-foreground tabular-nums"
+        >
+          {count}
+        </span>
+      )}
+    </Link>
+  );
+}
+
+// What the list can be narrowed to. 'you' is only the threads that need this person, which covers the ones
+// where Claude waits for an answer.
+const FILTERS = [null, 'you', 'working', 'waiting', 'failed', 'done'] as const;
+
+// One thread in the list. A thread that needs this person stands out. The others stay calm: one that Claude
+// is busy in says for how long, and one with nothing new only keeps a hollow dot.
+function ThreadRow({ thread: t }: { thread: Thread }) {
+  const { seen, me } = useApp();
+  const flagged = needsYou(t, seen, me.id);
+  const calm = !flagged && !t.since;
+  const stopped = t.status === 'done' || t.status === 'failed';
+  return (
+    <Link
+      to="/c/$channelId/t/$threadId"
+      params={{ channelId: t.channelId, threadId: t.id }}
+      className="block border-b border-border px-3.5 py-3 hover:bg-muted"
+      activeProps={{ className: 'bg-muted' }}
+      inactiveProps={{ className: flagged ? 'bg-primary/[0.07]' : '' }}
+    >
+      <span className="flex items-center gap-2">
+        {calm ? (
+          <span className="size-2 shrink-0 rounded-full border border-muted-foreground/50" />
+        ) : (
+          <StatusDot status={t.status} />
+        )}
+        <span className={`min-w-0 flex-1 truncate ${flagged ? 'font-semibold' : 'font-medium text-foreground/70'}`}>
+          {t.title}
+        </span>
+      </span>
+      <span className="mt-1.5 flex items-center gap-2 text-xs text-muted-foreground">
+        <AvatarStack ids={t.people} />
+        {/* The branch the thread was last on. Nothing when it was on no branch. */}
+        <span className="flex min-w-0 flex-1 items-center gap-1">
+          {t.branch && <GitBranch size={12} className="shrink-0" />}
+          <span className="truncate font-mono">{t.branch}</span>
+        </span>
+        {/* What state it is in, in words, unless it just sits there finished. */}
+        <span className={`shrink-0 ${calm ? '' : `font-medium ${statusColor(t.status)}`}`}>
+          {t.since && <Elapsed from={t.since} label={statusLabel(t.status)} />}
+          {t.status === 'needs' && (flagged ? 'Needs you' : statusLabel(t.status))}
+          {stopped && (flagged || t.status === 'failed') && `${statusLabel(t.status)} · `}
+          {stopped && when(t.updatedAt)}
+        </span>
+      </span>
     </Link>
   );
 }
 
 function Inbox() {
   const { channelId } = Route.useParams();
-  const { channels, threads, me, setNavOpen, orderChannels } = useApp();
-  const [filter, setFilter] = useState<Status | null>(null);
+  const { channels, threads, seen, me, setNavOpen, orderChannels } = useApp();
+  const [filter, setFilter] = useState<(typeof FILTERS)[number]>(null);
   // Only the threads this person started or wrote in.
   const [mine, setMine] = useState(false);
   // On phones the list and the detail take turns. The detail shows when a thread or "new" is open.
@@ -57,7 +131,8 @@ function Inbox() {
   const channel = channels.find((c) => c.id === channelId);
   if (!channel) return <Navigate to="/" replace />;
   const rows = threads
-    .filter((t) => t.channelId === channel.id && (!filter || t.status === filter))
+    .filter((t) => t.channelId === channel.id)
+    .filter((t) => !filter || (filter === 'you' ? needsYou(t, seen, me.id) : t.status === filter))
     .filter((t) => !mine || t.people.includes(me.id))
     .sort((a, b) => b.updatedAt - a.updatedAt);
 
@@ -119,7 +194,7 @@ function Inbox() {
           ))}
         </div>
         <div className="flex gap-1 overflow-x-auto border-b border-border px-3 py-2.5">
-          {[null, ...STATUS_ORDER].map((s) => (
+          {FILTERS.map((s) => (
             <button
               key={s ?? 'all'}
               onClick={() => setFilter(s)}
@@ -127,33 +202,13 @@ function Inbox() {
                 filter === s ? 'bg-foreground text-background' : 'bg-muted text-muted-foreground hover:text-foreground'
               }`}
             >
-              {s ? statusLabel(s) : 'All'}
+              {s === 'you' ? 'Needs you' : s ? statusLabel(s) : 'All'}
             </button>
           ))}
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto">
           {rows.map((t) => (
-            <Link
-              key={t.id}
-              to="/c/$channelId/t/$threadId"
-              params={{ channelId: channel.id, threadId: t.id }}
-              className="block border-b border-border px-3.5 py-3 hover:bg-muted"
-              activeProps={{ className: 'bg-muted' }}
-            >
-              <span className="flex items-center gap-2">
-                <StatusDot status={t.status} />
-                <span className="min-w-0 flex-1 truncate font-semibold">{t.title}</span>
-              </span>
-              <span className="mt-1.5 flex items-center gap-2 text-xs text-muted-foreground">
-                <AvatarStack ids={t.people} />
-                {/* The branch the thread was last on. Nothing when it was on no branch. */}
-                <span className="flex min-w-0 flex-1 items-center gap-1">
-                  {t.branch && <GitBranch size={12} className="shrink-0" />}
-                  <span className="truncate font-mono">{t.branch}</span>
-                </span>
-                {when(t.updatedAt)}
-              </span>
-            </Link>
+            <ThreadRow key={t.id} thread={t} />
           ))}
           {rows.length === 0 && <p className="p-6 text-center text-sm text-muted-foreground">Nothing here.</p>}
         </div>
