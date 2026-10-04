@@ -2,7 +2,7 @@ import type { Me } from '@acocrew/shared';
 import { createRootRoute, Outlet } from '@tanstack/react-router';
 import { useCallback, useEffect, useState } from 'react';
 import { Login, SetPassword } from '../login';
-import { Ctx, LOGGED_OUT, useAppState, whoAmI } from '../store';
+import { connect, LOGGED_OUT, useApp, whoAmI } from '../store';
 
 export const Route = createRootRoute({ component: Root });
 
@@ -39,17 +39,18 @@ function Root() {
 }
 
 function App({ me, recheck }: { me: Me; recheck: () => Promise<unknown> }) {
-  const app = useAppState(me, recheck);
+  const ready = useApp((state) => state.ready);
+  const online = useApp((state) => state.online);
+  useEffect(() => useApp.setState({ login: me }), [me]);
+  useEffect(() => connect(recheck), [recheck]);
   return (
-    <Ctx.Provider value={app}>
-      <div className="h-dvh bg-background text-foreground">
-        {app.ready ? <Outlet /> : <p className="grid h-full place-items-center text-muted-foreground">Connecting...</p>}
-        {app.ready && !app.online && (
-          <p className="fixed inset-x-0 top-2 z-50 mx-auto w-fit rounded-full bg-foreground px-3 py-1 text-xs text-background">
-            Connection lost. Reconnecting...
-          </p>
-        )}
-      </div>
-    </Ctx.Provider>
+    <div className="h-dvh bg-background text-foreground">
+      {ready ? <Outlet /> : <p className="grid h-full place-items-center text-muted-foreground">Connecting...</p>}
+      {ready && !online && (
+        <p className="fixed inset-x-0 top-2 z-50 mx-auto w-fit rounded-full bg-foreground px-3 py-1 text-xs text-background">
+          Connection lost. Reconnecting...
+        </p>
+      )}
+    </div>
   );
 }

@@ -45,7 +45,7 @@ import {
 } from 'lucide-react';
 import { CommandMenu, suggest, useCommands } from './commands';
 import { imageUrl, uploadImage } from './images';
-import { needsYou, request, useApp } from './store';
+import { createThread, logOut, needsYou, pinThread, request, setNavOpen, useApp, useMe } from './store';
 
 // Each person keeps one of these colors everywhere, worked out from their id.
 const COLORS = [
@@ -80,7 +80,7 @@ const STACK = 4;
 
 // The people who wrote in a thread, as overlapping pictures.
 export function AvatarStack({ ids }: { ids: string[] }) {
-  const { people } = useApp();
+  const people = useApp((state) => state.people);
   const faces = ids.flatMap((id) => people.find((person) => person.id === id) ?? []);
   return (
     <span className="flex shrink-0 items-center -space-x-1.5">
@@ -96,7 +96,7 @@ export function AvatarStack({ ids }: { ids: string[] }) {
 
 // Who is logged in, at the bottom of the sidebar. Opens a small menu with Settings and Log out.
 export function UserMenu() {
-  const { me, logOut, setNavOpen } = useApp();
+  const me = useMe();
   const [open, setOpen] = useState(false);
   const row = 'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted';
   return (
@@ -183,7 +183,6 @@ export function StatusBadge({ status }: { status: Status }) {
 }
 
 export function NavButton() {
-  const { setNavOpen } = useApp();
   return (
     <button
       onClick={() => setNavOpen(true)}
@@ -197,7 +196,7 @@ export function NavButton() {
 
 // Sidebar that is always visible on desktop and slides in on phones.
 export function Drawer({ children, className = '' }: { children: ReactNode; className?: string }) {
-  const { navOpen, setNavOpen } = useApp();
+  const navOpen = useApp((state) => state.navOpen);
   return (
     <>
       {navOpen && <div className="absolute inset-0 z-30 bg-black/50 md:hidden" onClick={() => setNavOpen(false)} />}
@@ -698,7 +697,7 @@ export const branchOption = ({ name, remote }: Places['branches'][number]) => ({
 
 // The only way to post in a channel: start a thread. `title` goes where "Start a thread" would be.
 export function NewThread({ channel, title }: { channel: Channel; title?: ReactNode }) {
-  const { createThread, threads } = useApp();
+  const threads = useApp((state) => state.threads);
   const navigate = useNavigate();
   const [settings, setSettings] = useState(NEW_THREAD);
   const [place, setPlace] = useState(PLACES[0].id);
@@ -778,7 +777,6 @@ export const when = (at: number) =>
 
 // Pins the thread to the top of the list for everyone, or unpins it. Big enough for a finger.
 export function PinButton({ thread, className = '' }: { thread: Thread; className?: string }) {
-  const { pinThread } = useApp();
   const pinned = thread.pinnedAt !== null;
   const label = pinned ? 'Unpin' : 'Pin to the top of the list';
   return (
@@ -799,7 +797,8 @@ export function PinButton({ thread, className = '' }: { thread: Thread; classNam
 // One thread in the list. A thread that needs this person stands out. The others stay calm: one that Claude
 // is busy in says for how long, and one with nothing new only keeps a hollow dot.
 export function ThreadRow({ thread: t }: { thread: Thread }) {
-  const { seen, me } = useApp();
+  const seen = useApp((state) => state.seen);
+  const me = useMe();
   const flagged = needsYou(t, seen, me.id);
   const calm = !flagged && !t.since;
   const stopped = t.status === 'done' || t.status === 'failed';

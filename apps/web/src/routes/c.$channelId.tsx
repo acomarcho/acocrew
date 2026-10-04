@@ -5,7 +5,7 @@ import { isSortable, useSortable } from '@dnd-kit/react/sortable';
 import { createFileRoute, Link, Navigate, Outlet, useChildMatches } from '@tanstack/react-router';
 import { Hash, ListFilter, Plus, Users } from 'lucide-react';
 import { useState } from 'react';
-import { needsYou, pinnedOf, useApp } from '../store';
+import { needsYou, orderChannels, pinnedOf, setNavOpen, useApp, useMe } from '../store';
 import { AutomationSection } from '../automations';
 import { Drawer, NavButton, NewThreadButton, Picker, Section, statusLabel, ThreadRow, UserMenu } from '../ui';
 
@@ -19,7 +19,9 @@ const SENSORS = [
 
 // One repository in the sidebar. It can be dragged to another place in the list.
 function Repo({ channel, index }: { channel: Channel; index: number }) {
-  const { threads, seen, me, setNavOpen } = useApp();
+  const threads = useApp((state) => state.threads);
+  const seen = useApp((state) => state.seen);
+  const me = useMe();
   const { ref, isDragging } = useSortable({ id: channel.id, index });
   const here = threads.filter((t) => t.channelId === channel.id);
   // The number is what waits for this person. Claude being busy only gets a small dot.
@@ -77,7 +79,10 @@ const STATES = [
 
 function Inbox() {
   const { channelId } = Route.useParams();
-  const { channels, threads, seen, me, setNavOpen, orderChannels } = useApp();
+  const channels = useApp((state) => state.channels);
+  const threads = useApp((state) => state.threads);
+  const seen = useApp((state) => state.seen);
+  const me = useMe();
   const [whose, setWhose] = useState('all');
   const [state, setState] = useState('all');
   // On phones the list and the detail take turns. The detail shows when a thread or "new" is open.

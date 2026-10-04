@@ -4,7 +4,7 @@ import { createFileRoute, Link } from '@tanstack/react-router';
 import { Check, ChevronLeft, Copy } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import { Field, Form, PasswordForm } from '../login';
-import { useApp } from '../store';
+import { addUser, deleteUser, logOut, rename, resetPassword, setAdmin, useApp, useMe } from '../store';
 import { Avatar, Popup } from '../ui';
 
 export const Route = createFileRoute('/settings')({ component: Settings });
@@ -24,7 +24,7 @@ function Saved({ when }: { when: boolean }) {
 }
 
 function Profile() {
-  const { me, rename } = useApp();
+  const me = useMe();
   const [name, setName] = useState(me.name);
   const [saved, setSaved] = useState(false);
   return (
@@ -106,7 +106,7 @@ type Question = { title: string; text: string; button: string; color: string; ru
 
 // One account, and what an admin can do to it. `onPassword` is told the temporary password a reset made.
 function UserRow({ person, onPassword }: { person: Person; onPassword: (given: Given) => void }) {
-  const { me, setAdmin, deleteUser, resetPassword } = useApp();
+  const me = useMe();
   const [error, setError] = useState('');
   const [question, setQuestion] = useState<Question | null>(null);
   const attempt = (change: Promise<unknown>) =>
@@ -188,7 +188,7 @@ function UserRow({ person, onPassword }: { person: Person; onPassword: (given: G
 }
 
 function Users() {
-  const { people, addUser } = useApp();
+  const people = useApp((state) => state.people);
   const empty = { username: '', name: '' };
   const [next, setNext] = useState(empty);
   // The temporary password that is on screen, if one was just made.
@@ -226,7 +226,7 @@ function Users() {
 }
 
 function Settings() {
-  const { me, logOut } = useApp();
+  const me = useMe();
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto max-w-2xl space-y-4 p-3 md:py-10">

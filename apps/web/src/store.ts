@@ -22,7 +22,7 @@ import {
   type Thread,
   type Visibility,
 } from '@acocrew/shared';
-import { createContext, useCallback, useContext, useEffect, useReducer, useRef, useState } from 'react';
+import { create } from 'zustand';
 
 type State = {
   // False until the server has sent the channels and threads.
@@ -154,146 +154,127 @@ export async function whoAmI(): Promise<Me | null | undefined> {
 export const changePassword = (currentPassword: string, newPassword: string) =>
   request(`${ME_PATH}/password`, { currentPassword, newPassword });
 
+// Everything the screens know is kept here. A screen reads only the parts it shows, so it is drawn again
+// only when those change. `login` is who logged in, and is set before any screen is drawn.
+export const useApp = create<State & { login: Me; navOpen: boolean }>(() => ({
+  ...START,
+  login: null!,
+  navOpen: false,
+}));
+
+const dispatch = (action: Action) => useApp.setState((state) => reduce(state, action));
+
+// The person logged in, as everyone sees them right now (the name or admin rights may have changed).
+export const useMe = () =>
+  useApp((state) => state.people.find((person) => person.id === state.login.id) ?? state.login);
+
+export const setNavOpen = (navOpen: boolean) => useApp.setState({ navOpen });
+
+let socket: WebSocket | null = null;
+
+const tell = (event: ClientEvent) => {
+  if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(event));
+};
+
 // Everything the screens know comes down the WebSocket. Changes go up as plain requests.
-// `login` is who is logged in. `recheck` asks the server again whether they still are.
-export function useAppState(login: Me, recheck: () => Promise<unknown>) {
-  const [state, dispatch] = useReducer(reduce, START);
-  const [navOpen, setNavOpen] = useState(false);
-  const socket = useRef<WebSocket | null>(null);
-  const openId = useRef<string | null>(null);
-
-  const tell = (event: ClientEvent) => {
-    if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify(event));
-  };
-
-  useEffect(() => {
-    let retry: ReturnType<typeof setTimeout>;
-    let stopped = false;
-    const connect = () => {
-      const ws = new WebSocket(location.origin.replace(/^http/, 'ws') + WS_PATH);
-      socket.current = ws;
-      // After a reconnect, ask again for the thread on screen so nothing is missed.
-      ws.onopen = () => openId.current && tell({ type: 'open', threadId: openId.current });
-      ws.onmessage = (message) => dispatch(JSON.parse(message.data));
-      ws.onclose = () => {
-        if (stopped) return;
-        dispatch({ type: 'offline' });
-        // The server also hangs up on someone it logged out (a deleted account, a password reset).
-        void recheck();
-        retry = setTimeout(connect, 1000);
-      };
+// `recheck` asks the server again whether the person is still logged in. Gives back what hangs up again,
+// which also forgets everything, so the next person to log in starts with nothing.
+export function connect(recheck: () => Promise<unknown>) {
+  let retry: ReturnType<typeof setTimeout>;
+  let stopped = false;
+  const open = () => {
+    const ws = new WebSocket(location.origin.replace(/^http/, 'ws') + WS_PATH);
+    socket = ws;
+    // After a reconnect, ask again for the thread on screen so nothing is missed.
+    ws.onopen = () => {
+      const { openId } = useApp.getState();
+      if (openId) tell({ type: 'open', threadId: openId });
     };
-    connect();
-    return () => {
-      stopped = true;
-      clearTimeout(retry);
-      socket.current?.close();
+    ws.onmessage = (message) => dispatch(JSON.parse(message.data));
+    ws.onclose = () => {
+      if (stopped) return;
+      dispatch({ type: 'offline' });
+      // The server also hangs up on someone it logged out (a deleted account, a password reset).
+      void recheck();
+      retry = setTimeout(open, 1000);
     };
-  }, [recheck]);
-
-  const openThread = useCallback((threadId: string) => {
-    openId.current = threadId;
-    dispatch({ type: 'open', threadId });
-    tell({ type: 'open', threadId });
-  }, []);
-
-  // The person has the thread in front of them. Shown right away, and kept by the server for their other
-  // devices. If the server did not get it, it says so on the next connect and the thread asks again.
-  const markSeen = useCallback((thread: Thread) => {
-    dispatch({ type: 'seen', seen: { [thread.id]: thread.updatedAt } });
-    request(`/api/threads/${thread.id}/seen`, { at: thread.updatedAt }).catch(() => {});
-  }, []);
-
-  const listFolders = useCallback(
-    (path?: string) => request<FolderList>(`/api/folders${path ? `?path=${encodeURIComponent(path)}` : ''}`),
-    [],
-  );
-
-  const addChannel = async (path: string) => {
-    const channel = await request<Channel>('/api/channels', { path });
-    dispatch({ type: 'channel', channel });
-    return channel;
   };
-
-  // Shows the new order right away. If the server turns it down, the old order comes back.
-  const orderChannels = (ids: string[]) => {
-    const before = state.channels.map((channel) => channel.id);
-    dispatch({ type: 'order', ids });
-    request('/api/channels/order', { ids }).catch(() => dispatch({ type: 'order', ids: before }));
-  };
-
-  const createThread = async (body: NewThread) => {
-    const thread = await request<Thread>('/api/threads', body);
-    dispatch({ type: 'thread', thread });
-    return thread;
-  };
-
-  // Makes an automation, or with an `id` changes that one (`on` says whether it stays switched on).
-  const saveAutomation = async (body: NewAutomation & { on?: boolean }, id?: string) => {
-    const automation = await request<Automation>(id ? `${AUTOMATIONS_PATH}/${id}` : AUTOMATIONS_PATH, body);
-    dispatch({ type: 'automation', automation });
-    return automation;
-  };
-  const deleteAutomation = (id: string) => request(`${AUTOMATIONS_PATH}/${id}/delete`, {});
-  // Runs it right now, whatever its schedule says. Gives back the thread that started.
-  const runAutomation = async (id: string) => {
-    const thread = await request<Thread>(`${AUTOMATIONS_PATH}/${id}/run`, {});
-    dispatch({ type: 'thread', thread });
-    return thread;
-  };
-
-  const sendMessage = (threadId: string, body: NewMessage) => request(`/api/threads/${threadId}/messages`, body);
-  const answer = (threadId: string, body: Answer) => request(`/api/threads/${threadId}/answers`, body);
-  const stopThread = (threadId: string) => request(`/api/threads/${threadId}/stop`, {});
-  // Pins the thread for everyone, or unpins it. The list changes when the server tells everyone.
-  const pinThread = (threadId: string, pinned: boolean) => request(`/api/threads/${threadId}/pin`, { pinned });
-
-  // Who sees the thread: private or public, and one person it is shared with or no longer. Only whoever
-  // started it can. The thread changes when the server says so.
-  const showThread = (threadId: string, visibility: Visibility) =>
-    request(`/api/threads/${threadId}/visibility`, { visibility });
-  const shareThread = (threadId: string, userId: string, shared: boolean) =>
-    request(`/api/threads/${threadId}/shares`, { userId, shared });
-
-  const rename = (name: string) => request(ME_PATH, { name });
-  const logOut = () => request(LOGOUT_PATH, {}).then(recheck);
-  // What an admin does to accounts. The list itself updates when the server tells everyone.
-  // Both give back the temporary password the server made, which is the only time it can be seen.
-  const addUser = (body: NewUser) => request<Person & Temporary>(USERS_PATH, body);
-  const resetPassword = (id: string) => request<Temporary>(`${USERS_PATH}/${id}/password`, {});
-  const setAdmin = (id: string, admin: boolean) => request(`${USERS_PATH}/${id}/admin`, { admin });
-  const deleteUser = (id: string) => request(`${USERS_PATH}/${id}/delete`, {});
-
-  return {
-    ...state,
-    // The person logged in, as everyone sees them right now (the name or admin rights may have changed).
-    me: state.people.find((person) => person.id === login.id) ?? login,
-    rename,
-    logOut,
-    addUser,
-    resetPassword,
-    setAdmin,
-    deleteUser,
-    navOpen,
-    setNavOpen,
-    openThread,
-    markSeen,
-    listFolders,
-    addChannel,
-    orderChannels,
-    createThread,
-    saveAutomation,
-    deleteAutomation,
-    runAutomation,
-    sendMessage,
-    answer,
-    stopThread,
-    pinThread,
-    showThread,
-    shareThread,
+  open();
+  return () => {
+    stopped = true;
+    clearTimeout(retry);
+    socket?.close();
+    useApp.setState({ ...START, navOpen: false });
   };
 }
 
-export type App = ReturnType<typeof useAppState>;
-export const Ctx = createContext<App>(null!);
-export const useApp = () => useContext(Ctx);
+export const openThread = (threadId: string) => {
+  dispatch({ type: 'open', threadId });
+  tell({ type: 'open', threadId });
+};
+
+// The person has the thread in front of them. Shown right away, and kept by the server for their other
+// devices. If the server did not get it, it says so on the next connect and the thread asks again.
+export const markSeen = (thread: Thread) => {
+  dispatch({ type: 'seen', seen: { [thread.id]: thread.updatedAt } });
+  request(`/api/threads/${thread.id}/seen`, { at: thread.updatedAt }).catch(() => {});
+};
+
+export const listFolders = (path?: string) =>
+  request<FolderList>(`/api/folders${path ? `?path=${encodeURIComponent(path)}` : ''}`);
+
+export const addChannel = async (path: string) => {
+  const channel = await request<Channel>('/api/channels', { path });
+  dispatch({ type: 'channel', channel });
+  return channel;
+};
+
+// Shows the new order right away. If the server turns it down, the old order comes back.
+export const orderChannels = (ids: string[]) => {
+  const before = useApp.getState().channels.map((channel) => channel.id);
+  dispatch({ type: 'order', ids });
+  request('/api/channels/order', { ids }).catch(() => dispatch({ type: 'order', ids: before }));
+};
+
+export const createThread = async (body: NewThread) => {
+  const thread = await request<Thread>('/api/threads', body);
+  dispatch({ type: 'thread', thread });
+  return thread;
+};
+
+// Makes an automation, or with an `id` changes that one (`on` says whether it stays switched on).
+export const saveAutomation = async (body: NewAutomation & { on?: boolean }, id?: string) => {
+  const automation = await request<Automation>(id ? `${AUTOMATIONS_PATH}/${id}` : AUTOMATIONS_PATH, body);
+  dispatch({ type: 'automation', automation });
+  return automation;
+};
+export const deleteAutomation = (id: string) => request(`${AUTOMATIONS_PATH}/${id}/delete`, {});
+// Runs it right now, whatever its schedule says. Gives back the thread that started.
+export const runAutomation = async (id: string) => {
+  const thread = await request<Thread>(`${AUTOMATIONS_PATH}/${id}/run`, {});
+  dispatch({ type: 'thread', thread });
+  return thread;
+};
+
+export const sendMessage = (threadId: string, body: NewMessage) => request(`/api/threads/${threadId}/messages`, body);
+export const answer = (threadId: string, body: Answer) => request(`/api/threads/${threadId}/answers`, body);
+export const stopThread = (threadId: string) => request(`/api/threads/${threadId}/stop`, {});
+// Pins the thread for everyone, or unpins it. The list changes when the server tells everyone.
+export const pinThread = (threadId: string, pinned: boolean) => request(`/api/threads/${threadId}/pin`, { pinned });
+
+// Who sees the thread: private or public, and one person it is shared with or no longer. Only whoever
+// started it can. The thread changes when the server says so.
+export const showThread = (threadId: string, visibility: Visibility) =>
+  request(`/api/threads/${threadId}/visibility`, { visibility });
+export const shareThread = (threadId: string, userId: string, shared: boolean) =>
+  request(`/api/threads/${threadId}/shares`, { userId, shared });
+
+export const rename = (name: string) => request(ME_PATH, { name });
+// The app is told, and shows the login screen.
+export const logOut = () => request(LOGOUT_PATH, {}).then(() => window.dispatchEvent(new Event(LOGGED_OUT)));
+// What an admin does to accounts. The list itself updates when the server tells everyone.
+// Both give back the temporary password the server made, which is the only time it can be seen.
+export const addUser = (body: NewUser) => request<Person & Temporary>(USERS_PATH, body);
+export const resetPassword = (id: string) => request<Temporary>(`${USERS_PATH}/${id}/password`, {});
+export const setAdmin = (id: string, admin: boolean) => request(`${USERS_PATH}/${id}/admin`, { admin });
+export const deleteUser = (id: string) => request(`${USERS_PATH}/${id}/delete`, {});

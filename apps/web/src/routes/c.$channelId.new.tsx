@@ -14,7 +14,7 @@ function Start() {
   const { kind = 'thread' } = Route.useSearch();
   const navigate = useNavigate();
   // The parent route only shows this page when the channel exists.
-  const channel = useApp().channels.find((c) => c.id === channelId)!;
+  const channel = useApp((state) => state.channels).find((c) => c.id === channelId)!;
   const title = (
     <KindTitle
       kind={kind}

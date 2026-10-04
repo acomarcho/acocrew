@@ -4,7 +4,7 @@ import { Link, useNavigate } from '@tanstack/react-router';
 import { ChevronDown, ChevronLeft, Clock, FolderGit2, GitBranch, Pencil, Play, Plus, Trash2 } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import { useCommands } from './commands';
-import { useApp } from './store';
+import { deleteAutomation, runAutomation, saveAutomation, useApp, useMe } from './store';
 import {
   branchOption,
   Composer,
@@ -194,7 +194,8 @@ type EditorProps = {
 
 // Making or changing an automation, in the same message box a thread is started with.
 export function AutomationEditor({ channel, automation, title, onDone, onCancel }: EditorProps) {
-  const { saveAutomation, me, utcOffset } = useApp();
+  const me = useMe();
+  const utcOffset = useApp((state) => state.utcOffset);
   const commands = useCommands(`channel=${channel.id}`);
   // Who sees it, and each thread it starts from now on. Only whoever made it can change that.
   const [visibility, setVisibility] = useState<Visibility>(automation?.visibility ?? 'private');
@@ -269,7 +270,8 @@ export function AutomationEditor({ channel, automation, title, onDone, onCancel 
 
 // The automations of a repository, above its threads. They start folded away.
 export function AutomationSection({ channelId }: { channelId: string }) {
-  const { automations, utcOffset } = useApp();
+  const automations = useApp((state) => state.automations);
+  const utcOffset = useApp((state) => state.utcOffset);
   const mine = automations.filter((automation) => automation.channelId === channelId);
   return (
     <Section
@@ -320,7 +322,8 @@ const ACTION =
 
 // One automation: what it sends and when, what can be done with it, and the threads it started.
 export function AutomationPage({ channel, automation }: { channel: Channel; automation: Automation }) {
-  const { threads, saveAutomation, deleteAutomation, runAutomation, utcOffset } = useApp();
+  const threads = useApp((state) => state.threads);
+  const utcOffset = useApp((state) => state.utcOffset);
   const navigate = useNavigate();
   const [editing, setEditing] = useState(false);
   const [asking, setAsking] = useState(false);

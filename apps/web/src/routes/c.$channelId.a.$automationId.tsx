@@ -6,7 +6,8 @@ export const Route = createFileRoute('/c/$channelId/a/$automationId')({ componen
 
 function OpenAutomation() {
   const { channelId, automationId } = Route.useParams();
-  const { channels, automations } = useApp();
+  const channels = useApp((state) => state.channels);
+  const automations = useApp((state) => state.automations);
   // The parent route only shows this page when the channel exists.
   const channel = channels.find((c) => c.id === channelId)!;
   const automation = automations.find((a) => a.id === automationId && a.channelId === channelId);

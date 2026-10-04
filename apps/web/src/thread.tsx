@@ -29,7 +29,7 @@ import {
 import { defaultRehypePlugins, Streamdown, type StreamdownProps } from 'streamdown';
 import { ApprovalPanel, isAsking, QuestionPanel, useQuestions } from './pending';
 import { useCommands } from './commands';
-import { useApp } from './store';
+import { answer, markSeen, openThread, sendMessage, stopThread, useApp } from './store';
 import { ShareButton } from './sharing';
 import { Avatar, Composer, Elapsed, Picture, PinButton, StatusBadge, type Settings } from './ui';
 
@@ -57,7 +57,7 @@ const ThreadCtx = createContext<(id: string) => Item[]>(null!);
 // The speaker is Claude (`agent`), or the person whose user id is `by`.
 type Speaker = { agent?: boolean; by?: string };
 function Row({ agent, by, lead, at, children }: Speaker & { lead: boolean; at?: number; children: ReactNode }) {
-  const { people } = useApp();
+  const people = useApp((state) => state.people);
   const person: Person | undefined = people.find((known) => known.id === by);
   return (
     <div className={`flex gap-3 px-4 ${lead ? 'pt-2 pb-1' : 'py-1'}`}>
@@ -270,7 +270,8 @@ const tabVisible = () => !document.hidden;
 
 // The full chat for one thread.
 export function ThreadView({ thread, channel }: { thread: Thread; channel: Channel }) {
-  const { items, seen, openThread, markSeen, sendMessage, stopThread, answer } = useApp();
+  const items = useApp((state) => state.items);
+  const seenAt = useApp((state) => state.seen[thread.id] ?? 0);
   const commands = useCommands(`thread=${thread.id}`);
   // Only what this person changed and has not sent yet. The rest follows the thread, so a teammate's change
   // shows up here and is not undone by the next reply.
@@ -291,15 +292,15 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
   const active =
     thread.status === 'working' || thread.status === 'waiting' || all.some((i) => i.kind === 'tool' && !i.done);
 
-  useEffect(() => openThread(thread.id), [openThread, thread.id]);
+  useEffect(() => openThread(thread.id), [thread.id]);
 
   // Whatever happens in the thread while the person has it in front of them is seen. Said before the screen
   // is drawn, so the thread never shows as new in the list while it is being looked at.
   const visible = useSyncExternalStore(watchTab, tabVisible);
-  const unseen = thread.updatedAt > (seen[thread.id] ?? 0);
+  const unseen = thread.updatedAt > seenAt;
   useLayoutEffect(() => {
     if (visible && unseen) markSeen(thread);
-  }, [visible, unseen, markSeen, thread]);
+  }, [visible, unseen, thread]);
 
   useEffect(() => {
     const el = scroller.current;

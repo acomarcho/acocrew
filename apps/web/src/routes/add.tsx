@@ -3,12 +3,12 @@ import type { FolderList } from '@acocrew/shared';
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
 import { ChevronLeft, CornerLeftUp, Folder, FolderGit2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { useApp } from '../store';
+import { addChannel, listFolders, useApp } from '../store';
 
 export const Route = createFileRoute('/add')({ component: AddRepository });
 
 function AddRepository() {
-  const { channels, listFolders, addChannel } = useApp();
+  const channels = useApp((state) => state.channels);
   const navigate = useNavigate();
   // undefined = the home folder
   const [path, setPath] = useState<string>();
@@ -24,7 +24,7 @@ function AddRepository() {
     return () => {
       stale = true;
     };
-  }, [listFolders, path]);
+  }, [path]);
 
   const go = (next: string) => {
     setError('');
