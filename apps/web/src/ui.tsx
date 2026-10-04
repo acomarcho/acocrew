@@ -602,15 +602,20 @@ export function Composer({
   );
 }
 
-export function NewThreadButton({ channelId }: { channelId: string }) {
+// `iconOnly` is for where room is tight: a small square with just the plus, as tall as the button with words.
+export function NewThreadButton({ channelId, iconOnly }: { channelId: string; iconOnly?: boolean }) {
+  // Without the words, hovering and screen readers still say what it does.
+  const label = iconOnly ? 'New thread' : undefined;
   return (
     <Link
       to="/c/$channelId/new"
       params={{ channelId }}
-      className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90"
+      aria-label={label}
+      title={label}
+      className={`inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-primary text-sm font-semibold text-primary-foreground hover:opacity-90 ${iconOnly ? 'size-9' : 'px-3.5 py-2'}`}
     >
       <Plus size={16} />
-      New Thread
+      {!iconOnly && 'New Thread'}
     </Link>
   );
 }
