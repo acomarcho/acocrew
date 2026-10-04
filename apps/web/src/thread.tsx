@@ -63,7 +63,7 @@ function Row({ agent, lead, at, children }: { agent: boolean; lead: boolean; at?
   );
 }
 
-// A message, with a button to copy its text that shows while the mouse is over it.
+// A message, with a button under it to copy its text that shows while the mouse is over it.
 function Copyable({ text, children }: { text: string; children: ReactNode }) {
   const [copied, setCopied] = useState(false);
   useEffect(() => {
@@ -73,13 +73,14 @@ function Copyable({ text, children }: { text: string; children: ReactNode }) {
   }, [copied]);
   const label = copied ? 'Copied' : 'Copy message';
   return (
-    <div className="group relative">
+    <div className="group">
       {children}
+      {/* Sits in its own row under the text, so it never covers it. The row is always there, so nothing jumps on hover. */}
       {text && (
         <button
           type="button"
           onClick={() => void navigator.clipboard.writeText(text).then(() => setCopied(true))}
-          className="invisible absolute -top-3 right-0 rounded-md border border-border bg-card p-1.5 text-muted-foreground shadow-sm group-hover:visible hover:text-foreground"
+          className="mt-0.5 -ml-1.5 block rounded-md p-1.5 text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-muted hover:text-foreground focus-visible:opacity-100"
           aria-label={label}
           title={label}
         >
