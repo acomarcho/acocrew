@@ -18,11 +18,10 @@ import {
 } from 'lucide-react';
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { defaultRehypePlugins, Streamdown, type StreamdownProps } from 'streamdown';
-import { imageUrl } from './images';
 import { ApprovalPanel, isAsking, QuestionPanel, useQuestions } from './pending';
 import { useCommands } from './commands';
 import { useApp } from './store';
-import { Avatar, Composer, StatusBadge, type Settings } from './ui';
+import { Avatar, Composer, Picture, StatusBadge, type Settings } from './ui';
 
 type Tool = Extract<Item, { kind: 'tool' }>;
 
@@ -180,15 +179,11 @@ function ItemView({ item, lead, nested }: { item: Item; lead: boolean; nested?: 
     return (
       <Row by={item.userId} lead at={item.at}>
         <Copyable text={item.text}>
-          {/* A set height, so the chat does not jump when an image finishes loading. Click to see it full size. */}
+          {/* A set height, so the chat does not jump when an image finishes loading. */}
           {item.images?.map((id) => (
-            <a key={id} href={imageUrl(id)} target="_blank" rel="noreferrer" className="mr-2 mb-1 inline-block">
-              <img
-                src={imageUrl(id)}
-                alt="Attached image"
-                className="h-40 rounded-md border border-border bg-card object-contain"
-              />
-            </a>
+            <span key={id} className="mr-2 mb-1 inline-block">
+              <Picture id={id} className="h-40 bg-card object-contain" />
+            </span>
           ))}
           <p className="break-words whitespace-pre-wrap">{item.text}</p>
         </Copyable>

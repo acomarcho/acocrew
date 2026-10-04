@@ -177,6 +177,39 @@ export function Drawer({ children, className = '' }: { children: ReactNode; clas
   );
 }
 
+// An attached image, shown small. A click opens it big over the page. Escape closes that (the browser does
+// this for a dialog), and so does a click on the close button or anywhere beside the image.
+export function Picture({ id, className }: { id: string; className: string }) {
+  const popup = useRef<HTMLDialogElement>(null);
+  return (
+    <>
+      <button type="button" onClick={() => popup.current?.showModal()} aria-label="View image" className="block">
+        <img src={imageUrl(id)} alt="" className={`cursor-zoom-in rounded-md border border-border ${className}`} />
+      </button>
+      {/* Covers the whole screen, so a click that misses the image lands on it. */}
+      <dialog
+        ref={popup}
+        onClick={() => popup.current?.close()}
+        className="size-full max-h-none max-w-none items-center justify-center bg-black/80 p-4 open:flex"
+      >
+        <img
+          src={imageUrl(id)}
+          alt="Attached image"
+          onClick={(e) => e.stopPropagation()}
+          className="max-h-full max-w-full rounded-md object-contain"
+        />
+        <button
+          type="button"
+          aria-label="Close"
+          className="absolute top-3 right-3 grid size-9 place-items-center rounded-full bg-black/60 text-white hover:bg-black"
+        >
+          <X size={18} />
+        </button>
+      </dialog>
+    </>
+  );
+}
+
 type Option = { id: string; name: string; hint: string };
 
 type PickerProps = {
@@ -382,7 +415,7 @@ export function Composer({
         <div className="flex flex-wrap gap-2 px-3.5 pt-3">
           {images.map((id) => (
             <div key={id} className="relative">
-              <img src={imageUrl(id)} alt="" className="size-16 rounded-md border border-border object-cover" />
+              <Picture id={id} className="size-16 object-cover" />
               <button
                 type="button"
                 onClick={() => setImages(added.filter((other) => other !== id))}
