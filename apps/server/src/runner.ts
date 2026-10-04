@@ -9,10 +9,11 @@ import {
   type Thread,
 } from '@acocrew/shared';
 import type { Options, PermissionResult, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
-import { eq, ne } from 'drizzle-orm';
+import { eq, isNull, ne } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { loadItems, saveItem, threadCols, type Db } from './db.ts';
+import { branchOf } from './git.ts';
 import type { Hub } from './hub.ts';
 import type { Images } from './images.ts';
 import { channels, threads } from './schema.ts';
@@ -136,6 +137,21 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images) {
   function setThread(threadId: string, patch: Partial<Omit<Thread, 'tasks'>>) {
     const set = { ...patch, updatedAt: Date.now() };
     const row = db.update(threads).set(set).where(eq(threads.id, threadId)).returning(threadCols).get();
+    hub.toAll({ type: 'thread', thread: withTasks(row) });
+  }
+
+  // Claude can switch branches while it works, so the branch is read again after it did something.
+  async function noteBranch(threadId: string) {
+    const folder = db
+      .select({ path: threads.path, repo: channels.path, branch: threads.branch })
+      .from(threads)
+      .innerJoin(channels, eq(channels.id, threads.channelId))
+      .where(eq(threads.id, threadId))
+      .get()!;
+    const branch = await branchOf(folder.path ?? folder.repo);
+    if (branch === folder.branch) return;
+    // Nothing happened in the thread, so it keeps its place in the list.
+    const row = db.update(threads).set({ branch }).where(eq(threads.id, threadId)).returning(threadCols).get();
     hub.toAll({ type: 'thread', thread: withTasks(row) });
   }
 
@@ -296,6 +312,7 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images) {
     if (msg.type === 'result') {
       session.busy = false;
       session.failed = msg.is_error && !wasAborted(msg);
+      void noteBranch(threadId);
     }
     emit(threadId, session.translator.translate(msg));
     sync(threadId);
@@ -358,6 +375,9 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images) {
     );
     if (interrupted) setThread(id, { status: 'needs' });
   }
+
+  // Threads from before branches were kept, and threads that were on no branch.
+  for (const { id } of db.select(threadCols).from(threads).where(isNull(threads.branch)).all()) void noteBranch(id);
 
   return {
     withTasks,

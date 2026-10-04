@@ -8,10 +8,11 @@ import {
   type Channel,
   type Command,
   type NewMessage,
+  type Places,
   type Status,
 } from '@acocrew/shared';
 import { Link, useNavigate } from '@tanstack/react-router';
-import { useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   ArrowUp,
   Brain,
@@ -24,6 +25,7 @@ import {
   LoaderCircle,
   Menu,
   Plus,
+  Search,
   ShieldCheck,
   Sparkles,
   Square,
@@ -32,7 +34,7 @@ import {
 } from 'lucide-react';
 import { CommandMenu, suggest, useCommands } from './commands';
 import { imageUrl, uploadImage } from './images';
-import { useApp } from './store';
+import { request, useApp } from './store';
 
 export function Avatar({ agent }: { agent: boolean }) {
   return (
@@ -108,13 +110,34 @@ type PickerProps = {
   menuClass?: string;
   // There is no room for every label, so some pickers show only their icon: on phones, or everywhere.
   labelClass?: string;
+  // The label is short and has room, so it is not cut off on phones.
+  fullLabel?: boolean;
+  // For long lists: the menu gets a box to type in, which narrows the list. These words show in it while empty.
+  search?: string;
 };
 
 const ICON_ON_PHONE = 'hidden sm:flex';
 
-function Picker({ icon, value, options, onChange, menuClass = 'left-0', labelClass = 'flex' }: PickerProps) {
+function Picker({
+  icon,
+  value,
+  options,
+  onChange,
+  menuClass = 'left-0',
+  labelClass = 'flex',
+  fullLabel,
+  search,
+}: PickerProps) {
   const [open, setOpen] = useState(false);
+  const [typed, setTyped] = useState('');
   const picked = options.find((o) => o.id === value)?.name;
+  const words = typed.trim().toLowerCase();
+  const shown = options.filter((o) => `${o.name} ${o.hint}`.toLowerCase().includes(words));
+  const pick = (id: string) => {
+    onChange(id);
+    setOpen(false);
+    setTyped('');
+  };
   return (
     <div className="relative">
       <button
@@ -126,7 +149,7 @@ function Picker({ icon, value, options, onChange, menuClass = 'left-0', labelCla
       >
         {icon}
         <span className={`items-center gap-1.5 ${labelClass}`}>
-          <span className="max-w-20 truncate sm:max-w-none">{picked}</span>
+          <span className={fullLabel ? '' : 'max-w-20 truncate sm:max-w-none'}>{picked}</span>
           <ChevronDown size={14} />
         </span>
       </button>
@@ -134,25 +157,39 @@ function Picker({ icon, value, options, onChange, menuClass = 'left-0', labelCla
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
           <div
-            className={`absolute bottom-full z-50 mb-1 w-52 rounded-lg border border-border bg-card p-1 text-foreground shadow-xl ${menuClass}`}
+            className={`absolute bottom-full z-50 mb-1 rounded-lg border border-border bg-card p-1 text-foreground shadow-xl ${search ? 'w-72' : 'w-52'} ${menuClass}`}
           >
-            {options.map((o) => (
-              <button
-                key={o.id}
-                type="button"
-                onClick={() => {
-                  onChange(o.id);
-                  setOpen(false);
-                }}
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted"
-              >
-                <span className="flex-1">
-                  <span className="block">{o.name}</span>
-                  <span className="block text-xs text-muted-foreground">{o.hint}</span>
-                </span>
-                {o.id === value && <Check size={14} className="text-primary" />}
-              </button>
-            ))}
+            <div className="max-h-64 overflow-y-auto">
+              {shown.map((o) => (
+                <button
+                  key={o.id}
+                  type="button"
+                  onClick={() => pick(o.id)}
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted"
+                >
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate">{o.name}</span>
+                    <span className="block truncate text-xs text-muted-foreground">{o.hint}</span>
+                  </span>
+                  {o.id === value && <Check size={14} className="shrink-0 text-primary" />}
+                </button>
+              ))}
+              {shown.length === 0 && <p className="px-2 py-1.5 text-sm text-muted-foreground">Nothing matches.</p>}
+            </div>
+            {/* Below the list, so it stays where it is while the list above it gets shorter. */}
+            {search && (
+              <label className="mt-1 flex items-center gap-2 border-t border-border px-2 pt-2 pb-1 text-muted-foreground">
+                <Search size={14} className="shrink-0" />
+                <input
+                  autoFocus
+                  value={typed}
+                  placeholder={search}
+                  onChange={(e) => setTyped(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && shown.length > 0 && pick(shown[0].id)}
+                  className="w-full bg-transparent text-base text-foreground outline-none placeholder:text-muted-foreground md:text-sm"
+                />
+              </label>
+            )}
           </div>
         </>
       )}
@@ -438,30 +475,67 @@ export function NewThreadButton({ channelId }: { channelId: string }) {
 
 // Where a new thread works.
 const PLACES = [
-  { id: 'worktree', name: 'New worktree', hint: 'A fresh copy from the last commit, on a new branch' },
-  { id: 'checkout', name: 'Current checkout', hint: 'Right in the repository folder' },
+  { id: 'new', name: 'New worktree', hint: 'A fresh copy, on a new branch' },
+  { id: 'existing', name: 'Existing worktree', hint: 'Carry on where a thread left off' },
 ];
 
 // The only way to post in a channel: start a thread.
 export function NewThread({ channel }: { channel: Channel }) {
-  const { createThread } = useApp();
+  const { createThread, threads } = useApp();
   const navigate = useNavigate();
   const [settings, setSettings] = useState(NEW_THREAD);
   const [place, setPlace] = useState(PLACES[0].id);
-  const worktree = place === 'worktree';
   const channelId = channel.id;
   const commands = useCommands(`channel=${channelId}`);
+  // What git has in this repository. Empty until the server answers.
+  const [places, setPlaces] = useState<Places>({ branches: [], worktrees: [] });
+  useEffect(() => {
+    request<Places>(`/api/channels/${channelId}/places`).then(setPlaces, () => {});
+  }, [channelId]);
+  const branches = places.branches.map(({ name, remote }) => ({
+    id: name,
+    name,
+    hint: remote ? `On ${remote}. The newest commit is fetched first` : 'On this machine',
+  }));
+  // A worktree is easier to tell by what its last thread was about than by its branch. The worktrees used
+  // last come first.
+  const worktrees = places.worktrees
+    .map(({ path, branch }) => {
+      const last = threads
+        .filter((thread) => thread.channelId === channelId && (thread.path ?? channel.path) === path)
+        .sort((a, b) => b.updatedAt - a.updatedAt)[0];
+      const hint = path === channel.path ? 'The repository folder' : (last?.title ?? path);
+      return { id: path, name: branch ?? path, hint, usedAt: last?.updatedAt ?? 0 };
+    })
+    .sort((a, b) => b.usedAt - a.usedAt);
+  // Until something is picked, a new worktree starts from the first branch, and an existing one is the first.
+  const [picked, setPicked] = useState<{ from?: string; path?: string }>({});
+  const from = picked.from ?? branches[0]?.id;
+  const path = picked.path ?? worktrees[0]?.id;
+  const fresh = place === 'new';
+  const list = fresh ? branches : worktrees;
   return (
     <div>
-      <div className="mb-3 flex items-center gap-2">
-        <h2 className="text-xl font-bold">Start a thread</h2>
-        <Picker icon={<GitBranch size={14} />} value={place} options={PLACES} onChange={setPlace} />
+      <h2 className="text-xl font-bold">Start a thread</h2>
+      {/* Pulled left so the first picker's words line up with the title above it. */}
+      <div className="mt-1 mb-2 -ml-2 flex items-center">
+        <Picker icon={<GitBranch size={14} />} value={place} options={PLACES} onChange={setPlace} fullLabel />
+        {list.length > 0 && (
+          <Picker
+            key={place}
+            icon={<span className="opacity-70">{fresh ? 'from' : 'on'}</span>}
+            value={fresh ? from : path}
+            options={list}
+            onChange={(id) => setPicked(fresh ? { ...picked, from: id } : { ...picked, path: id })}
+            search={fresh ? 'Search branches' : 'Search worktrees'}
+            menuClass="-left-32 sm:left-0"
+          />
+        )}
       </div>
       <div className="mb-2 flex items-center gap-1.5 text-xs text-muted-foreground">
         <FolderGit2 size={12} className="shrink-0" />
         <span className="min-w-0 flex-1 truncate">
-          New thread in <b className="text-foreground">#{channel.name}</b>. Claude works{' '}
-          {worktree ? 'in a new worktree of' : 'right in'} <span className="font-mono">{channel.path}</span>.
+          New thread in <b className="text-foreground">#{channel.name}</b>.
         </span>
         <Link
           to="/c/$channelId"
@@ -478,7 +552,8 @@ export function NewThread({ channel }: { channel: Channel }) {
         onSettings={setSettings}
         commands={commands}
         onSend={async (text, images) => {
-          const thread = await createThread({ channelId, text, images, worktree, ...settings });
+          const where = fresh ? { from } : { path };
+          const thread = await createThread({ channelId, text, images, ...where, ...settings });
           void navigate({ to: '/c/$channelId/t/$threadId', params: { channelId, threadId: thread.id }, replace: true });
         }}
       />

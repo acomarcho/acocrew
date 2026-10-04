@@ -23,6 +23,8 @@ export const threads = sqliteTable('threads', {
   status: text('status').$type<Status>().notNull(),
   // The worktree this thread works in. Null when it works right in the repository folder.
   path: text('path'),
+  // The branch that folder was on when Claude last finished a turn there. Null when it was on no branch.
+  branch: text('branch'),
   // Claude's own id for the conversation. Lets a new Claude process pick up where the last one stopped.
   sessionId: text('session_id'),
   createdAt: integer('created_at').notNull(),

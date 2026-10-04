@@ -7,6 +7,7 @@ import {
   type Command,
   type FolderList,
   type Item,
+  type Places,
   type ServerEvent,
   type Status,
   type Thread,
@@ -175,21 +176,34 @@ function fakeClaude(script: Line[], naming: Line[] = []) {
 const workDir = join(homedir(), 'acocrew-work');
 mkdirSync(workDir, { recursive: true });
 const home = mkdtempSync(join(workDir, 'test-home-'));
-mkdirSync(join(home, 'code', 'shop', '.git'), { recursive: true });
-mkdirSync(join(home, 'code', 'notes'));
+mkdirSync(join(home, 'code', 'notes'), { recursive: true });
 mkdirSync(join(home, '.secret'));
 symlinkSync('/etc', join(home, 'way-out'));
 const images = join(home, '.acocrew', 'attachments');
 const worktrees = join(home, '.acocrew', 'worktrees');
-// `shop` only looks like a repository. `blog` is a real one with one commit.
-const blog = join(home, 'code', 'blog');
 const git = (dir: string, ...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim();
-mkdirSync(blog);
-git(blog, 'init', '--quiet', '--initial-branch=main');
-writeFileSync(join(blog, 'post.md'), 'hello\n');
-git(blog, 'add', '.');
 const me = ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', '-c', 'commit.gpgsign=false'];
-git(blog, ...me, 'commit', '--quiet', '-m', 'first post');
+const commit = (dir: string, file: string, words: string) => {
+  writeFileSync(join(dir, file), words);
+  git(dir, 'add', '.');
+  git(dir, ...me, 'commit', '--quiet', '-m', words.trim());
+  return git(dir, 'rev-parse', 'HEAD');
+};
+// A repository with one commit on `main`.
+function makeRepo(dir: string) {
+  mkdirSync(dir, { recursive: true });
+  git(dir, 'init', '--quiet', '--initial-branch=main');
+  commit(dir, 'post.md', 'hello\n');
+  return dir;
+}
+// `shop` has no remote. `blog` was cloned from `hub`, the way a repository on GitHub is.
+const shop = makeRepo(join(home, 'code', 'shop'));
+const hub = makeRepo(join(home, '.remotes', 'blog'));
+const blog = join(home, 'code', 'blog');
+git(home, 'clone', '--quiet', hub, blog);
+// A second copy of the same remote repository. Only one test starts threads in it.
+const journal = join(home, 'code', 'journal');
+git(home, 'clone', '--quiet', hub, journal);
 afterAll(() => rmSync(home, { recursive: true }));
 
 let db: Db;
@@ -305,7 +319,7 @@ async function connect() {
 const HAIKU = { model: 'claude-haiku-4-5-20251001', effort: 'low', context: '1m', fast: false, access: 'full' };
 const OPUS = { ...HAIKU, model: 'claude-opus-5-5', effort: 'high' };
 
-async function addChannel(path = join(home, 'code', 'shop')) {
+async function addChannel(path = shop) {
   const res = await post('/api/channels', { path });
   return (await res.json()) as Channel;
 }
@@ -313,7 +327,7 @@ async function addChannel(path = join(home, 'code', 'shop')) {
 // Works in the current checkout unless `settings` says otherwise.
 async function startThread(text: string, settings: object = HAIKU) {
   const channel = await addChannel();
-  const res = await post('/api/threads', { channelId: channel.id, text, worktree: false, ...settings });
+  const res = await post('/api/threads', { channelId: channel.id, text, path: channel.path, ...settings });
   return (await res.json()) as Thread;
 }
 
@@ -391,6 +405,7 @@ test('folders: lists visible folders and marks git repositories', async () => {
   expect(code.parent).toBe(home);
   expect(code.folders.map((f) => [f.name, f.isRepo])).toEqual([
     ['blog', true],
+    ['journal', true],
     ['notes', false],
     ['shop', true],
   ]);
@@ -514,7 +529,7 @@ test('a long name from Claude is cut to one short line', async () => {
 test('a thread started in a new worktree runs Claude there, on its own branch, and replies stay there', async () => {
   const tab = await connect();
   const channel = await addChannel(blog);
-  const res = await post('/api/threads', { channelId: channel.id, text: 'make notes', worktree: true, ...HAIKU });
+  const res = await post('/api/threads', { channelId: channel.id, text: 'make notes', from: 'main', ...HAIKU });
   const thread = (await res.json()) as Thread;
   const short = thread.id.slice(0, 8);
   expect(thread.path).toBe(join(worktrees, 'blog', short));
@@ -532,19 +547,121 @@ test('a thread started in a new worktree runs Claude there, on its own branch, a
   expect(claude.calls.map((call) => call.cwd)).toEqual([thread.path, thread.path]);
   expect((await connect()).hello.threads).toMatchObject([{ id: thread.id, path: thread.path }]);
 
-  // A thread in the current checkout of the same repository makes no worktree.
+  // A follow up thread works in the same worktree. So can one right in the repository folder. Neither makes a
+  // new worktree.
   const before = git(blog, 'worktree', 'list');
-  const res2 = await post('/api/threads', { channelId: channel.id, text: 'make notes', worktree: false, ...HAIKU });
-  expect(await res2.json()).toMatchObject({ path: null });
-  expect(claude.calls[2].cwd).toBe(blog);
+  const again = await post('/api/threads', { channelId: channel.id, text: 'make notes', path: thread.path, ...HAIKU });
+  expect(await again.json()).toMatchObject({ path: thread.path, branch: `acocrew/${short}` });
+  const inRepo = await post('/api/threads', { channelId: channel.id, text: 'make notes', path: blog, ...HAIKU });
+  expect(await inRepo.json()).toMatchObject({ path: null, branch: 'main' });
+  expect(claude.calls.slice(2).map((call) => call.cwd)).toEqual([thread.path, blog]);
   expect(git(blog, 'worktree', 'list')).toBe(before);
 });
 
-test('when git cannot make the worktree, no thread is started and the reason comes back', async () => {
+const places = async (channel: Channel) =>
+  (await (await fetch(url(`/api/channels/${channel.id}/places`))).json()) as Places;
+
+test('a new worktree starts from the newest commit of the remote main branch unless another branch is picked', async () => {
+  const channel = await addChannel(journal);
+  // The start screen offers the remote's main branch first, and every working copy that exists.
+  expect(await places(channel)).toMatchObject({
+    branches: [
+      { name: 'origin/main', remote: 'origin' },
+      { name: 'main', remote: null },
+    ],
+    worktrees: [{ path: journal, branch: 'main' }],
+  });
+
+  // Someone else pushes after our copy was made. The new worktree still gets their commit.
+  const pushed = commit(hub, 'post.md', 'hello again\n');
+  const res = await post('/api/threads', { channelId: channel.id, text: 'make notes', from: 'origin/main', ...HAIKU });
+  const thread = (await res.json()) as Thread;
+  const branch = `acocrew/${thread.id.slice(0, 8)}`;
+  expect(thread.branch).toBe(branch);
+  expect(git(thread.path!, 'rev-parse', 'HEAD')).toBe(pushed);
+  // A push from the new branch does not aim at the branch it started from.
+  expect(git(journal, 'config', '--get-regexp', '^branch\\.').split('\n')).toEqual([
+    'branch.main.remote origin',
+    'branch.main.merge refs/heads/main',
+  ]);
+
+  // The local main branch was not moved, and a worktree from it starts from where it is.
+  const local = await post('/api/threads', { channelId: channel.id, text: 'make notes', from: 'main', ...HAIKU });
+  const { path } = (await local.json()) as Thread;
+  expect(git(path!, 'rev-parse', 'HEAD')).toBe(git(journal, 'rev-parse', 'main'));
+  expect(git(path!, 'rev-parse', 'HEAD')).not.toBe(pushed);
+  // A branch on the remote with a name git could take for an option is fetched like any other.
+  git(hub, 'update-ref', 'refs/heads/-odd', pushed);
+  git(journal, 'fetch', '--quiet');
+  const odd = await post('/api/threads', { channelId: channel.id, text: 'make notes', from: 'origin/-odd', ...HAIKU });
+  expect(git(((await odd.json()) as Thread).path!, 'rev-parse', 'HEAD')).toBe(pushed);
+
+  const copies = (await places(channel)).worktrees;
+  expect(copies[0]).toEqual({ path: journal, branch: 'main' });
+  expect(copies.slice(1)).toEqual(
+    expect.arrayContaining([{ path: thread.path, branch }, expect.objectContaining({ path })]),
+  );
+});
+
+test('with no remote, a new worktree starts from the branch the repository folder is on', async () => {
   const channel = await addChannel();
-  const res = await post('/api/threads', { channelId: channel.id, text: 'make notes', worktree: true, ...HAIKU });
-  expect(res.status).toBe(500);
-  expect(((await res.json()) as { error: string }).error).toMatch(/^Could not make a worktree: .*not a git repository/);
+  git(shop, 'checkout', '--quiet', '-b', 'draft');
+  try {
+    expect((await places(channel)).branches[0]).toEqual({ name: 'draft', remote: null });
+  } finally {
+    git(shop, 'checkout', '--quiet', 'main');
+    git(shop, 'branch', '-D', 'draft');
+  }
+});
+
+test('a worktree on no branch is offered without one, and a worktree whose folder is gone is not offered', async () => {
+  const channel = await addChannel();
+  const [loose, gone] = [join(home, '.copies', 'loose'), join(home, '.copies', 'gone')];
+  git(shop, 'worktree', 'add', '--quiet', '--detach', loose);
+  git(shop, 'worktree', 'add', '--quiet', '-b', 'gone', gone);
+  rmSync(gone, { recursive: true });
+  expect((await places(channel)).worktrees).toEqual([
+    { path: shop, branch: 'main' },
+    { path: loose, branch: null },
+  ]);
+});
+
+test('the thread shows the branch Claude left its folder on, also for threads from before branches were kept', async () => {
+  await serve(TWO_TURNS);
+  const release = claude.pause(bubbleEnd);
+  const tab = await connect();
+  const channel = await addChannel(blog);
+  const res = await post('/api/threads', { channelId: channel.id, text: 'make notes', from: 'main', ...HAIKU });
+  const thread = (await res.json()) as Thread;
+  // What Claude would do in the middle of its turn.
+  git(thread.path!, 'checkout', '--quiet', '-b', 'notes');
+  release();
+  await tab.status(thread.id, 'done');
+  await tab.until('thread', (e) => e.thread.id === thread.id && e.thread.branch === 'notes');
+
+  // Finding the branch out again is not something that happened in the thread, so its time stays.
+  const { updatedAt } = db.update(threads).set({ branch: null }).returning().get();
+  await serve(TWO_TURNS);
+  const later = await connect();
+  const found = await later.until('thread', (e) => e.thread.id === thread.id && e.thread.branch === 'notes');
+  expect(found.thread.updatedAt).toBe(updatedAt);
+});
+
+test('when git cannot make the worktree, no thread is started and the reason comes back', async () => {
+  const channel = await addChannel(blog);
+  git(blog, 'remote', 'set-url', 'origin', join(home, 'missing'));
+  try {
+    const res = await post('/api/threads', {
+      channelId: channel.id,
+      text: 'make notes',
+      from: 'origin/main',
+      ...HAIKU,
+    });
+    expect(res.status).toBe(500);
+    expect(((await res.json()) as { error: string }).error).toMatch(/^Could not make a worktree: .*missing/);
+  } finally {
+    git(blog, 'remote', 'set-url', 'origin', hub);
+  }
   expect(db.select().from(threads).all()).toEqual([]);
   expect(claude.calls).toEqual([]);
 });
@@ -954,7 +1071,7 @@ const names = (list: Command[], skill: boolean) => list.filter((c) => c.skill ==
 test('the message box is offered what Claude says it can run where the thread works', async () => {
   const tab = await connect();
   const channel = await addChannel(blog);
-  const res = await post('/api/threads', { channelId: channel.id, text: 'make notes', worktree: true, ...HAIKU });
+  const res = await post('/api/threads', { channelId: channel.id, text: 'make notes', from: 'main', ...HAIKU });
   const thread = (await res.json()) as Thread;
   await tab.status(thread.id, 'done');
 
@@ -1087,7 +1204,7 @@ test('only png, jpeg, gif and webp up to 10MB are taken, and a message can only 
 
 test('requests from another website are refused, our own pages are not', async () => {
   const channel = await addChannel();
-  const body = JSON.stringify({ channelId: channel.id, text: 'hi', worktree: false, ...HAIKU });
+  const body = JSON.stringify({ channelId: channel.id, text: 'hi', path: channel.path, ...HAIKU });
   const from = (headers: Record<string, string>) => fetch(url('/api/threads'), { method: 'POST', body, headers });
   const viaProxy = { origin: 'https://team.example:5273', 'x-forwarded-host': 'team.example:5273' };
   expect((await from({ origin: 'https://evil.example' })).status).toBe(403);
@@ -1113,12 +1230,17 @@ test('requests from another website are refused, our own pages are not', async (
 test('bad requests are turned away', async () => {
   const thread = await startThread('make notes');
   const bad = [
-    ['/api/threads', { channelId: 'nope', text: 'hi', worktree: false, ...HAIKU }],
-    ['/api/threads', { channelId: thread.channelId, text: '  ', worktree: false, ...HAIKU }],
-    ['/api/threads', { channelId: thread.channelId, text: 'hi', worktree: false, ...HAIKU, model: 'gpt' }],
-    ['/api/threads', { channelId: thread.channelId, text: 'hi', worktree: false, ...HAIKU, access: 'root' }],
+    ['/api/threads', { channelId: 'nope', text: 'hi', path: shop, ...HAIKU }],
+    ['/api/threads', { channelId: thread.channelId, text: '  ', path: shop, ...HAIKU }],
+    ['/api/threads', { channelId: thread.channelId, text: 'hi', path: shop, ...HAIKU, model: 'gpt' }],
+    ['/api/threads', { channelId: thread.channelId, text: 'hi', path: shop, ...HAIKU, access: 'root' }],
+    // Only a branch or a worktree that git lists for this repository can be picked.
     ['/api/threads', { channelId: thread.channelId, text: 'hi', ...HAIKU }],
-    ['/api/threads', { channelId: thread.channelId, text: 'hi', worktree: 'yes', ...HAIKU }],
+    ['/api/threads', { channelId: thread.channelId, text: 'hi', from: 'nope', ...HAIKU }],
+    ['/api/threads', { channelId: thread.channelId, text: 'hi', from: '--detach', ...HAIKU }],
+    ['/api/threads', { channelId: thread.channelId, text: 'hi', from: 'origin/main', ...HAIKU }],
+    ['/api/threads', { channelId: thread.channelId, text: 'hi', path: blog, ...HAIKU }],
+    ['/api/threads', { channelId: thread.channelId, text: 'hi', path: '/etc', ...HAIKU }],
     [`/api/threads/${thread.id}/messages`, { text: 'hi', ...HAIKU, effort: 'huge' }],
     [`/api/threads/${thread.id}/messages`, { text: 'hi', ...HAIKU, context: '2m' }],
     [`/api/threads/${thread.id}/messages`, { text: 'hi', ...HAIKU, fast: 'yes' }],

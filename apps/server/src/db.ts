@@ -35,6 +35,7 @@ export const threadCols = {
   access: threads.access,
   status: threads.status,
   path: threads.path,
+  branch: threads.branch,
   updatedAt: threads.updatedAt,
 };
 

@@ -1,7 +1,7 @@
 // The Inbox screen: channels, then a thread list, then the open thread, like an email app.
-import { MODELS, type Status } from '@acocrew/shared';
+import type { Status } from '@acocrew/shared';
 import { createFileRoute, Link, Navigate, Outlet, useChildMatches } from '@tanstack/react-router';
-import { Hash, Plus } from 'lucide-react';
+import { GitBranch, Hash, Plus } from 'lucide-react';
 import { useState } from 'react';
 import { useApp } from '../store';
 import { Drawer, NavButton, NewThreadButton, STATUS_ORDER, StatusDot, statusLabel } from '../ui';
@@ -94,7 +94,11 @@ function Inbox() {
                 <span className="min-w-0 flex-1 truncate font-semibold">{t.title}</span>
               </span>
               <span className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-                <span className="flex-1 truncate">{MODELS.find((m) => m.id === t.model)?.name}</span>
+                {/* The branch the thread was last on. Nothing when it was on no branch. */}
+                <span className="flex min-w-0 flex-1 items-center gap-1">
+                  {t.branch && <GitBranch size={12} className="shrink-0" />}
+                  <span className="truncate font-mono">{t.branch}</span>
+                </span>
                 {when(t.updatedAt)}
               </span>
             </Link>

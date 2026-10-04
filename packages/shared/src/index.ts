@@ -22,6 +22,8 @@ export type Thread = {
   status: Status;
   // The worktree this thread works in. Null when it works right in the repository folder.
   path: string | null;
+  // The branch its folder was on when Claude last finished a turn there. Null when it was on no branch.
+  branch: string | null;
   updatedAt: number;
   // What Claude is waiting on in the background right now, in its own words. Not stored.
   tasks: string[];
@@ -123,8 +125,18 @@ export type NewMessage = {
   fast: boolean;
   access: Access;
 };
-// `worktree`: the thread gets its own working copy of the repository, on a new branch.
-export type NewThread = NewMessage & { channelId: string; worktree: boolean };
+// `from`: the thread gets its own new worktree, on a new branch that starts from this branch.
+// `path`: the thread works in a folder that exists already: the repository folder or one of its worktrees.
+export type NewThread = NewMessage & { channelId: string } & ({ from: string } | { path: string });
+
+// Where a new thread in a repository can work.
+export type Places = {
+  // Branches a new worktree can start from. The default comes first, then the ones changed last.
+  // `remote` names the remote a branch is kept on. Such a branch is fetched before it is used.
+  branches: { name: string; remote: string | null }[];
+  // Working copies that exist already, the repository folder first. `branch` is null when it is on no branch.
+  worktrees: { path: string; branch: string | null }[];
+};
 
 // The user's reply to an approval prompt or a question.
 // `always` is a yes that also stops Claude asking about this kind of action. `cancel` is a no that also ends
