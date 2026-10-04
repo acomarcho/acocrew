@@ -118,16 +118,7 @@ type PickerProps = {
 
 const ICON_ON_PHONE = 'hidden sm:flex';
 
-function Picker({
-  icon,
-  value,
-  options,
-  onChange,
-  menuClass = 'left-0',
-  labelClass = 'flex',
-  fullLabel,
-  search,
-}: PickerProps) {
+function Picker({ icon, value, options, onChange, menuClass = 'left-0', labelClass, fullLabel, search }: PickerProps) {
   const [open, setOpen] = useState(false);
   const [typed, setTyped] = useState('');
   const picked = options.find((o) => o.id === value)?.name;
@@ -138,17 +129,19 @@ function Picker({
     setOpen(false);
     setTyped('');
   };
+  // A label that shows on phones and may be cut off is the one thing in a tight row that gives up width.
+  const squeezes = !labelClass && !fullLabel;
   return (
-    <div className="relative">
+    <div className={`relative ${squeezes ? 'min-w-0' : 'shrink-0'}`}>
       <button
         type="button"
         onClick={() => setOpen(!open)}
         title={picked}
         aria-label={picked}
-        className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-sm whitespace-nowrap text-muted-foreground hover:bg-muted hover:text-foreground"
+        className="flex max-w-full items-center gap-1.5 rounded-md [&_svg]:shrink-0 px-2 py-1.5 text-sm whitespace-nowrap text-muted-foreground hover:bg-muted hover:text-foreground"
       >
         {icon}
-        <span className={`items-center gap-1.5 ${labelClass}`}>
+        <span className={`min-w-0 items-center gap-1.5 ${labelClass ?? 'flex'}`}>
           <span className={fullLabel ? '' : 'max-w-20 truncate sm:max-w-none'}>{picked}</span>
           <ChevronDown size={14} />
         </span>
@@ -441,7 +434,7 @@ export function Composer({
             onClick={onStop}
             aria-label="Stop"
             title="Stop Claude"
-            className="mr-1 grid size-8 place-items-center rounded-full bg-rose-500/10 text-rose-500 hover:bg-rose-500/20"
+            className="mr-1 grid size-8 shrink-0 place-items-center rounded-full bg-rose-500/10 text-rose-500 hover:bg-rose-500/20"
           >
             <Square size={13} fill="currentColor" />
           </button>
@@ -451,7 +444,7 @@ export function Composer({
           onClick={() => void submit()}
           disabled={!ready}
           aria-label="Send"
-          className="grid size-8 place-items-center rounded-full bg-primary text-primary-foreground disabled:opacity-40"
+          className="grid size-8 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground disabled:opacity-40"
         >
           <ArrowUp size={16} />
         </button>
