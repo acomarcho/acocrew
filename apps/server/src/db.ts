@@ -6,7 +6,7 @@ import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { channels, events, seen, threads } from './schema.ts';
+import { automations, channels, events, seen, threads } from './schema.ts';
 
 const MIGRATIONS = fileURLToPath(new URL('../drizzle', import.meta.url));
 
@@ -38,11 +38,30 @@ export const threadCols = {
   path: threads.path,
   branch: threads.branch,
   people: threads.people,
+  automationId: threads.automationId,
   updatedAt: threads.updatedAt,
+};
+
+export const automationCols = {
+  id: automations.id,
+  channelId: automations.channelId,
+  text: automations.text,
+  time: automations.time,
+  days: automations.days,
+  from: automations.from,
+  on: automations.on,
+  model: automations.model,
+  effort: automations.effort,
+  context: automations.context,
+  fast: automations.fast,
+  access: automations.access,
+  createdBy: automations.createdBy,
 };
 
 export const listChannels = (db: Db) => db.select(channelCols).from(channels).orderBy(asc(channels.position)).all();
 export const listThreads = (db: Db) => db.select(threadCols).from(threads).orderBy(asc(threads.createdAt)).all();
+export const listAutomations = (db: Db) =>
+  db.select(automationCols).from(automations).orderBy(asc(automations.createdAt)).all();
 
 // What this person has seen of every thread they ever opened.
 export const listSeen = (db: Db, userId: string): Seen =>

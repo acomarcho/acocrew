@@ -108,8 +108,10 @@ Rules to keep:
 
 Running it for real, apart from development:
 
-- `pnpm stable` copies this checkout to `~/acocrew-stable`, builds it there and starts it in the tmux session `acocrew-stable` on port 5280, with the real data in `~/.acocrew/acocrew.db`. Editing, building or running `pnpm dev` in the checkout does not touch it. That is what lets acocrew be used to work on acocrew.
-- Run `pnpm stable` again to update it. That restarts the server, so anything Claude is doing in a thread is cut short (the thread says so, and the next message resumes).
+- `pnpm stable` copies this checkout to `~/acocrew-stable`, builds it there and starts it on port 5280, with the real data in `~/.acocrew/acocrew.db`. Editing, building or running `pnpm dev` in the checkout does not touch it. That is what lets acocrew be used to work on acocrew.
+- It runs as a systemd user service called `acocrew-stable` (systemd is the part of Linux that starts and watches background programs). systemd starts it again when it crashes and when the machine boots. Automations count on that (Decision 10). It used to run in a tmux session, where nothing brought it back. `systemctl --user status acocrew-stable` says whether it is up, and `journalctl --user -u acocrew-stable -f` shows its output.
+- A service does not get what a shell sets up. The script hands it the `PATH` and `TMPDIR` of the shell that ran `pnpm stable`, so Claude finds the same tools and puts temporary files in the same place (minus this checkout's own `node_modules` tools, which pnpm adds to the `PATH` of the scripts it runs). Anything else Claude should have (tokens, for example) goes in `~/.acocrew/env`, one `NAME=value` per line.
+- Run `pnpm stable` again to update it. That restarts the server, so anything Claude is doing in a thread is cut short (the thread says so, and the next message resumes). The restart is the script's last step, because it also ends the script when Claude runs it from a thread of that same copy.
 - Two settings let copies live side by side: `PORT` (default 5274) and `ACOCREW_DB` (default `~/.acocrew/acocrew.db`).
 - `ACOCREW_HTTPS=1` is for a copy people reach through an https address. `pnpm stable` sets it. See Decision 8.
 
@@ -135,13 +137,14 @@ Why:
 
 Tables:
 
-| Table      | What it holds                                                                                   |
-| ---------- | ----------------------------------------------------------------------------------------------- |
-| `channels` | One row per repository: its name and folder path.                                               |
-| `threads`  | Title, model, reasoning level, status, folder, branch, and Claude's session id for resuming.    |
-| `events`   | A numbered log per thread. Each row is one whole item: a chat bubble, a tool card, or an error. |
-| `user`     | One row per account: display name, username, whether it is an admin. See Decision 8.            |
-| `seen`     | One row per person and thread they opened: how far they have seen it. See Decision 9.           |
+| Table         | What it holds                                                                                                                              |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `channels`    | One row per repository: its name and folder path.                                                                                          |
+| `threads`     | Title, model, reasoning level, status, folder, branch, and Claude's session id for resuming. Also which automation started it, if one did. |
+| `automations` | One row per automation: its repository, message, time, days, branch, settings, who made it, and whether it is on. See Decision 10.         |
+| `events`      | A numbered log per thread. Each row is one whole item: a chat bubble, a tool card, or an error.                                            |
+| `user`        | One row per account: display name, username, whether it is an admin. See Decision 8.                                                       |
+| `seen`        | One row per person and thread they opened: how far they have seen it. See Decision 9.                                                      |
 
 The `events` log is only ever added to. A tool card is written twice (started, finished). When a thread is loaded, the newest row per item wins.
 
@@ -283,13 +286,36 @@ We keep it per person on the server, not in the browser's own storage: people us
 
 Not built: marking a thread as not seen by hand, notifications outside the app, and a count in the browser tab's title.
 
+## Decision 10: Automations are checked once a minute, by the server itself
+
+An automation sends one message in a fresh thread of a repository at set times, for example a daily digest of open pull requests. It never continues a thread. It has a message, a time, the days of the week it runs on, the branch its worktree starts from, and the same settings as a message (model, reasoning level, context window, fast mode, access).
+
+How it runs:
+
+- Once a minute the server looks at every automation that is on. One whose time came since the last look is run. Nothing about past runs is stored for this.
+- The first look counts from when the server started. So a run that was missed while the server was off is skipped, not made up for. That is on purpose: ten missed digests are worth nothing. A restart counts as being off: one that lands in the minute after an automation's time skips that run too.
+- A time that had passed already when the automation was saved (made, changed or switched back on) waits for its next day. Otherwise saving one at 9:00:40 for 9:00 would say "next run tomorrow" and then run within the minute.
+- A run is a thread like any other. It goes through the same code as "Start a thread": a new worktree from the automation's branch, the message handed to Claude, a name from Claude. The thread is started as the person who made the automation, so it is theirs to look at when it is done (Decision 9). That stays so after their account is deleted, until someone deletes the automation. `threads.automation_id` says which automation started it.
+- The time is the server machine's own clock. The web app says so next to the schedule. "Next run" is worked out by the server and shown in the browser's own time.
+- If a run cannot start (its branch is gone, or git fails), the reason goes to the server's output. Nobody is told in the app yet.
+- Deleting an automation keeps the threads it started. They just no longer say that an automation started them.
+- Anyone logged in can make, change, run and delete any automation, the same as with threads.
+
+Why not something else:
+
+- **Comparing the clock with the time each minute** is simpler, but a look that comes a second late skips that minute, and the run never happens.
+- **One timer per automation** has to be set again on every change, and is more to get wrong.
+- **The machine's own cron** would need a second place to keep schedules, and a way for cron to log in.
+
+Not built: images in an automation's message, raw cron text, and telling someone in the app when a scheduled run could not start.
+
 ## UI direction: the Inbox layout
 
 We mocked five layouts (Slack, Topics, Inbox, Board, Focus). Marcho likes the Inbox one, so `apps/web` now holds only that. The other four are still in git history, in commit `d98b9b7`.
 
 What it looks like: three columns, like an email app. Channels on the left, the thread list in the middle, the open thread on the right. On a phone it shows one column at a time.
 
-URLs: `/c/<channel>` for a channel, `/c/<channel>/t/<thread>` for a thread, `/c/<channel>/new` to start one, and `/add` to add a repository.
+URLs: `/c/<channel>` for a channel, `/c/<channel>/t/<thread>` for a thread, `/c/<channel>/new` to start one (`?kind=automation` to schedule an automation there), `/c/<channel>/a/<automation>` for an automation, and `/add` to add a repository.
 
 Rules of the UI:
 
@@ -308,6 +334,10 @@ Rules of the UI:
 - The server only takes a branch or a folder that git itself lists for that repository (`GET /api/channels/<id>/places` is the same list the dropdowns show). The folder is saved on the thread (`threads.path`; empty means the repository folder), and every Claude process of that thread starts there.
 - The thread list shows the branch each thread was last on, under its title. Claude can switch branches while it works, so the server reads the branch again every time Claude finishes a turn and saves it on the thread (`threads.branch`). Nothing shows when the folder is on no branch.
 - Not built yet for worktrees: removing a worktree, and installing dependencies in the new copy (`node_modules` is not there).
+- The title "Start a thread" is a dropdown with a second choice, "Schedule an automation". That turns the screen into the one for making an automation: the same message box (without images, with `/` suggestions), a time, a button per day of the week, and the branch to start from. The send button says "Schedule".
+- A repository's automations sit on top of its thread list, in a section that can be folded (it scrolls with the list). Each row shows the first line of the message and the schedule in words ("Weekdays at 9:00 AM"). The plus in the section's header makes a new one.
+- Opening an automation shows a page about it: a switch to pause it, its schedule and next run, its message, the buttons Edit, Run now and Delete, and the threads it started. Edit turns the page into the same screen it was made with. Delete asks first.
+- A thread that an automation started has a small "Auto" badge in the thread list.
 - The message box has a model picker, a reasoning picker, a context window picker (200k or 1M), a fast mode picker and an access picker (Full access or Ask first). A new thread starts on medium reasoning, 1M and fast mode off. A picker is only shown for models that have that setting. While Claude is doing something, the box also has a Stop button.
 - Typing `/` in the message box opens a list of commands and skills right above it. It narrows as you type (later in a message only to names that start with what was typed, so a path like `/docs` is left alone). Arrow keys move, Enter or Tab picks, Escape closes, and a row can be clicked or tapped. Picking puts `/name ` into the box as plain text. While the box is answering a question from Claude, nothing is suggested.
 - The 1M context window is asked for with `[1m]` after the model name. Leaving that off is not enough for 200k: in a live run the newer models still got 1M. So 200k also sets `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` for that Claude process. Fast mode is the `fastMode` setting, and it only really runs if the Claude account has extra usage switched on.

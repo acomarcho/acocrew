@@ -1,5 +1,6 @@
 import {
   ACCESS,
+  AUTOMATIONS_PATH,
   COMMANDS_PATH,
   CONTEXTS,
   DECISIONS,
@@ -17,8 +18,10 @@ import {
   type Answer,
   type ClientEvent,
   type Me,
+  type NewAutomation,
   type NewMessage,
   type Places,
+  type Thread,
 } from '@acocrew/shared';
 import { serve, upgradeWebSocket } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
@@ -39,13 +42,24 @@ import {
   seedAdmin,
   temporaryPassword,
 } from './auth.ts';
-import { channelCols, listChannels, listSeen, listThreads, loadItems, threadCols, type Db } from './db.ts';
+import { CHECK_MS, nextRun, readSchedule, shown, type Stored } from './automations.ts';
+import {
+  automationCols,
+  channelCols,
+  listAutomations,
+  listChannels,
+  listSeen,
+  listThreads,
+  loadItems,
+  threadCols,
+  type Db,
+} from './db.ts';
 import { folderInside, isRepo, listFolders } from './folders.ts';
 import { addWorktree, listPlaces } from './git.ts';
 import { createHub } from './hub.ts';
 import { openImages, type Images } from './images.ts';
 import { createRunner, type QueryFn } from './runner.ts';
-import { channels, seen, session as sessions, threads, user } from './schema.ts';
+import { automations, channels, seen, session as sessions, threads, user } from './schema.ts';
 import { firstLine } from './title.ts';
 
 // `home` is the only folder tree that repositories can be picked from.
@@ -286,15 +300,17 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
     return c.json(await listPlaces(channel.path));
   });
 
-  app.post('/api/threads', async (c) => {
-    const body = await c.req.json().catch(() => ({}));
-    const message = readMessage(body, store);
-    const channel = db
-      .select()
-      .from(channels)
-      .where(eq(channels.id, String(body.channelId)))
-      .get();
-    if (!message || !channel) return c.json({ error: 'Needs a channel, a message and a full set of settings.' }, 400);
+  // Starts a thread: saves it, tells everyone and hands the first message to Claude. People and automations
+  // both start threads through here. Gives back the thread, or why there is none.
+  type Where = { from?: unknown; path?: unknown };
+  type Refusal = { error: string; status: 400 | 500 };
+  type Starter = { userId: string; automationId?: string };
+  async function startThread(
+    channel: typeof channels.$inferSelect,
+    message: NewMessage,
+    pick: Where,
+    { userId, automationId }: Starter,
+  ): Promise<Thread | Refusal> {
     const id = randomUUID();
     const short = id.slice(0, 8);
     // The thread works in a folder that exists already, or in a new worktree: a second working copy of the
@@ -302,13 +318,13 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
     let place: Places['worktrees'][number];
     try {
       const places = await listPlaces(channel.path);
-      const existing = places.worktrees.find((worktree) => worktree.path === body.path);
-      const from = places.branches.find((branch) => branch.name === body.from);
-      if (!existing && !from) return c.json({ error: 'Pick a branch to start from, or a worktree that exists.' }, 400);
+      const existing = places.worktrees.find((worktree) => worktree.path === pick.path);
+      const from = places.branches.find((branch) => branch.name === pick.from);
+      if (!existing && !from) return { error: 'Pick a branch to start from, or a worktree that exists.', status: 400 };
       place = existing ?? { path: join(worktrees, channel.name, short), branch: `acocrew/${short}` };
       if (!existing) await addWorktree(channel.path, place.path, place.branch!, from!);
     } catch (err) {
-      return c.json({ error: `Could not make a worktree: ${(err as { stderr?: string }).stderr || err}` }, 500);
+      return { error: `Could not make a worktree: ${(err as { stderr?: string }).stderr || err}`, status: 500 };
     }
     const now = Date.now();
     const row = {
@@ -323,16 +339,124 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
       fast: message.fast,
       access: message.access,
       status: 'working' as const,
-      createdBy: c.get('user').id,
-      people: [c.get('user').id],
+      createdBy: userId,
+      automationId,
+      people: [userId],
       createdAt: now,
       updatedAt: now,
     };
     const thread = runner.withLive(db.insert(threads).values(row).returning(threadCols).get());
     hub.toAll({ type: 'thread', thread });
-    runner.send(thread.id, message, c.get('user').id);
+    runner.send(thread.id, message, userId);
     if (message.text) runner.name(thread.id, message.text);
-    return c.json(thread);
+    return thread;
+  }
+  const findChannel = (id: unknown) =>
+    db
+      .select()
+      .from(channels)
+      .where(eq(channels.id, String(id)))
+      .get();
+
+  app.post('/api/threads', async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const message = readMessage(body, store);
+    const channel = findChannel(body.channelId);
+    if (!message || !channel) return c.json({ error: 'Needs a channel, a message and a full set of settings.' }, 400);
+    const thread = await startThread(channel, message, body, { userId: c.get('user').id });
+    return 'error' in thread ? c.json({ error: thread.error }, thread.status) : c.json(thread);
+  });
+
+  // One run of an automation: its message in a fresh thread, in a new worktree, as the person who made it.
+  const runAutomation = ({ id, channelId, from, createdBy, ...message }: Stored) =>
+    startThread(findChannel(channelId)!, { ...message, images: [] }, { from }, { userId: createdBy, automationId: id });
+
+  // Once a minute, every automation that is on and whose time came since the last look is run. The first look
+  // counts from when the server started, so a run that was missed while the server was off is skipped.
+  // A time that had passed already when the automation was saved does not count either: it was told to
+  // everyone as running next on another day.
+  let looked = Date.now();
+  const saved = new Map<string, number>();
+  const check = setInterval(() => {
+    const before = looked;
+    looked = Date.now();
+    for (const automation of listAutomations(db).filter((automation) => automation.on)) {
+      if (nextRun(automation, Math.max(before, saved.get(automation.id) ?? 0)) > looked) continue;
+      // Nobody is there to be told when it fails, so the reason goes to the server's log.
+      const failed = (why: unknown) => console.error(`Automation ${automation.id} did not run:`, why);
+      runAutomation(automation).then((thread) => 'error' in thread && failed(thread.error), failed);
+      // It runs next at another time now.
+      hub.toAll({ type: 'automation', automation: shown(automation) });
+    }
+    // What was saved before this look is behind it from now on.
+    saved.clear();
+  }, CHECK_MS).unref();
+
+  // What an automation is made of, or null if any part cannot be used. A newly picked branch has to be one
+  // git lists. The branch it had (`kept`) is taken as it is, so that an automation whose branch is gone can
+  // still be paused.
+  async function readAutomation(body: Partial<NewAutomation>, kept?: string) {
+    const message = readMessage({ ...body, images: [] }, store);
+    const schedule = readSchedule(body);
+    const channel = findChannel(body.channelId);
+    if (!message?.text || !schedule || !channel || typeof body.from !== 'string') return null;
+    const listed = body.from === kept || (await listPlaces(channel.path)).branches.some((b) => b.name === body.from);
+    if (!listed) return null;
+    const { images: _, ...settings } = message;
+    return { ...settings, ...schedule, channelId: channel.id, from: body.from };
+  }
+  const NOT_AN_AUTOMATION =
+    'Needs a channel, a message, a time, at least one day, a branch and a full set of settings.';
+  const findAutomation = (c: Context) =>
+    db
+      .select(automationCols)
+      .from(automations)
+      .where(eq(automations.id, c.req.param('id')!))
+      .get();
+  const noAutomation = (c: Context) => c.json({ error: 'Automation not found.' }, 404);
+  const tellAutomation = (c: Context, row: Stored) => {
+    saved.set(row.id, Date.now());
+    const automation = shown(row);
+    hub.toAll({ type: 'automation', automation });
+    return c.json(automation);
+  };
+
+  app.post(AUTOMATIONS_PATH, async (c) => {
+    const parts = await readAutomation(await c.req.json().catch(() => ({})));
+    if (!parts) return refuse(c, NOT_AN_AUTOMATION);
+    const row = { ...parts, id: randomUUID(), createdBy: c.get('user').id, createdAt: Date.now() };
+    return tellAutomation(c, db.insert(automations).values(row).returning(automationCols).get());
+  });
+
+  // Changes what it sends, when and how, and whether it is on. It stays in its repository.
+  app.post(`${AUTOMATIONS_PATH}/:id`, async (c) => {
+    const old = findAutomation(c);
+    if (!old) return noAutomation(c);
+    const body = await c.req.json().catch(() => ({}));
+    const parts = await readAutomation({ ...body, channelId: old.channelId }, old.from);
+    if (!parts || typeof body.on !== 'boolean') return refuse(c, NOT_AN_AUTOMATION);
+    const set = { ...parts, on: body.on as boolean };
+    return tellAutomation(
+      c,
+      db.update(automations).set(set).where(eq(automations.id, old.id)).returning(automationCols).get(),
+    );
+  });
+
+  // The threads it started stay, and no longer say an automation started them.
+  app.post(`${AUTOMATIONS_PATH}/:id/delete`, (c) => {
+    const old = findAutomation(c);
+    if (!old) return noAutomation(c);
+    db.delete(automations).where(eq(automations.id, old.id)).run();
+    hub.toAll({ type: 'automation-gone', id: old.id });
+    return c.json({ ok: true });
+  });
+
+  // Runs it right now, whatever its schedule says, also while it is paused.
+  app.post(`${AUTOMATIONS_PATH}/:id/run`, async (c) => {
+    const automation = findAutomation(c);
+    if (!automation) return noAutomation(c);
+    const thread = await runAutomation(automation);
+    return 'error' in thread ? c.json({ error: thread.error }, thread.status) : c.json(thread);
   });
 
   app.post('/api/threads/:id/messages', async (c) => {
@@ -430,7 +554,9 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
         hub.add(ws, id);
         const threads = listThreads(db).map(runner.withLive);
         const seen = listSeen(db, id);
-        hub.send(ws, { type: 'hello', channels: listChannels(db), threads, people: listPeople(db), seen });
+        const automated = listAutomations(db).map(shown);
+        const lists = { channels: listChannels(db), threads, people: listPeople(db), seen, automations: automated };
+        hub.send(ws, { type: 'hello', ...lists });
       },
       // The browser says which thread it is looking at. It is signed up for that thread's events and gets
       // everything so far in the same step, so nothing can slip in between.
@@ -451,16 +577,22 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
     app.get('*', serveStatic({ root: web, path: 'index.html' }));
   }
 
-  return app;
+  return { app, close: () => clearInterval(check) };
 }
 
 // Listens on localhost only. Tailscale or a tunnel sits in front of it.
 export async function startServer(port: number, deps: Deps) {
-  const app = await createApp(deps);
+  const { app, close } = await createApp(deps);
   const websocket = { server: new WebSocketServer({ noServer: true }) };
   return new Promise<{ port: number; close: () => void }>((resolve) => {
     const server = serve({ fetch: app.fetch, port, hostname: '127.0.0.1', websocket }, (info) =>
-      resolve({ port: info.port, close: () => server.close() }),
+      resolve({
+        port: info.port,
+        close() {
+          close();
+          server.close();
+        },
+      }),
     );
   });
 }

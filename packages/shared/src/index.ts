@@ -35,6 +35,8 @@ export type Thread = {
   updatedAt: number;
   // Everyone who sent a message in the thread, as user ids. Whoever started it comes first.
   people: string[];
+  // The automation that started this thread. Null when a person did, or when that automation is deleted.
+  automationId: string | null;
   // What Claude is waiting on in the background right now, in its own words. Not stored.
   tasks: string[];
   // Since when Claude has been busy in this thread without a break. Null when it is not. Not stored.
@@ -106,9 +108,24 @@ export const ACCESS = [
   { id: 'ask', name: 'Ask first', hint: 'Asks before changing things' },
 ];
 
+// When an automation runs: at `time` ('HH:MM', 24 hours) on `days` of the week (0 is Monday, 6 is Sunday).
+// The time is the server machine's own clock.
+export type Schedule = { time: string; days: number[] };
+
+// What an automation sends, when, and how Claude runs. Every run is a fresh thread in a new worktree that
+// starts from the branch `from`.
+export type NewAutomation = Omit<NewMessage, 'images'> & Schedule & { channelId: string; from: string };
+
+// A message that is sent in a fresh thread of a repository, again and again. `on` is false while it is paused.
+// `createdBy` is the person its threads are started as. `nextAt` is when it runs next, null while paused.
+export type Automation = NewAutomation & { id: string; on: boolean; createdBy: string; nextAt: number | null };
+
 // What the server pushes over the WebSocket. `item` carries the whole item, so getting it twice is harmless.
 export type ServerEvent =
-  | { type: 'hello'; channels: Channel[]; threads: Thread[]; people: Person[]; seen: Seen }
+  | { type: 'hello'; channels: Channel[]; threads: Thread[]; people: Person[]; seen: Seen; automations: Automation[] }
+  // An automation was made or changed, or has just run (so it runs next at another time).
+  | { type: 'automation'; automation: Automation }
+  | { type: 'automation-gone'; id: string }
   // Threads the person just saw, on this device or another one of theirs.
   | { type: 'seen'; seen: Seen }
   | { type: 'channel'; channel: Channel }
@@ -182,6 +199,7 @@ export const IMAGES_PATH = '/api/images';
 export const COMMANDS_PATH = '/api/commands';
 export const ME_PATH = '/api/me';
 export const USERS_PATH = '/api/users';
+export const AUTOMATIONS_PATH = '/api/automations';
 // These two are answered by Better Auth itself.
 export const LOGIN_PATH = '/api/auth/sign-in/username';
 export const LOGOUT_PATH = '/api/auth/sign-out';
