@@ -90,13 +90,14 @@ What each part uses:
 | ----------------------------------------------------- | ----------------------------------------------------- |
 | Linking the folders                                   | pnpm workspaces                                       |
 | Dev server, build, tests, lint, format, running tasks | Vite+ (the `vp` command)                              |
-| Web                                                   | React, Tailwind, TanStack Router                      |
+| Web                                                   | React, Tailwind, TanStack Router, zustand             |
 | Server                                                | Hono on Node, with the `ws` library for the WebSocket |
 
 Why:
 
 - **No Next.** The server must be one long-running process, because it holds the Claude process per thread, paused permission prompts and connected sockets in memory. Next is built around short request handlers.
 - **TanStack Router** type checks links and URL parameters, so a renamed route fails the build instead of breaking for a user.
+- **zustand** holds what the web app knows, in two stores. `store.ts` has what the server sent (repositories, threads, people, the open thread). `drafts.ts` has what someone typed and has not sent yet, and saves it in the browser's local storage. A screen reads only the parts it shows, so typing or a streaming answer does not draw every screen again.
 - **Vite+** is one tool for what would otherwise be five. It came out as 1.0 on 2026-09-28, so it is new. The tools inside it (Vite, Vitest, Oxlint, Oxfmt) are mature, and going back to them directly is a small change. T3 Code uses the same setup.
 - **No build step for the server or shared code.** Node runs the TypeScript files directly.
 
@@ -349,7 +350,7 @@ We mocked five layouts (Slack, Topics, Inbox, Board, Focus). Marcho likes the In
 
 What it looks like: three columns, like an email app. Channels on the left, the thread list in the middle, the open thread on the right. On a phone it shows one column at a time.
 
-URLs: `/c/<channel>` for a channel, `/c/<channel>/t/<thread>` for a thread, `/c/<channel>/new` to start one (`?kind=automation` to schedule an automation there), `/c/<channel>/a/<automation>` for an automation, and `/add` to add a repository.
+URLs: `/c/<channel>` for a channel, `/c/<channel>/t/<thread>` for a thread, `/c/<channel>/new/<draft>` to start one (`?kind=automation` to schedule an automation there; without a draft id the address begins a fresh draft), `/c/<channel>/a/<automation>` for an automation, and `/add` to add a repository.
 
 Rules of the UI:
 
@@ -369,12 +370,15 @@ Rules of the UI:
 - The thread list shows the branch each thread was last on, under its title. Claude can switch branches while it works, so the server reads the branch again every time Claude finishes a turn and saves it on the thread (`threads.branch`). Nothing shows when the folder is on no branch.
 - Not built yet for worktrees: removing a worktree, and installing dependencies in the new copy (`node_modules` is not there).
 - The title "Start a thread" is a dropdown with a second choice, "Schedule an automation". That turns the screen into the one for making an automation: the same message box (without images, with `/` suggestions), a time, a button per day of the week, and the branch to start from. The send button says "Schedule".
-- The thread list of a repository has three parts, each under a header of the same look that says how many are in it and folds it away: "Automations (2)", "Pinned (4)" and "Threads (12)". Automations start folded, the other two open. What is folded is not kept: a reload, or going to another repository, brings the starting state back. Automations and Pinned show three rows at most and scroll on their own past that, so that they never push the threads far down. The box is cut off where its fourth row starts, measured from the rows themselves and not from a set height.
+- The thread list of a repository has three parts, each under a header of the same look that says how many are in it and folds it away: "Automations (2)", "Pinned (4)" and "Threads (12)". When you have threads you did not send yet, a fourth part, "Drafts (1)", sits between Automations and Pinned. Automations start folded, the others open. What is folded is not kept: a reload, or going to another repository, brings the starting state back. Automations, Drafts and Pinned show three rows at most and scroll on their own past that, so that they never push the threads far down. The box is cut off where its fourth row starts, measured from the rows themselves and not from a set height.
 - A repository's automations sit on top of its thread list. Each row shows the first line of the message and the schedule in words ("Weekdays at 9:00 AM"). The plus in the header makes a new one.
 - Opening an automation shows a page about it: a switch to pause it, its schedule and next run, its message, the buttons Edit, Run now and Delete, and the threads it started. Edit turns the page into the same screen it was made with. Delete asks first.
 - A thread that an automation started has a small "Auto" badge in the thread list.
 - A thread can be pinned with the pin button in its header (the same button unpins it). A pin is for everyone who sees the thread, not per person, and there is no limit on how many. It is one timestamp on the thread (`threads.pinned_at`), set through `POST /api/threads/<id>/pin`. Pinning is not news: it leaves `updatedAt` alone, so the thread does not show as new to anyone.
 - Pinned threads sit in a "Pinned" section between the automations and the rest of the list, the one pinned last first, and are not repeated below. The section is not there when nothing is pinned. The two filters narrow it like the rest of the list. A pinned row has a pin icon on its right that unpins it right there.
+- What you type is kept until you send it, in this browser only (it is not sent to the server, so not on your other devices). That goes for a new thread (the words, the images and everything picked) and for a reply in a thread. It is still there after you look at something else, and after a reload.
+- A thread you began and did not send is a row in a "Drafts" part of the thread list, between Automations and Pinned: a pen, its first line and "Not sent yet". The part is not there when there are no drafts, and shows three rows at most like the other two. There can be several drafts per repository, the newest first, and the two filters leave them alone. The row opens it again, and its X throws it away. The plus button always begins a fresh one. A thread with a reply you did not send has the same pen in its row.
+- A draft counts while it has words or images. What was picked alone does not make one. Sending takes it away, and a send that failed leaves it. Drafts belong to whoever logged in last on that browser: when someone else logs in there, they are cleared.
 - A new thread and a new automation pick who sees them, with a dropdown next to the branch: Private (the default) or Public. On an automation only whoever made it gets that dropdown.
 - The header of a thread has a Share button for its owner. It opens a small panel: Private or Public, the people it is shared with (each with a remove button), and a box to find and add people. Every click is saved right away. Everyone else sees a lock or a globe there instead. On phones the panel is as wide as the screen.
 - A private thread or automation has a small lock in the list.

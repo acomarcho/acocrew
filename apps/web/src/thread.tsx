@@ -29,6 +29,7 @@ import {
 import { defaultRehypePlugins, Streamdown, type StreamdownProps } from 'streamdown';
 import { ApprovalPanel, isAsking, QuestionPanel, useQuestions } from './pending';
 import { useCommands } from './commands';
+import { draftOf, editDraft, useDraft } from './drafts';
 import { answer, markSeen, openThread, sendMessage, stopThread, useApp } from './store';
 import { ShareButton } from './sharing';
 import { Avatar, Composer, Elapsed, Picture, PinButton, StatusBadge, type Settings } from './ui';
@@ -273,11 +274,11 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
   const items = useApp((state) => state.items);
   const seenAt = useApp((state) => state.seen[thread.id] ?? 0);
   const commands = useCommands(`thread=${thread.id}`);
-  // Only what this person changed and has not sent yet. The rest follows the thread, so a teammate's change
-  // shows up here and is not undone by the next reply.
-  const [picked, setPicked] = useState<Partial<Settings>>({});
+  // What this person typed and has not sent yet. Of the settings it holds only what they changed. The rest
+  // follows the thread, so a teammate's change shows up here and is not undone by the next reply.
+  const draft = useDraft(thread.id);
   const { model, effort, context, fast, access } = thread;
-  const settings: Settings = { model, effort, context, fast, access, ...picked };
+  const settings: Settings = { model, effort, context, fast, access, ...draft.settings };
   // Follow new content only while the reader is at the bottom, so reading further up is not interrupted.
   const stick = useRef(true);
   const scroller = useRef<HTMLDivElement>(null);
@@ -357,10 +358,12 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
             placeholder={
               questions ? 'Type your own answer, or leave this blank to use the selected option' : 'Reply in thread'
             }
+            value={draft}
+            onChange={(change) => editDraft(thread.id, change(draftOf(thread.id)))}
             settings={settings}
             onSettings={(next) => {
               const changed = Object.entries(next).filter(([key, value]) => thread[key as keyof Settings] !== value);
-              setPicked(Object.fromEntries(changed));
+              editDraft(thread.id, { settings: Object.fromEntries(changed) });
             }}
             commands={commands}
             canSendEmpty={questions?.canSend}
@@ -370,7 +373,7 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
               // While Claude has a question open, the message box answers it.
               if (questions) return questions.send(text);
               await sendMessage(thread.id, { text, images, ...settings });
-              setPicked({});
+              editDraft(thread.id, { settings: {} });
             }}
             onStop={active ? () => void stopThread(thread.id).catch(() => {}) : undefined}
           />

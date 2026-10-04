@@ -5,9 +5,20 @@ import { isSortable, useSortable } from '@dnd-kit/react/sortable';
 import { createFileRoute, Link, Navigate, Outlet, useChildMatches } from '@tanstack/react-router';
 import { Hash, ListFilter, Plus, Users } from 'lucide-react';
 import { useState } from 'react';
+import { draftsIn, useDrafts } from '../drafts';
 import { needsYou, orderChannels, pinnedOf, setNavOpen, useApp, useMe } from '../store';
 import { AutomationSection } from '../automations';
-import { Drawer, NavButton, NewThreadButton, Picker, Section, statusLabel, ThreadRow, UserMenu } from '../ui';
+import {
+  DraftRows,
+  Drawer,
+  NavButton,
+  NewThreadButton,
+  Picker,
+  Section,
+  statusLabel,
+  ThreadRow,
+  UserMenu,
+} from '../ui';
 
 export const Route = createFileRoute('/c/$channelId')({ component: Inbox });
 
@@ -85,6 +96,8 @@ function Inbox() {
   const me = useMe();
   const [whose, setWhose] = useState('all');
   const [state, setState] = useState('all');
+  // How many threads this person began here and has not sent yet.
+  const drafts = useDrafts((state) => draftsIn(state.drafts, channelId).length);
   // On phones the list and the detail take turns. The detail shows when a thread or "new" is open.
   const detailOpen = useChildMatches({ select: (matches) => matches.some((m) => m.routeId !== '/c/$channelId/') });
   const channel = channels.find((c) => c.id === channelId);
@@ -150,6 +163,12 @@ function Inbox() {
         {/* A list of its own per repository, so that what was folded or scrolled in one does not carry over. */}
         <div key={channel.id} className="min-h-0 flex-1 overflow-y-auto">
           <AutomationSection channelId={channel.id} />
+          {/* Not there when everything begun was sent. */}
+          {drafts > 0 && (
+            <Section title="Drafts" count={drafts} short>
+              <DraftRows channelId={channel.id} />
+            </Section>
+          )}
           {/* Not there when nothing is pinned. */}
           {pinned.length > 0 && (
             <Section title="Pinned" count={pinned.length} short>

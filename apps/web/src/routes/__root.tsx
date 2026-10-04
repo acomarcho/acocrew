@@ -2,6 +2,7 @@ import type { Me } from '@acocrew/shared';
 import { createRootRoute, Outlet } from '@tanstack/react-router';
 import { useCallback, useEffect, useState } from 'react';
 import { Login, SetPassword } from '../login';
+import { keepDraftsOf } from '../drafts';
 import { connect, LOGGED_OUT, useApp, whoAmI } from '../store';
 
 export const Route = createRootRoute({ component: Root });
@@ -42,6 +43,7 @@ function App({ me, recheck }: { me: Me; recheck: () => Promise<unknown> }) {
   const ready = useApp((state) => state.ready);
   const online = useApp((state) => state.online);
   useEffect(() => useApp.setState({ login: me }), [me]);
+  useEffect(() => keepDraftsOf(me.id), [me.id]);
   useEffect(() => connect(recheck), [recheck]);
   return (
     <div className="h-dvh bg-background text-foreground">

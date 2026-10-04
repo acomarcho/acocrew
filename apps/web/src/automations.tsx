@@ -17,6 +17,7 @@ import {
   usePlaces,
   VisibilityPicker,
   when,
+  type Box,
   type Settings,
 } from './ui';
 
@@ -210,6 +211,7 @@ export function AutomationEditor({ channel, automation, title, onDone, onCancel 
   };
   const [schedule, setSchedule] = useState<Schedule>({ time, days });
   const [settings, setSettings] = useState<Settings>({ model, effort, context, fast, access });
+  const [box, setBox] = useState<Box>({ text: automation?.text ?? '', images: [] });
   // Until one is picked, a new automation starts from the first branch.
   const [picked, setPicked] = useState(automation?.from);
   const from = picked ?? branches[0]?.id;
@@ -252,7 +254,8 @@ export function AutomationEditor({ channel, automation, title, onDone, onCancel 
         autoFocus
         noImages
         placeholder="What should Claude do each time?"
-        initialText={automation?.text}
+        value={box}
+        onChange={setBox}
         sendLabel={automation ? 'Save' : 'Schedule'}
         settings={settings}
         onSettings={setSettings}
@@ -281,7 +284,7 @@ export function AutomationSection({ channelId }: { channelId: string }) {
       short
       action={
         <Link
-          to="/c/$channelId/new"
+          to="/c/$channelId/new/{-$draftId}"
           params={{ channelId }}
           search={{ kind: 'automation' }}
           aria-label="New automation"
