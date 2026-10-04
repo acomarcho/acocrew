@@ -161,8 +161,10 @@ export type Answer = { toolId: string; decision: (typeof DECISIONS)[number]; ans
 // A skill is also picked up when `/name` comes later in the message. Other commands are not.
 export type Command = { name: string; description: string; hint: string; skill: boolean };
 
-// What an admin fills in to make an account. The password is a temporary one.
-export type NewUser = { username: string; name: string; password: string };
+// What an admin fills in to make an account.
+export type NewUser = { username: string; name: string };
+// What the server made for an account an admin added or reset. It is said once, in the answer to that admin.
+export type Temporary = { password: string };
 
 export const SERVER_PORT = 5274;
 export const HEALTH_PATH = '/api/health';

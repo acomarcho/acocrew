@@ -29,7 +29,16 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { WebSocketServer } from 'ws';
-import { createAuth, createUser, deleteUser, findPerson, listPeople, resetPassword, seedAdmin } from './auth.ts';
+import {
+  createAuth,
+  createUser,
+  deleteUser,
+  findPerson,
+  listPeople,
+  resetPassword,
+  seedAdmin,
+  temporaryPassword,
+} from './auth.ts';
 import { channelCols, listChannels, listThreads, loadItems, threadCols, type Db } from './db.ts';
 import { folderInside, isRepo, listFolders } from './folders.ts';
 import { addWorktree, listPlaces } from './git.ts';
@@ -184,16 +193,18 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
   };
   const gone = (c: Context) => c.json({ error: 'User not found.' }, 404);
 
+  // The password of a new or reset account is made here and said once, in the answer to the admin who asked.
   app.post(USERS_PATH, async (c) => {
-    const { username, name, password } = await c.req.json().catch(() => ({}));
+    const { username, name } = await c.req.json().catch(() => ({}));
     // Without a display name, the username stands in for it.
     const typed = typeof name === 'string' ? name.trim() : '';
     const shown = typed ? readName(typed) : username;
     if (!shown) return refuse(c, `A name can have ${NAME_MAX} characters at most.`);
+    const password = temporaryPassword();
     try {
       const id = await createUser(auth, { username, password, name: shown });
       changed(id);
-      return c.json(findPerson(db, id));
+      return c.json({ ...findPerson(db, id), password });
     } catch (err) {
       return refuse(c, err);
     }
@@ -202,13 +213,9 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
   app.post(`${USERS_PATH}/:id/password`, async (c) => {
     const person = target(c);
     if (!person) return gone(c);
-    try {
-      await resetPassword(auth, db, person.id, String((await c.req.json().catch(() => ({}))).password ?? ''));
-    } catch (err) {
-      return refuse(c, err);
-    }
+    const password = await resetPassword(auth, db, person.id);
     hub.kick(person.id);
-    return c.json({ ok: true });
+    return c.json({ password });
   });
 
   app.post(`${USERS_PATH}/:id/admin`, async (c) => {

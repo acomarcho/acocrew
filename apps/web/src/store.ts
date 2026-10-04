@@ -14,6 +14,7 @@ import {
   type NewUser,
   type Person,
   type ServerEvent,
+  type Temporary,
   type Thread,
 } from '@acocrew/shared';
 import { createContext, useCallback, useContext, useEffect, useReducer, useRef, useState } from 'react';
@@ -187,8 +188,9 @@ export function useAppState(login: Me, recheck: () => Promise<unknown>) {
   const rename = (name: string) => request(ME_PATH, { name });
   const logOut = () => request(LOGOUT_PATH, {}).then(recheck);
   // What an admin does to accounts. The list itself updates when the server tells everyone.
-  const addUser = (body: NewUser) => request<Person>(USERS_PATH, body);
-  const resetPassword = (id: string, password: string) => request(`${USERS_PATH}/${id}/password`, { password });
+  // Both give back the temporary password the server made, which is the only time it can be seen.
+  const addUser = (body: NewUser) => request<Person & Temporary>(USERS_PATH, body);
+  const resetPassword = (id: string) => request<Temporary>(`${USERS_PATH}/${id}/password`, {});
   const setAdmin = (id: string, admin: boolean) => request(`${USERS_PATH}/${id}/admin`, { admin });
   const deleteUser = (id: string) => request(`${USERS_PATH}/${id}/delete`, {});
 

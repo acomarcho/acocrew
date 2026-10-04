@@ -3,7 +3,7 @@ import { betterAuth } from 'better-auth';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { username } from 'better-auth/plugins/username';
 import { and, asc, eq, isNull, sql } from 'drizzle-orm';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import type { Db } from './db.ts';
 import { account, session, threads, user, verification } from './schema.ts';
 
@@ -52,6 +52,9 @@ export const personCols = {
 export const listPeople = (db: Db) => db.select(personCols).from(user).orderBy(asc(user.createdAt)).all();
 export const findPerson = (db: Db, id: string) => db.select(personCols).from(user).where(eq(user.id, id)).get();
 
+// A password for an admin to pass on: 16 letters, digits, - and _ that nobody could guess.
+export const temporaryPassword = () => randomBytes(12).toString('base64url');
+
 // Makes an account that has to change its password on first login. Better Auth checks the username and the
 // password and says what is wrong with them. The email is made up, since Better Auth wants one.
 export async function createUser(auth: Auth, body: { username: string; name: string; password: string }) {
@@ -60,11 +63,10 @@ export async function createUser(auth: Auth, body: { username: string; name: str
 }
 
 // Gives an account a new password that has to be changed on the next login, and logs it out everywhere.
-export async function resetPassword(auth: Auth, db: Db, id: string, password: string) {
-  const { hash, config } = (await auth.$context).password;
-  if (password.length < config.minPasswordLength) throw new Error('Password is too short.');
-  if (password.length > config.maxPasswordLength) throw new Error('Password is too long.');
-  const hashed = await hash(password);
+// Gives back that password.
+export async function resetPassword(auth: Auth, db: Db, id: string) {
+  const password = temporaryPassword();
+  const hashed = await (await auth.$context).password.hash(password);
   db.transaction((tx) => {
     tx.update(account)
       .set({ password: hashed })
@@ -73,6 +75,7 @@ export async function resetPassword(auth: Auth, db: Db, id: string, password: st
     tx.delete(session).where(eq(session.userId, id)).run();
     tx.update(user).set({ mustChangePassword: true }).where(eq(user.id, id)).run();
   });
+  return password;
 }
 
 // The account can no longer log in and its username is free again. The row stays for its name.
