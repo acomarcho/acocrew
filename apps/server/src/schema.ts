@@ -123,6 +123,8 @@ export const threads = sqliteTable('threads', {
   automationId: text('automation_id').references(() => automations.id, { onDelete: 'set null' }),
   // Everyone who sent a message in the thread, as user ids, in the order they first did.
   people: text('people', { mode: 'json' }).$type<string[]>().notNull().default([]),
+  // When someone pinned it to the top of the thread list. Empty when it is not pinned.
+  pinnedAt: integer('pinned_at'),
   createdAt: integer('created_at').notNull(),
   updatedAt: integer('updated_at').notNull(),
 });

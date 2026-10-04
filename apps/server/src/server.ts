@@ -500,6 +500,23 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
     return c.json({ ok: true });
   });
 
+  // Pins the thread to the top of the list for everyone, or takes it off again. This is not news: the thread
+  // keeps its `updatedAt`, so it does not turn up as new for anyone.
+  app.post('/api/threads/:id/pin', async (c) => {
+    const { pinned } = await c.req.json().catch(() => ({}));
+    const row =
+      typeof pinned === 'boolean' &&
+      db
+        .update(threads)
+        .set({ pinnedAt: pinned ? Date.now() : null })
+        .where(eq(threads.id, c.req.param('id')))
+        .returning(threadCols)
+        .get();
+    if (!row) return c.json({ error: 'Needs a thread, and pinned or not.' }, 400);
+    hub.toAll({ type: 'thread', thread: runner.withLive(row) });
+    return c.json({ ok: true });
+  });
+
   app.post('/api/threads/:id/stop', async (c) => {
     await runner.stop(c.req.param('id'));
     return c.json({ ok: true });

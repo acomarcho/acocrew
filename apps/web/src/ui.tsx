@@ -28,6 +28,7 @@ import {
   LoaderCircle,
   LogOut,
   Menu,
+  Pin,
   Plus,
   Search,
   Settings as Cog,
@@ -737,6 +738,26 @@ export function NewThread({ channel, title }: { channel: Channel; title?: ReactN
 export const when = (at: number) =>
   new Date(at).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 
+// Pins the thread to the top of the list for everyone, or unpins it. Big enough for a finger.
+export function PinButton({ thread, className = '' }: { thread: Thread; className?: string }) {
+  const { pinThread } = useApp();
+  const pinned = thread.pinnedAt !== null;
+  const label = pinned ? 'Unpin' : 'Pin to the top of the list';
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={() => void pinThread(thread.id, !pinned).catch(() => {})}
+      className={`grid size-9 shrink-0 place-items-center rounded-md hover:bg-muted ${
+        pinned ? 'text-primary' : 'text-muted-foreground hover:text-foreground'
+      } ${className}`}
+    >
+      <Pin size={16} className={pinned ? 'fill-current' : ''} />
+    </button>
+  );
+}
+
 // One thread in the list. A thread that needs this person stands out. The others stay calm: one that Claude
 // is busy in says for how long, and one with nothing new only keeps a hollow dot.
 export function ThreadRow({ thread: t }: { thread: Thread }) {
@@ -744,49 +765,54 @@ export function ThreadRow({ thread: t }: { thread: Thread }) {
   const flagged = needsYou(t, seen, me.id);
   const calm = !flagged && !t.since;
   const stopped = t.status === 'done' || t.status === 'failed';
+  const pinned = t.pinnedAt !== null;
   return (
-    <Link
-      to="/c/$channelId/t/$threadId"
-      params={{ channelId: t.channelId, threadId: t.id }}
-      className="block border-b border-border px-3.5 py-3 hover:bg-muted"
-      activeProps={{ className: 'bg-muted' }}
-      inactiveProps={{ className: flagged ? 'bg-primary/[0.07]' : '' }}
-    >
-      <span className="flex items-center gap-2">
-        {calm ? (
-          <span className="size-2 shrink-0 rounded-full border border-muted-foreground/50" />
-        ) : (
-          <StatusDot status={t.status} />
-        )}
-        <span className={`min-w-0 flex-1 truncate ${flagged ? 'font-semibold' : 'font-medium text-foreground/70'}`}>
-          {t.title}
-        </span>
-        {t.automationId && (
-          <span
-            title="Started by an automation"
-            className="flex shrink-0 items-center gap-1 rounded-full bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground"
-          >
-            <Clock size={11} />
-            Auto
+    <div className="relative">
+      <Link
+        to="/c/$channelId/t/$threadId"
+        params={{ channelId: t.channelId, threadId: t.id }}
+        className="block border-b border-border px-3.5 py-3 hover:bg-muted"
+        activeProps={{ className: 'bg-muted' }}
+        inactiveProps={{ className: flagged ? 'bg-primary/[0.07]' : '' }}
+      >
+        <span className={`flex items-center gap-2 ${pinned ? 'pr-8' : ''}`}>
+          {calm ? (
+            <span className="size-2 shrink-0 rounded-full border border-muted-foreground/50" />
+          ) : (
+            <StatusDot status={t.status} />
+          )}
+          <span className={`min-w-0 flex-1 truncate ${flagged ? 'font-semibold' : 'font-medium text-foreground/70'}`}>
+            {t.title}
           </span>
-        )}
-      </span>
-      <span className="mt-1.5 flex items-center gap-2 text-xs text-muted-foreground">
-        <AvatarStack ids={t.people} />
-        {/* The branch the thread was last on. Nothing when it was on no branch. */}
-        <span className="flex min-w-0 flex-1 items-center gap-1">
-          {t.branch && <GitBranch size={12} className="shrink-0" />}
-          <span className="truncate font-mono">{t.branch}</span>
+          {t.automationId && (
+            <span
+              title="Started by an automation"
+              className="flex shrink-0 items-center gap-1 rounded-full bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground"
+            >
+              <Clock size={11} />
+              Auto
+            </span>
+          )}
         </span>
-        {/* What state it is in, in words, unless it just sits there finished. */}
-        <span className={`shrink-0 ${calm ? '' : `font-medium ${statusColor(t.status)}`}`}>
-          {t.since && <Elapsed from={t.since} label={statusLabel(t.status)} />}
-          {t.status === 'needs' && (flagged ? 'Needs you' : statusLabel(t.status))}
-          {stopped && (flagged || t.status === 'failed') && `${statusLabel(t.status)} · `}
-          {stopped && when(t.updatedAt)}
+        <span className="mt-1.5 flex items-center gap-2 text-xs text-muted-foreground">
+          <AvatarStack ids={t.people} />
+          {/* The branch the thread was last on. Nothing when it was on no branch. */}
+          <span className="flex min-w-0 flex-1 items-center gap-1">
+            {t.branch && <GitBranch size={12} className="shrink-0" />}
+            <span className="truncate font-mono">{t.branch}</span>
+          </span>
+          {/* What state it is in, in words, unless it just sits there finished. */}
+          <span className={`shrink-0 ${calm ? '' : `font-medium ${statusColor(t.status)}`}`}>
+            {t.since && <Elapsed from={t.since} label={statusLabel(t.status)} />}
+            {t.status === 'needs' && (flagged ? 'Needs you' : statusLabel(t.status))}
+            {stopped && (flagged || t.status === 'failed') && `${statusLabel(t.status)} · `}
+            {stopped && when(t.updatedAt)}
+          </span>
         </span>
-      </span>
-    </Link>
+      </Link>
+      {/* A pinned thread can be unpinned right in the list. The button lies on the row: a link cannot hold one. */}
+      {pinned && <PinButton thread={t} className="absolute top-1 right-1.5" />}
+    </div>
   );
 }
 
