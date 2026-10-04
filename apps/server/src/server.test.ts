@@ -539,13 +539,17 @@ test('a thread runs Claude in the repo folder and streams two turns through one 
 
 test('a new thread starts out named after its first line, then gets a name from Claude on every device', async () => {
   await serve(TWO_TURNS, NAMING);
+  const release = claude.pause((msg) => msg.type === 'system');
   const tab = await connect();
   // The thread is there before the name is: nothing waits for it.
   const thread = await startThread('make notes\nplease');
   expect(thread.title).toBe('make notes');
+  const working = await tab.until('thread', (e) => e.thread.since !== null);
   const named = await tab.until('thread', (e) => e.thread.title === NAME);
   expect(named.thread).toMatchObject({ id: thread.id, channelId: thread.channelId });
-  expect(named.thread.updatedAt).toBeGreaterThanOrEqual(thread.updatedAt);
+  // Getting a name is not news: the thread keeps its place in the list, and stays seen for whoever saw it.
+  expect(named.thread.updatedAt).toBe(working.thread.updatedAt);
+  release();
 
   // Claude got the first message and nothing to act with, on the small model whatever the thread runs on.
   expect(claude.named).toHaveLength(1);
@@ -1092,13 +1096,13 @@ test("Claude's to-do list is kept up to date as it works", async () => {
   expect(steps).toContain('todos: Read math.js=in_progress, Say hi=pending');
 });
 
-test('when Claude fails, the thread shows the error and asks for attention, and the next message still works', async () => {
+test('when Claude fails, the thread shows the error and says it failed, and the next message still works', async () => {
   const upToFirstTool = TWO_TURNS.findIndex(toolResult as (line: Line) => boolean);
   const { tab, thread } = await watch(
     [...TWO_TURNS.slice(0, upToFirstTool), { _crash: true }, ...TWO_TURNS],
     'make notes',
   );
-  await tab.status(thread.id, 'needs');
+  await tab.status(thread.id, 'failed');
   expect(tab.screen(thread.id)).toEqual(['message: make notes', 'Write failed', 'error: Claude crashed']);
 
   await say(thread, 'try again');
@@ -1109,26 +1113,83 @@ test('when Claude fails, the thread shows the error and asks for attention, and 
 
 test('a restart while Claude is waiting for a yes closes the prompt and says why', async () => {
   const { tab, thread } = await watch(recording('approve'), 'read then write', { ...HAIKU, access: 'ask' });
-  await tab.status(thread.id, 'needs');
+  const asking = await tab.status(thread.id, 'needs');
+  await new Promise((resolve) => setTimeout(resolve, 2));
   await serve([]);
   const after = await connect();
-  expect(after.hello.threads).toMatchObject([{ id: thread.id, status: 'needs' }]);
+  // Nobody can answer any more, so the thread no longer waits for someone. That is news.
+  expect(after.hello.threads).toMatchObject([{ id: thread.id, status: 'failed' }]);
+  expect(after.hello.threads[0].updatedAt).toBeGreaterThan(asking.updatedAt);
   await after.open(thread.id);
   const screen = after.screen(thread.id);
   expect(screen.slice(0, 3)).toEqual(['message: read then write', 'Read done', 'Write failed']);
   expect(screen[3]).toMatch(/^error: The server restarted/);
 });
 
-test('a thread that was mid-answer when the server stopped asks for attention after a restart', async () => {
+test('a thread that was mid-answer when the server stopped says it failed after a restart', async () => {
   claude.pause(bubbleEnd); // never released: the old server dies mid-answer
   const thread = await startThread('make notes');
   await serve([]);
   const after = await connect();
-  expect(after.hello.threads).toMatchObject([{ id: thread.id, status: 'needs' }]);
+  expect(after.hello.threads).toMatchObject([{ id: thread.id, status: 'failed', since: null }]);
   await after.open(thread.id);
   const screen = after.screen(thread.id);
   expect(screen.slice(0, 2)).toEqual(TURN_1.slice(0, 2));
   expect(screen[2]).toMatch(/^error: The server restarted/);
+});
+
+test('a thread says since when Claude has been busy, through a turn and the background work after it', async () => {
+  await serve(recording('background'));
+  const release = claude.pause(tasksOver);
+  const tab = await connect();
+  const thread = await startThread('run it in the background');
+  const working = await tab.until('thread', (e) => e.thread.since !== null);
+  expect(working.thread.status).toBe('working');
+  expect(working.thread.since).toBeGreaterThanOrEqual(thread.updatedAt);
+  // The turn ends and the background work goes on: still the same stretch of being busy.
+  expect((await tab.status(thread.id, 'waiting')).since).toBe(working.thread.since);
+  // A tab opened in the middle of it is told the same.
+  expect((await connect()).hello.threads[0].since).toBe(working.thread.since);
+  release();
+  expect((await tab.status(thread.id, 'done')).since).toBeNull();
+});
+
+test('a thread on screen is seen by that person, on all their devices and after a reload, until something new happens in it', async () => {
+  const jordan = await teammate('jordan', 'Jordan');
+  const tab = await connect();
+  const phone = await connect();
+  const theirs = await as(jordan.cookie, connect);
+  expect(tab.hello.seen).toEqual({});
+  const thread = await startThread('make notes');
+  const done = await tab.status(thread.id, 'done');
+
+  const see = (at: unknown) => post(`/api/threads/${thread.id}/seen`, { at });
+  expect((await see(done.updatedAt)).status).toBe(200);
+  const seen = { [thread.id]: done.updatedAt };
+  expect((await tab.until('seen')).seen).toEqual(seen);
+  expect((await phone.until('seen')).seen).toEqual(seen);
+  expect((await connect()).hello.seen).toEqual(seen);
+
+  // What comes after is newer than what was seen, until that is seen too.
+  await say(thread, 'what is in them?');
+  await tab.status(thread.id, 'working');
+  const again = await tab.status(thread.id, 'done');
+  expect(again.updatedAt).toBeGreaterThan(done.updatedAt);
+  expect((await connect()).hello.seen).toEqual(seen);
+  // A browser cannot have seen more than there is: something may have happened since what it shows.
+  await see(again.updatedAt + DAY);
+  expect((await tab.until('seen')).seen).toEqual({ [thread.id]: again.updatedAt });
+  expect((await connect()).hello.seen).toEqual({ [thread.id]: again.updatedAt });
+  // A device that is behind cannot take back what was seen.
+  await see(done.updatedAt);
+  expect((await tab.until('seen')).seen).toEqual({ [thread.id]: again.updatedAt });
+
+  // A teammate has not seen it, and is not told what others saw.
+  expect((await as(jordan.cookie, connect)).hello.seen).toEqual({});
+  expect(theirs.events.some((event) => event.type === 'seen')).toBe(false);
+
+  expect((await post('/api/threads/nope/seen', { at: 1 })).status).toBe(400);
+  expect((await see('yesterday')).status).toBe(400);
 });
 
 test('a Claude process with nothing to do for ten minutes is closed, and the next message resumes', async () => {

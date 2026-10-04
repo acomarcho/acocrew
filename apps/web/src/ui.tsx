@@ -123,14 +123,41 @@ export function UserMenu() {
   );
 }
 
-const STATUS: Record<Status, { label: string; text: string; dot: string }> = {
-  working: { label: 'Working', text: 'text-amber-500 bg-amber-500/10', dot: 'bg-amber-500 animate-pulse' },
-  waiting: { label: 'Waiting', text: 'text-sky-500 bg-sky-500/10', dot: 'bg-sky-500' },
-  needs: { label: 'Needs attention', text: 'text-rose-500 bg-rose-500/10', dot: 'bg-rose-500' },
-  done: { label: 'Done', text: 'text-emerald-500 bg-emerald-500/10', dot: 'bg-emerald-500' },
+const STATUS: Record<Status, { label: string; color: string; tint: string; dot: string }> = {
+  working: { label: 'Working', color: 'text-amber-600', tint: 'bg-amber-500/10', dot: 'bg-amber-500 animate-pulse' },
+  waiting: { label: 'Waiting', color: 'text-sky-600', tint: 'bg-sky-500/10', dot: 'bg-sky-500' },
+  needs: { label: 'Needs an answer', color: 'text-rose-600', tint: 'bg-rose-500/10', dot: 'bg-rose-500' },
+  failed: { label: 'Failed', color: 'text-rose-600', tint: 'bg-rose-500/10', dot: 'bg-rose-500' },
+  done: { label: 'Done', color: 'text-emerald-600', tint: 'bg-emerald-500/10', dot: 'bg-emerald-500' },
 };
-export const STATUS_ORDER: Status[] = ['needs', 'working', 'waiting', 'done'];
 export const statusLabel = (s: Status) => STATUS[s].label;
+export const statusColor = (s: Status) => STATUS[s].color;
+
+// How long something took, or has been taking. `label` is a word to go before it. Without one, short things
+// show nothing.
+type ElapsedProps = { from: number; to?: number; label?: string; className?: string };
+export function Elapsed({ from, to, label = '', className = '' }: ElapsedProps) {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (to) return;
+    const tick = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(tick);
+  }, [to]);
+  // Never below zero, also when this device's clock is behind the server's.
+  const seconds = Math.max(0, Math.floor(((to ?? now) - from) / 1000));
+  if (!label && seconds < (to ? 1 : 3)) return null;
+  const two = (n: number) => String(n % 60).padStart(2, '0');
+  const minutes = Math.floor(seconds / 60);
+  let text = `${seconds}s`;
+  if (minutes >= 1) text = `${minutes}m ${two(seconds)}s`;
+  if (minutes >= 60) text = `${Math.floor(minutes / 60)}h ${two(minutes)}m`;
+  return (
+    <span className={`shrink-0 tabular-nums ${className}`}>
+      {label && `${label} `}
+      {text}
+    </span>
+  );
+}
 
 export function StatusDot({ status }: { status: Status }) {
   return <span className={`inline-block size-2 shrink-0 rounded-full ${STATUS[status].dot}`} />;
@@ -139,7 +166,7 @@ export function StatusDot({ status }: { status: Status }) {
 export function StatusBadge({ status }: { status: Status }) {
   return (
     <span
-      className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ${STATUS[status].text}`}
+      className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ${STATUS[status].color} ${STATUS[status].tint}`}
     >
       <StatusDot status={status} />
       {STATUS[status].label}

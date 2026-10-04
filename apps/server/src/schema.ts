@@ -1,6 +1,6 @@
 // Database tables. After changing this file, run `pnpm db:generate` to create a migration.
 import type { Access, Item, Status } from '@acocrew/shared';
-import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { index, integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 // The four tables below are Better Auth's own (see auth.ts). It reads and writes them by these names.
 // `admin`, `mustChangePassword` and `deleted` are ours.
@@ -111,4 +111,19 @@ export const events = sqliteTable(
     item: text('item', { mode: 'json' }).$type<Item>().notNull(),
   },
   (t) => [index('events_thread').on(t.threadId, t.seq)],
+);
+
+// Who has looked at which thread: the thread's `updatedAt` when the person last had it on screen.
+export const seen = sqliteTable(
+  'seen',
+  {
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id),
+    threadId: text('thread_id')
+      .notNull()
+      .references(() => threads.id),
+    at: integer('at').notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.threadId] })],
 );

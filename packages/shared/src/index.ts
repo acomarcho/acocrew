@@ -1,8 +1,9 @@
 // Types and constants used by both the web app and the server.
 
 // working: Claude is in a turn. waiting: Claude is idle but background work it started is still running.
-// needs: someone has to act (an approval, a question, or a failed turn). done: nothing going on.
-export type Status = 'working' | 'waiting' | 'needs' | 'done';
+// needs: Claude waits for someone's answer (an approval or a question). failed: the last turn broke off with
+// an error. done: nothing going on.
+export type Status = 'working' | 'waiting' | 'needs' | 'failed' | 'done';
 
 // full: Claude acts without asking. ask: Claude asks before anything that is not just reading.
 export type Access = 'full' | 'ask';
@@ -36,7 +37,13 @@ export type Thread = {
   people: string[];
   // What Claude is waiting on in the background right now, in its own words. Not stored.
   tasks: string[];
+  // Since when Claude has been busy in this thread without a break. Null when it is not. Not stored.
+  since: number | null;
 };
+
+// What a person has seen: thread id -> the thread's `updatedAt` when they last had it on screen.
+// A thread they never opened is not in it.
+export type Seen = Record<string, number>;
 
 // A multiple-choice question Claude asks the user.
 export type Question = {
@@ -101,7 +108,9 @@ export const ACCESS = [
 
 // What the server pushes over the WebSocket. `item` carries the whole item, so getting it twice is harmless.
 export type ServerEvent =
-  | { type: 'hello'; channels: Channel[]; threads: Thread[]; people: Person[] }
+  | { type: 'hello'; channels: Channel[]; threads: Thread[]; people: Person[]; seen: Seen }
+  // Threads the person just saw, on this device or another one of theirs.
+  | { type: 'seen'; seen: Seen }
   | { type: 'channel'; channel: Channel }
   // The ids of all channels, in the order the sidebar shows them.
   | { type: 'order'; ids: string[] }

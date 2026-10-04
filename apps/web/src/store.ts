@@ -13,6 +13,7 @@ import {
   type NewThread,
   type NewUser,
   type Person,
+  type Seen,
   type ServerEvent,
   type Temporary,
   type Thread,
@@ -27,6 +28,8 @@ type State = {
   threads: Thread[];
   // Everyone who has or had an account.
   people: Person[];
+  // What the person logged in has seen of each thread.
+  seen: Seen;
   // The thread on screen. `items` is null until the server has sent what is in it.
   openId: string | null;
   items: Item[] | null;
@@ -40,6 +43,7 @@ export const START: State = {
   channels: [],
   threads: [],
   people: [],
+  seen: {},
   openId: null,
   items: null,
 };
@@ -52,8 +56,8 @@ export function reduce(state: State, action: Action): State {
   if ('threadId' in action && action.type !== 'open' && action.threadId !== state.openId) return state;
   switch (action.type) {
     case 'hello': {
-      const { channels, threads, people } = action;
-      return { ...state, ready: true, online: true, channels, threads, people };
+      const { channels, threads, people, seen } = action;
+      return { ...state, ready: true, online: true, channels, threads, people, seen };
     }
     case 'offline':
       return { ...state, online: false };
@@ -72,6 +76,8 @@ export function reduce(state: State, action: Action): State {
       if (known && known.updatedAt > action.thread.updatedAt) return state;
       return { ...state, threads: upsert(state.threads, action.thread) };
     }
+    case 'seen':
+      return { ...state, seen: { ...state.seen, ...action.seen } };
     case 'open':
       return { ...state, openId: action.threadId, items: null };
     case 'items':
@@ -86,6 +92,15 @@ export function reduce(state: State, action: Action): State {
         ),
       };
   }
+}
+
+// Whether this person should look at the thread: Claude waits for an answer in it, or Claude stopped (it
+// finished or it failed) and they have not seen how. Only threads they take part in count.
+export function needsYou(thread: Thread, seen: Seen, me: string) {
+  if (!thread.people.includes(me)) return false;
+  if (thread.status === 'needs') return true;
+  const stopped = thread.status === 'done' || thread.status === 'failed';
+  return stopped && thread.updatedAt > (seen[thread.id] ?? 0);
 }
 
 const JSON_BODY = { 'content-type': 'application/json' };
@@ -157,6 +172,13 @@ export function useAppState(login: Me, recheck: () => Promise<unknown>) {
     tell({ type: 'open', threadId });
   }, []);
 
+  // The person has the thread in front of them. Shown right away, and kept by the server for their other
+  // devices. If the server did not get it, it says so on the next connect and the thread asks again.
+  const markSeen = useCallback((thread: Thread) => {
+    dispatch({ type: 'seen', seen: { [thread.id]: thread.updatedAt } });
+    request(`/api/threads/${thread.id}/seen`, { at: thread.updatedAt }).catch(() => {});
+  }, []);
+
   const listFolders = useCallback(
     (path?: string) => request<FolderList>(`/api/folders${path ? `?path=${encodeURIComponent(path)}` : ''}`),
     [],
@@ -207,6 +229,7 @@ export function useAppState(login: Me, recheck: () => Promise<unknown>) {
     navOpen,
     setNavOpen,
     openThread,
+    markSeen,
     listFolders,
     addChannel,
     orderChannels,

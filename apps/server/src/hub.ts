@@ -21,6 +21,10 @@ export function createHub() {
     toAll(event: ServerEvent) {
       for (const socket of sockets.keys()) send(socket, event);
     },
+    // Every browser this person is connected from.
+    toUser(userId: string, event: ServerEvent) {
+      for (const [socket, tab] of sockets) if (tab.userId === userId) send(socket, event);
+    },
     toThread(threadId: string, event: ServerEvent) {
       for (const [socket, tab] of sockets) if (tab.threadId === threadId) send(socket, event);
     },

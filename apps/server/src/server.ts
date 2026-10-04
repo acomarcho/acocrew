@@ -39,13 +39,13 @@ import {
   seedAdmin,
   temporaryPassword,
 } from './auth.ts';
-import { channelCols, listChannels, listThreads, loadItems, threadCols, type Db } from './db.ts';
+import { channelCols, listChannels, listSeen, listThreads, loadItems, threadCols, type Db } from './db.ts';
 import { folderInside, isRepo, listFolders } from './folders.ts';
 import { addWorktree, listPlaces } from './git.ts';
 import { createHub } from './hub.ts';
 import { openImages, type Images } from './images.ts';
 import { createRunner, type QueryFn } from './runner.ts';
-import { channels, session as sessions, threads, user } from './schema.ts';
+import { channels, seen, session as sessions, threads, user } from './schema.ts';
 import { firstLine } from './title.ts';
 
 // `home` is the only folder tree that repositories can be picked from.
@@ -328,7 +328,7 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
       createdAt: now,
       updatedAt: now,
     };
-    const thread = runner.withTasks(db.insert(threads).values(row).returning(threadCols).get());
+    const thread = runner.withLive(db.insert(threads).values(row).returning(threadCols).get());
     hub.toAll({ type: 'thread', thread });
     runner.send(thread.id, message, c.get('user').id);
     if (message.text) runner.name(thread.id, message.text);
@@ -352,6 +352,28 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
     if (!DECISIONS.includes(body.decision)) return c.json({ error: 'Not an answer.' }, 400);
     const taken = runner.answer(c.req.param('id'), body);
     return taken ? c.json({ ok: true }) : c.json({ error: 'Claude is no longer waiting for this answer.' }, 409);
+  });
+
+  // The person has the thread on screen, as it was at `at` (its `updatedAt` in their browser). What happened
+  // after that is still new to them. Their other devices are told.
+  app.post('/api/threads/:id/seen', async (c) => {
+    const { at } = await c.req.json().catch(() => ({}));
+    const thread = db
+      .select()
+      .from(threads)
+      .where(eq(threads.id, c.req.param('id')))
+      .get();
+    if (!thread || !Number.isFinite(at)) return c.json({ error: 'Needs a thread and a time.' }, 400);
+    // What was seen once stays seen: a device that is behind cannot take it back.
+    const row = { userId: c.get('user').id, threadId: thread.id, at: Math.min(at, thread.updatedAt) };
+    const kept = db
+      .insert(seen)
+      .values(row)
+      .onConflictDoUpdate({ target: [seen.userId, seen.threadId], set: { at: sql`max(${seen.at}, excluded.at)` } })
+      .returning()
+      .get();
+    hub.toUser(kept.userId, { type: 'seen', seen: { [kept.threadId]: kept.at } });
+    return c.json({ ok: true });
   });
 
   app.post('/api/threads/:id/stop', async (c) => {
@@ -404,9 +426,11 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
     WS_PATH,
     upgradeWebSocket((c) => ({
       onOpen(_, ws) {
-        hub.add(ws, c.get('user').id);
-        const threads = listThreads(db).map(runner.withTasks);
-        hub.send(ws, { type: 'hello', channels: listChannels(db), threads, people: listPeople(db) });
+        const { id } = c.get('user');
+        hub.add(ws, id);
+        const threads = listThreads(db).map(runner.withLive);
+        const seen = listSeen(db, id);
+        hub.send(ws, { type: 'hello', channels: listChannels(db), threads, people: listPeople(db), seen });
       },
       // The browser says which thread it is looking at. It is signed up for that thread's events and gets
       // everything so far in the same step, so nothing can slip in between.
