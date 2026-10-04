@@ -1,5 +1,5 @@
 // Database tables. After changing this file, run `pnpm db:generate` to create a migration.
-import type { Access, Item, Status } from '@acocrew/shared';
+import type { Access, Item, Role, Status, Visibility } from '@acocrew/shared';
 import { index, integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 // The four tables below are Better Auth's own (see auth.ts). It reads and writes them by these names.
@@ -92,6 +92,8 @@ export const automations = sqliteTable('automations', {
   context: text('context').notNull(),
   fast: integer('fast', { mode: 'boolean' }).notNull(),
   access: text('access').$type<Access>().notNull(),
+  // Who sees it. Each thread it starts gets the same.
+  visibility: text('visibility').$type<Visibility>().notNull().default('private'),
   // Who made it. Its threads are started as this person.
   createdBy: text('created_by')
     .notNull()
@@ -117,8 +119,10 @@ export const threads = sqliteTable('threads', {
   branch: text('branch'),
   // Claude's own id for the conversation. Lets a new Claude process pick up where the last one stopped.
   sessionId: text('session_id'),
-  // Who started the thread.
+  // Who started the thread. They decide who sees it.
   createdBy: text('created_by').references(() => user.id),
+  // private: only whoever started it and the people in `shares`. public: everyone with an account.
+  visibility: text('visibility').$type<Visibility>().notNull().default('private'),
   // The automation that started it. Empty when a person did, and emptied when that automation is deleted.
   automationId: text('automation_id').references(() => automations.id, { onDelete: 'set null' }),
   // Everyone who sent a message in the thread, as user ids, in the order they first did.
@@ -128,6 +132,22 @@ export const threads = sqliteTable('threads', {
   createdAt: integer('created_at').notNull(),
   updatedAt: integer('updated_at').notNull(),
 });
+
+// Who a thread is shared with, besides whoever started it.
+export const shares = sqliteTable(
+  'shares',
+  {
+    threadId: text('thread_id')
+      .notNull()
+      .references(() => threads.id),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id),
+    role: text('role').$type<Role>().notNull().default('member'),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.threadId, t.userId] })],
+);
 
 // Append-only log. A tool card shows up twice (started, finished); the newest row per item id wins.
 export const events = sqliteTable(

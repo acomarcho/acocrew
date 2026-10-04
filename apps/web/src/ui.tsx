@@ -4,6 +4,7 @@ import {
   CONTEXTS,
   EFFORTS,
   MODELS,
+  VISIBILITY,
   type Access,
   type Channel,
   type Command,
@@ -12,6 +13,7 @@ import {
   type Places,
   type Status,
   type Thread,
+  type Visibility,
 } from '@acocrew/shared';
 import { Link, useNavigate } from '@tanstack/react-router';
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
@@ -23,9 +25,11 @@ import {
   Clock,
   FolderGit2,
   GitBranch,
+  Globe,
   ImagePlus,
   Layers,
   LoaderCircle,
+  Lock,
   LogOut,
   Menu,
   Pin,
@@ -339,6 +343,37 @@ export function Picker({
         </>
       )}
     </div>
+  );
+}
+
+// A lock for what only some people see, a globe for what everyone does.
+export function VisibilityIcon({ visibility, size = 14 }: { visibility: Visibility; size?: number }) {
+  return visibility === 'private' ? <Lock size={size} /> : <Globe size={size} />;
+}
+
+// The small lock that a private thread or automation has in a list.
+export function PrivateMark({ visibility }: { visibility: Visibility }) {
+  if (visibility === 'public') return null;
+  return (
+    <span title="Private" className="shrink-0 text-muted-foreground">
+      <Lock size={12} />
+    </span>
+  );
+}
+
+// Who sees a new thread or an automation. Shows only its icon on phones.
+type VisibilityPickerProps = { value: Visibility; onChange: (visibility: Visibility) => void; down?: boolean };
+export function VisibilityPicker({ value, onChange, down }: VisibilityPickerProps) {
+  return (
+    <Picker
+      icon={<VisibilityIcon visibility={value} />}
+      value={value}
+      options={VISIBILITY}
+      onChange={(visibility) => onChange(visibility as Visibility)}
+      menuClass="-left-40 sm:left-0"
+      labelClass={ICON_ON_PHONE}
+      down={down}
+    />
   );
 }
 
@@ -666,6 +701,7 @@ export function NewThread({ channel, title }: { channel: Channel; title?: ReactN
   const navigate = useNavigate();
   const [settings, setSettings] = useState(NEW_THREAD);
   const [place, setPlace] = useState(PLACES[0].id);
+  const [visibility, setVisibility] = useState<Visibility>('private');
   const channelId = channel.id;
   const commands = useCommands(`channel=${channelId}`);
   const places = usePlaces(channelId);
@@ -704,6 +740,7 @@ export function NewThread({ channel, title }: { channel: Channel; title?: ReactN
             menuClass="-left-32 sm:left-0"
           />
         )}
+        <VisibilityPicker value={visibility} onChange={setVisibility} />
       </div>
       <div className="mb-2 flex items-center gap-1.5 text-xs text-muted-foreground">
         <FolderGit2 size={12} className="shrink-0" />
@@ -726,7 +763,7 @@ export function NewThread({ channel, title }: { channel: Channel; title?: ReactN
         commands={commands}
         onSend={async (text, images) => {
           const where = fresh ? { from } : { path };
-          const thread = await createThread({ channelId, text, images, ...where, ...settings });
+          const thread = await createThread({ channelId, text, images, visibility, ...where, ...settings });
           void navigate({ to: '/c/$channelId/t/$threadId', params: { channelId, threadId: thread.id }, replace: true });
         }}
       />
@@ -784,6 +821,7 @@ export function ThreadRow({ thread: t }: { thread: Thread }) {
           <span className={`min-w-0 flex-1 truncate ${flagged ? 'font-semibold' : 'font-medium text-foreground/70'}`}>
             {t.title}
           </span>
+          <PrivateMark visibility={t.visibility} />
           {t.automationId && (
             <span
               title="Started by an automation"

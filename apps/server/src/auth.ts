@@ -5,7 +5,7 @@ import { username } from 'better-auth/plugins/username';
 import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { Db } from './db.ts';
-import { account, session, threads, user, verification } from './schema.ts';
+import { account, automations, session, threads, user, verification } from './schema.ts';
 
 // What the first admin logs in with. The password has to be changed right after.
 export const FIRST_ADMIN = { username: 'admin', name: 'Admin', password: 'changeme' };
@@ -79,8 +79,13 @@ export async function resetPassword(auth: Auth, db: Db, id: string) {
 }
 
 // The account can no longer log in and its username is free again. The row stays for its name.
+// Its private automations are paused: nobody else sees them, so nobody could ever stop them.
 export function deleteUser(db: Db, id: string) {
   db.transaction((tx) => {
+    tx.update(automations)
+      .set({ on: false })
+      .where(and(eq(automations.createdBy, id), eq(automations.visibility, 'private')))
+      .run();
     tx.delete(session).where(eq(session.userId, id)).run();
     tx.delete(account).where(eq(account.userId, id)).run();
     tx.update(user).set({ deleted: true, admin: false, username: null }).where(eq(user.id, id)).run();

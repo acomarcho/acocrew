@@ -1,5 +1,5 @@
 // Automations: a message that is sent in a fresh thread of a repository at set times.
-import { MODELS, type Automation, type Channel, type Schedule } from '@acocrew/shared';
+import { MODELS, VISIBILITY, type Automation, type Channel, type Schedule, type Visibility } from '@acocrew/shared';
 import { Link, useNavigate } from '@tanstack/react-router';
 import {
   ChevronDown,
@@ -16,7 +16,19 @@ import {
 import { useState, type ReactNode } from 'react';
 import { useCommands } from './commands';
 import { useApp } from './store';
-import { branchOption, Composer, NEW_THREAD, Picker, Popup, ThreadRow, usePlaces, when, type Settings } from './ui';
+import {
+  branchOption,
+  Composer,
+  NEW_THREAD,
+  Picker,
+  Popup,
+  PrivateMark,
+  ThreadRow,
+  usePlaces,
+  VisibilityPicker,
+  when,
+  type Settings,
+} from './ui';
 
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const EVERY_DAY = [0, 1, 2, 3, 4, 5, 6];
@@ -164,8 +176,11 @@ type EditorProps = {
 
 // Making or changing an automation, in the same message box a thread is started with.
 export function AutomationEditor({ channel, automation, title, onDone, onCancel }: EditorProps) {
-  const { saveAutomation } = useApp();
+  const { saveAutomation, me } = useApp();
   const commands = useCommands(`channel=${channel.id}`);
+  // Who sees it, and each thread it starts from now on. Only whoever made it can change that.
+  const [visibility, setVisibility] = useState<Visibility>(automation?.visibility ?? 'private');
+  const mine = !automation || automation.createdBy === me.id;
   const branches = usePlaces(channel.id).branches.map(branchOption);
   // Each piece of state holds only its own parts of the automation. What is saved is put together from them,
   // so a part that one of them should not have would overwrite another's.
@@ -198,6 +213,7 @@ export function AutomationEditor({ channel, automation, title, onDone, onCancel 
             down
           />
         )}
+        {mine && <VisibilityPicker value={visibility} onChange={setVisibility} down />}
       </div>
       <div className="mt-1 mb-3">
         <SchedulePicker {...schedule} onChange={setSchedule} />
@@ -224,7 +240,7 @@ export function AutomationEditor({ channel, automation, title, onDone, onCancel 
         onSend={async (text) => {
           if (!schedule.days.length) throw new Error('Pick at least one day.');
           if (!from) throw new Error('Pick a branch to start from.');
-          const body = { channelId: channel.id, text, from, ...schedule, ...settings, on: automation?.on };
+          const body = { channelId: channel.id, text, from, visibility, ...schedule, ...settings, on: automation?.on };
           onDone(await saveAutomation(body, automation?.id));
         }}
       />
@@ -271,7 +287,10 @@ export function AutomationSection({ channelId }: { channelId: string }) {
           >
             <Clock size={14} className={`shrink-0 ${automation.on ? 'text-primary' : 'text-muted-foreground'}`} />
             <span className="min-w-0 flex-1">
-              <span className="block truncate text-sm font-medium">{titleOf(automation)}</span>
+              <span className="flex items-center gap-1.5 text-sm font-medium">
+                <span className="truncate">{titleOf(automation)}</span>
+                <PrivateMark visibility={automation.visibility} />
+              </span>
               <span className="block truncate text-xs text-muted-foreground">
                 {describe(automation)}
                 {!automation.on && ' · Paused'}
@@ -346,7 +365,8 @@ export function AutomationPage({ channel, automation }: { channel: Channel; auto
         <p className="mt-1 text-sm">
           <b className="font-medium">{describe(automation)}</b>{' '}
           <span className="text-muted-foreground">
-            · {automation.nextAt ? `Next run ${when(automation.nextAt)}` : 'Paused'} · {model} · from {automation.from}
+            · {automation.nextAt ? `Next run ${when(automation.nextAt)}` : 'Paused'} · {model} · from {automation.from}{' '}
+            · {VISIBILITY.find((option) => option.id === automation.visibility)!.name}
           </span>
         </p>
         <p className="mt-4 rounded-lg border border-border bg-card p-3 text-sm break-words whitespace-pre-wrap">

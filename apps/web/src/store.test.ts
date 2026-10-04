@@ -79,3 +79,15 @@ test('an automation is added, changed and taken away, and the threads it started
   expect(state.automations).toEqual([]);
   expect(state.threads.map((t) => t.automationId)).toEqual([null, 'b']);
 });
+
+test('a thread the person may no longer see leaves the list, and comes back when it is shared again', () => {
+  const rows = [
+    { ...thread('done'), id: 'a' },
+    { ...thread('done'), id: 'b' },
+  ];
+  let state = reduce({ ...START, threads: rows }, { type: 'thread-gone', id: 'a' });
+  expect(state.threads.map((t) => t.id)).toEqual(['b']);
+  // Sharing is not news, so the thread comes back no newer than it left.
+  state = reduce(state, { type: 'thread', thread: rows[0] });
+  expect(state.threads.map((t) => t.id)).toEqual(['b', 'a']);
+});

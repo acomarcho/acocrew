@@ -71,6 +71,13 @@
       "when": 1791111523897,
       "tag": "0009_small_bullseye",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1791116420730,
+      "tag": "0010_groovy_old_lace",
+      "breakpoints": true
     }
   ]
 }

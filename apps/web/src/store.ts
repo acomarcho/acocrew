@@ -20,6 +20,7 @@ import {
   type ServerEvent,
   type Temporary,
   type Thread,
+  type Visibility,
 } from '@acocrew/shared';
 import { createContext, useCallback, useContext, useEffect, useReducer, useRef, useState } from 'react';
 
@@ -82,6 +83,8 @@ export function reduce(state: State, action: Action): State {
       if (known && known.updatedAt > action.thread.updatedAt) return state;
       return { ...state, threads: upsert(state.threads, action.thread) };
     }
+    case 'thread-gone':
+      return { ...state, threads: state.threads.filter((thread) => thread.id !== action.id) };
     case 'seen':
       return { ...state, seen: { ...state.seen, ...action.seen } };
     case 'automation':
@@ -242,6 +245,13 @@ export function useAppState(login: Me, recheck: () => Promise<unknown>) {
   // Pins the thread for everyone, or unpins it. The list changes when the server tells everyone.
   const pinThread = (threadId: string, pinned: boolean) => request(`/api/threads/${threadId}/pin`, { pinned });
 
+  // Who sees the thread: private or public, and one person it is shared with or no longer. Only whoever
+  // started it can. The thread changes when the server says so.
+  const showThread = (threadId: string, visibility: Visibility) =>
+    request(`/api/threads/${threadId}/visibility`, { visibility });
+  const shareThread = (threadId: string, userId: string, shared: boolean) =>
+    request(`/api/threads/${threadId}/shares`, { userId, shared });
+
   const rename = (name: string) => request(ME_PATH, { name });
   const logOut = () => request(LOGOUT_PATH, {}).then(recheck);
   // What an admin does to accounts. The list itself updates when the server tells everyone.
@@ -276,6 +286,8 @@ export function useAppState(login: Me, recheck: () => Promise<unknown>) {
     answer,
     stopThread,
     pinThread,
+    showThread,
+    shareThread,
   };
 }
 

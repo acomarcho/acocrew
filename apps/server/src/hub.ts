@@ -1,4 +1,5 @@
-import type { ServerEvent } from '@acocrew/shared';
+import type { ServerEvent, Thread } from '@acocrew/shared';
+import { canSee } from './db.ts';
 
 type Socket = { send(data: string): void; close(): void };
 
@@ -20,6 +21,23 @@ export function createHub() {
     },
     toAll(event: ServerEvent) {
       for (const socket of sockets.keys()) send(socket, event);
+    },
+    // Only the people `can` says yes to.
+    toSome(event: ServerEvent, can: (userId: string) => boolean) {
+      for (const [socket, tab] of sockets) if (can(tab.userId)) send(socket, event);
+    },
+    // How a thread is now, to everyone who sees it.
+    thread(thread: Thread) {
+      this.toSome({ type: 'thread', thread }, (userId) => canSee(thread, userId));
+    },
+    // Takes a thread away from the people who `lost` it: their browsers drop it, and the ones that had it
+    // open stop hearing what happens in it.
+    drop(threadId: string, lost: (userId: string) => boolean) {
+      for (const [socket, tab] of sockets) {
+        if (!lost(tab.userId)) continue;
+        if (tab.threadId === threadId) tab.threadId = null;
+        send(socket, { type: 'thread-gone', id: threadId });
+      }
     },
     // Every browser this person is connected from.
     toUser(userId: string, event: ServerEvent) {

@@ -137,14 +137,15 @@ Why:
 
 Tables:
 
-| Table         | What it holds                                                                                                                              |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `channels`    | One row per repository: its name and folder path.                                                                                          |
-| `threads`     | Title, model, reasoning level, status, folder, branch, and Claude's session id for resuming. Also which automation started it, if one did. |
-| `automations` | One row per automation: its repository, message, time, days, branch, settings, who made it, and whether it is on. See Decision 10.         |
-| `events`      | A numbered log per thread. Each row is one whole item: a chat bubble, a tool card, or an error.                                            |
-| `user`        | One row per account: display name, username, whether it is an admin. See Decision 8.                                                       |
-| `seen`        | One row per person and thread they opened: how far they have seen it. See Decision 9.                                                      |
+| Table         | What it holds                                                                                                                                                                                                 |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `channels`    | One row per repository: its name and folder path.                                                                                                                                                             |
+| `threads`     | Title, model, reasoning level, status, folder, branch, and Claude's session id for resuming. Also which automation started it, if one did, who started it, and whether it is private or public (Decision 11). |
+| `automations` | One row per automation: its repository, message, time, days, branch, settings, who made it, and whether it is on. See Decision 10.                                                                            |
+| `events`      | A numbered log per thread. Each row is one whole item: a chat bubble, a tool card, or an error.                                                                                                               |
+| `user`        | One row per account: display name, username, whether it is an admin. See Decision 8.                                                                                                                          |
+| `seen`        | One row per person and thread they opened: how far they have seen it. See Decision 9.                                                                                                                         |
+| `shares`      | One row per thread and person it is shared with, and what that person can do there (`role`). See Decision 11.                                                                                                 |
 
 The `events` log is only ever added to. A tool card is written twice (started, finished). When a thread is loaded, the newest row per item wins.
 
@@ -163,7 +164,7 @@ T3 Code does the same "apply on start" thing, but with hand-written SQL files an
 3. Separately, the server listens to each Claude process for as long as it lives, and turns everything Claude says into our own items (`apps/server/src/translate.ts`).
 4. Words still being written are sent to open browsers right away and not saved. Finished bubbles and tool cards are saved to `events`, then sent.
 
-Everything the browser shows comes down the WebSocket. On connect it gets all channels and threads. When it opens a thread it gets that thread's items, then live updates. Requests only go up over HTTP.
+Everything the browser shows comes down the WebSocket. On connect it gets all channels, and the threads that person may see (Decision 11). When it opens a thread it gets that thread's items, then live updates. Requests only go up over HTTP.
 
 ## How an image travels
 
@@ -264,7 +265,7 @@ The rules:
 - **Forgot your password?** Ask an admin to reset it. Settings asks "are you sure" first, because a reset logs that person out everywhere.
 - **Deleting keeps the name.** A deleted account loses its password, its logins and its username (which can be given out again), but the row stays. So messages it wrote still show who wrote them.
 - **Who wrote what.** A message from a person carries their user id (`userId` on the item). A thread keeps who started it (`threads.created_by`) and everyone who wrote in it (`threads.people`).
-- **Everyone sees everyone.** The WebSocket's first message carries the list of people (id, display name, username, admin, deleted). A change to anyone is sent to all browsers. There are no per-channel permissions.
+- **Everyone sees everyone.** The WebSocket's first message carries the list of people (id, display name, username, admin, deleted). A change to anyone is sent to all browsers. There are no per-channel permissions. Which threads a person sees is Decision 11.
 - **Picking a new password ends the other logins.** Whoever else was logged in to that account, on any device, is logged out. The browser that made the change stays in.
 - **How long a login lasts.** Seven days from when it was last used. Each request hands the browser a fresh cookie when the login was extended.
 - **Https only, when told so.** With `ACOCREW_HTTPS=1` the login cookie is marked "Secure": the browser never sends it over plain http, where anyone on the same network could read it and act as that person. This is how to run any copy that people reach through an https tunnel, and `pnpm stable` does. It is off by default, because the server itself only speaks plain http on localhost and cannot tell what is in front of it. While it is on, logging in works over https and on `localhost` only. Turning it on or off logs everyone out once, because the cookie's name changes.
@@ -298,8 +299,9 @@ How it runs:
 - A run is a thread like any other. It goes through the same code as "Start a thread": a new worktree from the automation's branch, the message handed to Claude, a name from Claude. The thread is started as the person who made the automation, so it is theirs to look at when it is done (Decision 9). That stays so after their account is deleted, until someone deletes the automation. `threads.automation_id` says which automation started it.
 - The time is the server machine's own clock. The web app says so next to the schedule. "Next run" is worked out by the server and shown in the browser's own time.
 - If a run cannot start (its branch is gone, or git fails), the reason goes to the server's output. Nobody is told in the app yet.
+- A run is seen by whoever sees the automation at that moment: the new thread gets the automation's private or public setting.
 - Deleting an automation keeps the threads it started. They just no longer say that an automation started them.
-- Anyone logged in can make, change, run and delete any automation, the same as with threads.
+- An automation is private or public, like a thread (Decision 11). Anyone who sees one can change, run and delete it.
 
 Why not something else:
 
@@ -308,6 +310,38 @@ Why not something else:
 - **The machine's own cron** would need a second place to keep schedules, and a way for cron to log in.
 
 Not built: images in an automation's message, raw cron text, and telling someone in the app when a scheduled run could not start.
+
+## Decision 11: A thread is private unless its owner says otherwise
+
+Until now everyone logged in saw every thread. Now each thread is one of two things:
+
+- **Private** (the default): only the person who started it (its owner, `threads.created_by`) and the people the owner shared it with.
+- **Public**: everyone with an account.
+
+The rules:
+
+- **One rule, in one place.** `canSee` in `apps/server/src/db.ts` decides: public, or you started it, or it is shared with you. Nothing else on the server decides this on its own.
+- **What you may not see does not exist.** The first WebSocket message only carries the threads and automations that person sees. Changes only go to the people who see the thing. Every route about one thread (`/api/threads/<id>/...`) goes through one check first and answers 404 for a thread the person may not see, the same as for an id that does not exist. Opening a thread over the WebSocket goes through the same check.
+- **Only the owner shares.** `POST /api/threads/<id>/visibility` sets private or public. `POST /api/threads/<id>/shares` adds or removes one person. It is one person per request so that two changes made close together cannot undo each other. Anyone else gets a 403. Admins have no special view.
+- **People it is shared with can do everything else**: read, reply, answer Claude, stop, pin. They cannot share it or change private/public.
+- **The list is kept while a thread is public**, so making it private again does not mean adding everyone again.
+- **Losing access takes effect at once.** The server tells that person's browsers the thread is gone (`thread-gone`), and a browser that had it open stops getting what happens in it.
+- **Sharing is not news.** It leaves `updatedAt` alone, like pinning.
+- **Automations** are private or public too, with no list of people. A private one is hidden from everyone but whoever made it. Each run gives its new thread the automation's setting at that moment, so a later change only counts for new runs. Only whoever made an automation can change who sees it.
+- **A deleted account's private threads stay hidden.** Nobody inherits them. Its private automations are paused when the account is deleted, because nobody else sees them and so nobody could stop them.
+- **Old data.** Every thread and automation from before this is private to whoever started it.
+
+How it is stored: `threads.visibility` and `automations.visibility` (`private` or `public`), and a `shares` table with one row per thread and person. A row has a `role`. There is only one today (`member`). It is there so that a read-only kind of sharing can be added later without changing the tables.
+
+Why a table and not a list on the thread row (which is how `threads.people` is kept): a list has no place for a role per person.
+
+What this does not do:
+
+- It hides threads in the app only. Claude in any thread runs on the same machine with full access, and can read other threads' files. That is the sandboxing question below.
+- The "Existing worktree" list comes from git, so it still shows the branch of a private thread's worktree (not its title).
+- An attached image is not tied to a thread. Whoever is logged in and has its id (a long random one) can load it.
+
+Not built: read-only sharing, sharing an automation with named people, and handing a deleted account's threads to someone else. A private thread of a deleted account in which Claude is still busy is not stopped either: it runs until Claude is done.
 
 ## UI direction: the Inbox layout
 
@@ -338,8 +372,11 @@ Rules of the UI:
 - A repository's automations sit on top of its thread list, in a section that can be folded (it scrolls with the list). Each row shows the first line of the message and the schedule in words ("Weekdays at 9:00 AM"). The plus in the section's header makes a new one.
 - Opening an automation shows a page about it: a switch to pause it, its schedule and next run, its message, the buttons Edit, Run now and Delete, and the threads it started. Edit turns the page into the same screen it was made with. Delete asks first.
 - A thread that an automation started has a small "Auto" badge in the thread list.
-- A thread can be pinned with the pin button in its header (the same button unpins it). A pin is for everyone, not per person, and there is no limit on how many. It is one timestamp on the thread (`threads.pinned_at`), set through `POST /api/threads/<id>/pin`. Pinning is not news: it leaves `updatedAt` alone, so the thread does not show as new to anyone.
+- A thread can be pinned with the pin button in its header (the same button unpins it). A pin is for everyone who sees the thread, not per person, and there is no limit on how many. It is one timestamp on the thread (`threads.pinned_at`), set through `POST /api/threads/<id>/pin`. Pinning is not news: it leaves `updatedAt` alone, so the thread does not show as new to anyone.
 - Pinned threads sit in a "Pinned" section between the automations and the rest of the list, the one pinned last first, and are not repeated below. The first three show, and a "Show 2 more" row brings the rest. The section can be folded, and is not there when nothing is pinned. The two filters narrow it like the rest of the list. A pinned row has a pin icon on its right that unpins it right there.
+- A new thread and a new automation pick who sees them, with a dropdown next to the branch: Private (the default) or Public. On an automation only whoever made it gets that dropdown.
+- The header of a thread has a Share button for its owner. It opens a small panel: Private or Public, the people it is shared with (each with a remove button), and a box to find and add people. Every click is saved right away. Everyone else sees a lock or a globe there instead. On phones the panel is as wide as the screen.
+- A private thread or automation has a small lock in the list.
 - The message box has a model picker, a reasoning picker, a context window picker (200k or 1M), a fast mode picker and an access picker (Full access or Ask first). A new thread starts on medium reasoning, 1M and fast mode off. A picker is only shown for models that have that setting. While Claude is doing something, the box also has a Stop button.
 - Typing `/` in the message box opens a list of commands and skills right above it. It narrows as you type (later in a message only to names that start with what was typed, so a path like `/docs` is left alone). Arrow keys move, Enter or Tab picks, Escape closes, and a row can be clicked or tapped. Picking puts `/name ` into the box as plain text. While the box is answering a question from Claude, nothing is suggested.
 - The 1M context window is asked for with `[1m]` after the model name. Leaving that off is not enough for 200k: in a live run the newer models still got 1M. So 200k also sets `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` for that Claude process. Fast mode is the `fastMode` setting, and it only really runs if the Claude account has extra usage switched on.
@@ -353,4 +390,3 @@ Not built yet: removing a repository, diagrams (mermaid), and showing images tha
 ## Not decided yet
 
 - How each thread's agent is kept away from other threads' files (sandboxing).
-- Who can see which thread (today everyone logged in sees everything).

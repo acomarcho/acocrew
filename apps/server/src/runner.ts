@@ -12,7 +12,7 @@ import type { Options, PermissionResult, SDKMessage, SDKUserMessage } from '@ant
 import { eq, isNull, ne } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { loadItems, saveItem, threadCols, type Db } from './db.ts';
+import { loadItems, saveItem, threadCols, type Db, type StoredThread } from './db.ts';
 import { branchOf } from './git.ts';
 import type { Hub } from './hub.ts';
 import type { Images } from './images.ts';
@@ -134,18 +134,17 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images) {
   }
 
   // Adds what is only known while the process runs to a stored thread row.
-  type Stored = Omit<Thread, 'tasks' | 'since'>;
-  const withLive = (row: Stored): Thread => {
+  const withLive = (row: StoredThread): Thread => {
     const session = sessions.get(row.id);
     return { ...row, tasks: session?.tasks ?? [], since: session?.since ?? null };
   };
 
-  // Saves a change to a thread and tells everyone. `news` is a change people want to look at: it moves the
+  // Saves a change to a thread and tells everyone who sees it. `news` is a change people want to look at: it moves the
   // thread to the top of the list, and makes it unseen for whoever does not have it on screen.
-  function setThread(threadId: string, patch: Partial<Stored>, news = true) {
+  function setThread(threadId: string, patch: Partial<StoredThread>, news = true) {
     const set = news ? { ...patch, updatedAt: Date.now() } : patch;
     const row = db.update(threads).set(set).where(eq(threads.id, threadId)).returning(threadCols).get();
-    hub.toAll({ type: 'thread', thread: withLive(row) });
+    hub.thread(withLive(row));
   }
 
   // Claude can switch branches while it works, so the branch is read again after it did something.

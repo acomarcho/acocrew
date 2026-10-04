@@ -1,6 +1,6 @@
-import type { Item, Seen } from '@acocrew/shared';
+import type { Item, Seen, Thread, Visibility } from '@acocrew/shared';
 import Database from 'better-sqlite3';
-import { asc, eq } from 'drizzle-orm';
+import { asc, eq, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { mkdirSync } from 'node:fs';
@@ -41,7 +41,22 @@ export const threadCols = {
   automationId: threads.automationId,
   updatedAt: threads.updatedAt,
   pinnedAt: threads.pinnedAt,
+  visibility: threads.visibility,
+  createdBy: threads.createdBy,
+  // Read with the row, so that a thread never goes anywhere without the people it is shared with. The ones
+  // added first come first.
+  shared: sql<string>`(select json_group_array(user_id order by created_at, rowid) from shares
+    where thread_id = threads.id)`.mapWith((ids): string[] => JSON.parse(ids)),
 };
+
+// A thread as it is stored: without what is only known while Claude runs.
+export type StoredThread = Omit<Thread, 'tasks' | 'since'>;
+
+// The one rule for who sees a thread or an automation: everyone when it is public, otherwise whoever made
+// it and, for a thread, the people it is shared with.
+type Owned = { visibility: Visibility; createdBy: string | null; shared?: string[] };
+export const canSee = (thing: Owned, userId: string) =>
+  thing.visibility === 'public' || thing.createdBy === userId || Boolean(thing.shared?.includes(userId));
 
 export const automationCols = {
   id: automations.id,
@@ -56,6 +71,7 @@ export const automationCols = {
   context: automations.context,
   fast: automations.fast,
   access: automations.access,
+  visibility: automations.visibility,
   createdBy: automations.createdBy,
 };
 

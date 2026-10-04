@@ -33,7 +33,7 @@ import { FIRST_ADMIN } from './auth.ts';
 import { CHECK_MS } from './automations.ts';
 import { openDb, type Db } from './db.ts';
 import type { QueryFn } from './runner.ts';
-import { channels, events, session as sessions, threads } from './schema.ts';
+import { automations, channels, events, session as sessions, threads } from './schema.ts';
 import { startServer } from './server.ts';
 
 // A line of a recording (see fixtures/record.ts): a real message from Claude, or a marker for what the
@@ -374,8 +374,18 @@ const socketFrom = (headers: Record<string, string> = {}) => {
   });
 };
 
-const HAIKU = { model: 'claude-haiku-4-5-20251001', effort: 'low', context: '1m', fast: false, access: 'full' };
+// What a message is sent with. A thread or an automation started with these is private.
+const HAIKU = {
+  model: 'claude-haiku-4-5-20251001',
+  effort: 'low',
+  context: '1m',
+  fast: false,
+  access: 'full',
+  visibility: 'private',
+};
 const OPUS = { ...HAIKU, model: 'claude-opus-5-5', effort: 'high' };
+// A thread is private unless it is started as one for everyone.
+const PUBLIC = { ...HAIKU, visibility: 'public' };
 
 async function addChannel(path = shop) {
   const res = await post('/api/channels', { path });
@@ -1191,7 +1201,7 @@ test('a thread on screen is seen by that person, on all their devices and after 
   expect((await as(jordan.cookie, connect)).hello.seen).toEqual({});
   expect(theirs.events.some((event) => event.type === 'seen')).toBe(false);
 
-  expect((await post('/api/threads/nope/seen', { at: 1 })).status).toBe(400);
+  expect((await post('/api/threads/nope/seen', { at: 1 })).status).toBe(404);
   expect((await see('yesterday')).status).toBe(400);
 });
 
@@ -1199,7 +1209,7 @@ test('a thread is pinned and unpinned for everyone, stays pinned through a reloa
   const jordan = await teammate('jordan', 'Jordan');
   const tab = await connect();
   const theirs = await as(jordan.cookie, connect);
-  const thread = await startThread('make notes');
+  const thread = await startThread('make notes', PUBLIC);
   const done = await tab.status(thread.id, 'done');
   expect(done.pinnedAt).toBeNull();
 
@@ -1222,7 +1232,7 @@ test('a thread is pinned and unpinned for everyone, stays pinned through a reloa
   expect((await told(theirs, false)).pinnedAt).toBeNull();
   expect((await connect()).hello.threads[0].pinnedAt).toBeNull();
 
-  expect((await pin(true, 'nope')).status).toBe(400);
+  expect((await pin(true, 'nope')).status).toBe(404);
   expect((await pin('yes')).status).toBe(400);
   expect((await pin(undefined)).status).toBe(400);
 });
@@ -1411,9 +1421,9 @@ test('bad requests are turned away', async () => {
     [`/api/threads/${thread.id}/messages`, { text: 'hi', ...HAIKU, effort: 'huge' }],
     [`/api/threads/${thread.id}/messages`, { text: 'hi', ...HAIKU, context: '2m' }],
     [`/api/threads/${thread.id}/messages`, { text: 'hi', ...HAIKU, fast: 'yes' }],
-    ['/api/threads/nope/messages', { text: 'hi', ...HAIKU }],
   ] as const;
   for (const [path, body] of bad) expect((await post(path, body)).status, JSON.stringify(body)).toBe(400);
+  expect((await post('/api/threads/nope/messages', { text: 'hi', ...HAIKU })).status).toBe(404);
   expect((await answer(thread, { toolId: 'nope', decision: 'approve' })).status).toBe(409);
   expect((await answer(thread, { toolId: 'nope' } as never)).status).toBe(400);
   expect(db.select().from(threads).where(eq(threads.channelId, thread.channelId)).all()).toHaveLength(1);
@@ -1554,7 +1564,8 @@ test('the first start makes an admin who owns what was there before, and who mus
 
   // The old thread and the message in it are the admin's now. What Claude said is nobody's.
   const tab = await connect();
-  expect(tab.hello.threads).toMatchObject([{ id: old.id, people: [me.id] }]);
+  // Like every thread from before threads could be shared, it is private to whoever it belongs to.
+  expect(tab.hello.threads).toMatchObject([{ id: old.id, people: [me.id], createdBy: me.id, visibility: 'private' }]);
   await tab.open(old.id);
   expect(tab.items(old.id)).toEqual([{ ...before[0], userId: me.id }, before[1], before[2]]);
   expect(db.select().from(threads).get()!.createdBy).toBe(me.id);
@@ -1607,7 +1618,7 @@ test('a message says who wrote it, and a thread lists everyone who wrote in it',
   const admin = await whoAmI();
   const jordan = await teammate('jordan', 'Jordan');
   const tab = await connect();
-  const thread = await startThread('make notes');
+  const thread = await startThread('make notes', PUBLIC);
   expect(thread.people).toEqual([admin.id]);
   await tab.open(thread.id);
   await tab.status(thread.id, 'done');
@@ -1697,7 +1708,7 @@ test('admins make and unmake admins, but one always stays', async () => {
 test('a deleted account is logged out at once, keeps its name on what it wrote, and frees its username', async () => {
   const admin = await whoAmI();
   const jordan = await teammate('jordan', 'Jordan');
-  const thread = await startThread('make notes');
+  const thread = await startThread('make notes', PUBLIC);
   await as(jordan.cookie, () => say(thread, 'read both files'));
   const theirs = await as(jordan.cookie, connect);
   const tab = await connect();
@@ -1833,7 +1844,7 @@ test('when its time comes, an automation sends its message in a fresh thread in 
   await serve(TWO_TURNS, NAMING);
   const jordan = await teammate('jordan', 'Jordan');
   const tab = await connect();
-  const digest = await as(jordan.cookie, () => automate(at(1)));
+  const digest = await as(jordan.cookie, () => automate({ ...at(1), visibility: 'public' }));
   // These three are due at the same moment, and must not run: one is paused, one is deleted, one is for another day.
   await automate({ ...at(1), text: 'paused' }).then((made) => change(made, { on: false }));
   await automate({ ...at(1), text: 'deleted' }).then(remove);
@@ -1841,7 +1852,7 @@ test('when its time comes, an automation sends its message in a fresh thread in 
 
   aMinuteLater();
   const { thread } = await tab.until('thread', (e) => e.thread.automationId !== null);
-  expect(thread).toMatchObject({ automationId: digest.id, title: 'write a digest', people: [jordan.id], ...HAIKU });
+  expect(thread).toMatchObject({ automationId: digest.id, title: 'write a digest', people: [jordan.id], ...PUBLIC });
   expect(thread).toMatchObject({
     branch: `acocrew/${thread.id.slice(0, 8)}`,
     path: join(worktrees, 'shop', thread.id.slice(0, 8)),
@@ -1963,4 +1974,251 @@ test('an automation needs a message, a real time, a day, a branch git lists and 
   cookie = '';
   for (const path of ['', `/${made.id}`, `/${made.id}/run`, `/${made.id}/delete`])
     expect((await post(AUTOMATIONS_PATH + path, made)).status, path).toBe(401);
+});
+
+// Who can see what. A thread and an automation are private unless made public.
+const show = (thread: Thread, visibility: unknown) => post(`/api/threads/${thread.id}/visibility`, { visibility });
+const share = (thread: Thread, userId: unknown, shared: unknown = true) =>
+  post(`/api/threads/${thread.id}/shares`, { userId, shared });
+// Everything a browser can ask about one thread.
+const reach = (thread: Thread) =>
+  Promise.all([
+    say(thread, 'let me in'),
+    answer(thread, { toolId: 'nope', decision: 'approve' }),
+    post(`/api/threads/${thread.id}/stop`),
+    post(`/api/threads/${thread.id}/pin`, { pinned: true }),
+    post(`/api/threads/${thread.id}/seen`, { at: 1 }),
+    show(thread, 'public'),
+    share(thread, 'nobody'),
+    ask(`${COMMANDS_PATH}?thread=${thread.id}`),
+  ]);
+// What this tab was told about threads and what is in them.
+const heard = (tab: Awaited<ReturnType<typeof connect>>) =>
+  tab.events.filter((e) => ['thread', 'thread-gone', 'items', 'item', 'delta'].includes(e.type));
+
+test('a new thread is private: only whoever started it gets it, and to anyone else it does not exist', async () => {
+  const admin = await whoAmI();
+  const jordan = await teammate('jordan', 'Jordan');
+  const tab = await connect();
+  const theirs = await as(jordan.cookie, connect);
+  const thread = await startThread('make notes');
+  expect(thread).toMatchObject({ visibility: 'private', createdBy: admin.id, shared: [] });
+  await tab.open(thread.id);
+  await tab.status(thread.id, 'done');
+  expect(tab.screen(thread.id)).toEqual(TURN_1);
+
+  // The teammate heard nothing while it ran, gets nothing on a reload, and cannot ask for what is in it.
+  const late = await as(jordan.cookie, connect);
+  expect(late.hello.threads).toEqual([]);
+  for (const res of await as(jordan.cookie, () => reach(thread))) expect(res.status, res.url).toBe(404);
+  // Nor does opening it by its id get them what is in it, or what happens in it next.
+  void late.open(thread.id);
+  await say(thread, 'what is in them?');
+  await tab.status(thread.id, 'working');
+  await tab.status(thread.id, 'done');
+  expect(heard(late)).toEqual([]);
+  expect(heard(theirs)).toEqual([]);
+  expect(claude.said).toHaveLength(2);
+  expect((await connect()).hello.threads[0]).toMatchObject({ pinnedAt: null, visibility: 'private' });
+
+  // Being an admin changes nothing about that.
+  await post(`${USERS_PATH}/${jordan.id}/admin`, { admin: true });
+  expect((await as(jordan.cookie, connect)).hello.threads).toEqual([]);
+  expect((await as(jordan.cookie, () => say(thread, 'let me in'))).status).toBe(404);
+
+  // A new thread has to say who sees it.
+  for (const visibility of ['secret', undefined]) {
+    const odd = { channelId: thread.channelId, text: 'hi', path: shop, ...HAIKU, visibility };
+    expect((await post('/api/threads', odd)).status).toBe(400);
+  }
+});
+
+test('a public thread is for everyone, and when its owner makes it private it leaves the other screens at once', async () => {
+  const admin = await whoAmI();
+  const jordan = await teammate('jordan', 'Jordan');
+  const tab = await connect();
+  const theirs = await as(jordan.cookie, connect);
+  const thread = await startThread('make notes', PUBLIC);
+  expect(thread.visibility).toBe('public');
+  await theirs.open(thread.id);
+  await theirs.status(thread.id, 'done');
+  expect(theirs.screen(thread.id)).toEqual(TURN_1);
+  expect((await as(jordan.cookie, connect)).hello.threads).toMatchObject([{ id: thread.id }]);
+
+  // Only whoever started it decides who sees it.
+  const refused = await as(jordan.cookie, () => show(thread, 'private'));
+  expect([refused.status, await error(refused)]).toEqual([403, 'Only the person who started a thread can share it.']);
+
+  expect((await show(thread, 'private')).status).toBe(200);
+  expect(await theirs.until('thread-gone')).toEqual({ type: 'thread-gone', id: thread.id });
+  expect((await tab.until('thread', (e) => e.thread.visibility === 'private')).thread).toMatchObject({
+    id: thread.id,
+    createdBy: admin.id,
+  });
+  // The tab that had it open hears nothing of what happens in it from now on.
+  const before = heard(theirs).length;
+  await say(thread, 'what is in them?');
+  await tab.status(thread.id, 'working');
+  await tab.status(thread.id, 'done');
+  expect(heard(theirs)).toHaveLength(before);
+  for (const res of await as(jordan.cookie, () => reach(thread))) expect(res.status, res.url).toBe(404);
+  expect(claude.said).toHaveLength(2);
+});
+
+test('the owner shares a private thread with people and takes that back, and the list is kept while the thread is public', async () => {
+  const jordan = await teammate('jordan', 'Jordan');
+  const robin = await teammate('robin', 'Robin');
+  const tab = await connect();
+  const theirs = await as(jordan.cookie, connect);
+  const robins = await as(robin.cookie, connect);
+  const thread = await startThread('make notes');
+  await tab.status(thread.id, 'done');
+
+  // Shared with Jordan: it shows up on their screen, and they can do what the owner can, except share it.
+  expect((await share(thread, jordan.id)).status).toBe(200);
+  const got = (await theirs.until('thread')).thread;
+  expect(got).toMatchObject({ id: thread.id, visibility: 'private', shared: [jordan.id], status: 'done' });
+  expect((await tab.until('thread', (e) => e.thread.shared.length === 1)).thread).toEqual(got);
+  await as(jordan.cookie, async () => {
+    await theirs.open(thread.id);
+    expect(theirs.screen(thread.id)).toEqual(TURN_1);
+    expect((await say(thread, 'read both files')).status).toBe(200);
+    await theirs.status(thread.id, 'done');
+    expect((await post(`/api/threads/${thread.id}/pin`, { pinned: true })).status).toBe(200);
+    expect((await post(`/api/threads/${thread.id}/stop`)).status).toBe(200);
+    // Claude is not asking anything right now, but the answer got as far as Claude.
+    expect((await answer(thread, { toolId: 'nope', decision: 'approve' })).status).toBe(409);
+    expect((await show(thread, 'public')).status).toBe(403);
+    expect((await share(thread, robin.id)).status).toBe(403);
+    expect((await share(thread, jordan.id, false)).status).toBe(403);
+    expect((await connect()).hello.threads).toMatchObject([{ id: thread.id, people: [got.createdBy, jordan.id] }]);
+  });
+  expect(heard(robins)).toEqual([]);
+
+  // Public: Robin gets it too. Private again: Robin loses it, and Jordan is still on the list.
+  await show(thread, 'public');
+  expect((await robins.until('thread')).thread).toMatchObject({ visibility: 'public', shared: [jordan.id] });
+  await show(thread, 'private');
+  expect(await robins.until('thread-gone')).toMatchObject({ id: thread.id });
+  expect((await theirs.until('thread', (e) => e.thread.visibility === 'private')).thread.shared).toEqual([jordan.id]);
+  expect(theirs.events.some((e) => e.type === 'thread-gone')).toBe(false);
+
+  // Taken back: gone from Jordan's screen, and no longer theirs to write in.
+  await share(thread, jordan.id, false);
+  expect(await theirs.until('thread-gone')).toMatchObject({ id: thread.id });
+  expect((await as(jordan.cookie, () => say(thread, 'still here?'))).status).toBe(404);
+  expect((await as(jordan.cookie, connect)).hello.threads).toEqual([]);
+  expect((await connect()).hello.threads).toMatchObject([{ id: thread.id, shared: [] }]);
+
+  // Two changes made at the same moment both count, and adding someone twice lists them once.
+  await Promise.all([share(thread, jordan.id), share(thread, robin.id), share(thread, jordan.id)]);
+  expect((await connect()).hello.threads[0].shared.toSorted()).toEqual([jordan.id, robin.id].toSorted());
+  await Promise.all([share(thread, jordan.id, false), share(thread, robin.id, false)]);
+
+  // Only someone else with an account can be added.
+  await post(`${USERS_PATH}/${robin.id}/delete`);
+  for (const bad of ['nobody', robin.id, got.createdBy, undefined]) {
+    expect((await share(thread, bad)).status, String(bad)).toBe(400);
+  }
+  expect((await share(thread, jordan.id, 'yes')).status).toBe(400);
+  expect((await show(thread, 'secret')).status).toBe(400);
+  expect((await show(thread, undefined)).status).toBe(400);
+  expect((await post('/api/threads/nope/visibility', { visibility: 'public' })).status).toBe(404);
+  expect((await connect()).hello.threads).toMatchObject([{ visibility: 'private', shared: [] }]);
+});
+
+test('a private automation and the threads it starts are its maker’s alone, a public one is for everyone, and a change only counts for new runs', async () => {
+  const admin = await whoAmI();
+  const jordan = await teammate('jordan', 'Jordan');
+  const tab = await connect();
+  const theirs = await as(jordan.cookie, connect);
+  const made = await automate();
+  expect(made).toMatchObject({ visibility: 'private', createdBy: admin.id });
+  const run = async () => (await (await post(`${AUTOMATIONS_PATH}/${made.id}/run`)).json()) as Thread;
+  const first = await run();
+  expect(first.visibility).toBe('private');
+  await tab.status(first.id, 'done');
+
+  // To the teammate there is no automation and no thread.
+  await as(jordan.cookie, async () => {
+    expect((await connect()).hello).toMatchObject({ automations: [], threads: [] });
+    for (const path of [`/${made.id}`, `/${made.id}/run`, `/${made.id}/delete`])
+      expect((await post(AUTOMATIONS_PATH + path, made)).status, path).toBe(404);
+  });
+  expect(theirs.events.filter((e) => e.type !== 'hello' && e.type !== 'channel')).toEqual([]);
+
+  // Made public: the automation shows up for everyone, and so do the threads it starts from now on.
+  const open = { ...made, visibility: 'public' };
+  expect(await (await change(made, open)).json()).toMatchObject({ visibility: 'public' });
+  expect((await theirs.until('automation')).automation).toMatchObject({ id: made.id, visibility: 'public' });
+  const second = await as(jordan.cookie, run);
+  expect(second).toMatchObject({ visibility: 'public', createdBy: admin.id, automationId: made.id });
+  await theirs.status(second.id, 'done');
+  expect((await as(jordan.cookie, connect)).hello.threads.map((t) => t.id)).toEqual([second.id]);
+
+  // A teammate can change a public automation, but not who sees it.
+  await as(jordan.cookie, async () => {
+    expect((await change(made, { ...open, text: 'write a short digest' })).status).toBe(200);
+    expect((await change(made, { ...open, visibility: 'private' })).status).toBe(403);
+    expect((await change(made, { ...open, visibility: 'secret' })).status).toBe(400);
+  });
+
+  // Private again: it leaves the teammate's screen. The thread from while it was public stays theirs to see.
+  await change(made, { ...open, visibility: 'private' });
+  expect(await theirs.until('automation-gone')).toMatchObject({ id: made.id });
+  const late = (await as(jordan.cookie, connect)).hello;
+  expect(late.automations).toEqual([]);
+  expect(late.threads.map((t) => t.id)).toEqual([second.id]);
+  expect((await remove(made)).status).toBe(200);
+  await tab.until('automation-gone');
+  expect(theirs.events.filter((e) => e.type === 'automation-gone')).toHaveLength(1);
+});
+
+test('a private automation that runs when its time comes is heard of by its maker alone', async () => {
+  const at = stopClock();
+  await serve(TWO_TURNS);
+  const jordan = await teammate('jordan', 'Jordan');
+  const tab = await connect();
+  const theirs = await as(jordan.cookie, connect);
+  const digest = await as(jordan.cookie, () => automate(at(1)));
+
+  aMinuteLater();
+  const { thread } = await theirs.until('thread');
+  expect(thread).toMatchObject({ automationId: digest.id, visibility: 'private', createdBy: jordan.id });
+  // Its maker is told when it runs next.
+  expect((await theirs.until('automation', (e) => e.automation.nextAt !== digest.nextAt)).automation.id).toBe(
+    digest.id,
+  );
+  await theirs.status(thread.id, 'done');
+  expect(tab.events.filter((e) => e.type === 'automation')).toEqual([]);
+  expect(heard(tab)).toEqual([]);
+});
+
+test('a deleted account’s private threads stay hidden, and its private automations stop running', async () => {
+  const jordan = await teammate('jordan', 'Jordan');
+  const robin = await teammate('robin', 'Robin');
+  const tab = await connect();
+  const made = await as(jordan.cookie, async () => {
+    const theirs = await connect();
+    const thread = await startThread('make notes');
+    await theirs.status(thread.id, 'done');
+    await automate();
+    await share(await startThread('for robin'), robin.id);
+    const open = await automate({ visibility: 'public', text: 'for everyone' });
+    return { thread, open };
+  });
+  await post(`${USERS_PATH}/${jordan.id}/delete`);
+
+  const late = (await connect()).hello;
+  expect(late.threads).toEqual([]);
+  expect(late.automations).toMatchObject([{ id: made.open.id, on: true }]);
+  expect((await say(made.thread, 'whose is this?')).status).toBe(404);
+  // What they shared before stays with whoever it was shared with.
+  expect((await as(robin.cookie, connect)).hello.threads).toMatchObject([{ title: 'for robin', shared: [robin.id] }]);
+  expect(heard(tab)).toEqual([]);
+  const kept = db.select().from(automations).all();
+  expect(kept.map((row) => [row.text, row.on])).toEqual([
+    ['write a digest', false],
+    ['for everyone', true],
+  ]);
 });
