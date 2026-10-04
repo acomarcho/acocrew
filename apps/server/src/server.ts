@@ -13,20 +13,20 @@ import {
   type Answer,
   type ClientEvent,
   type NewMessage,
+  type Places,
 } from '@acocrew/shared';
 import { serve, upgradeWebSocket } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
-import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import { promisify } from 'node:util';
 import { WebSocketServer } from 'ws';
 import { channelCols, listChannels, listThreads, loadItems, threadCols, type Db } from './db.ts';
 import { folderInside, isRepo, listFolders } from './folders.ts';
+import { addWorktree, listPlaces } from './git.ts';
 import { createHub } from './hub.ts';
 import { openImages, type Images } from './images.ts';
 import { createRunner, type QueryFn } from './runner.ts';
@@ -38,8 +38,6 @@ import { firstLine } from './title.ts';
 // `worktrees` is the folder where threads get their own working copy of a repository.
 // `web` is the folder with the built web app. Without it the server only answers `/api` and `/ws`.
 export type Deps = { db: Db; query: QueryFn; home: string; images: string; worktrees: string; web?: string };
-
-const run = promisify(execFile);
 
 // The parts of a message, or null if any of them is not usable.
 function readMessage(body: Partial<NewMessage>, store: Images): NewMessage | null {
@@ -94,6 +92,17 @@ export function createApp({ db, query, home, images, worktrees, web }: Deps) {
     return c.json(channel);
   });
 
+  // What the start screen offers: branches a new worktree can start from, and worktrees that exist.
+  app.get('/api/channels/:id/places', async (c) => {
+    const channel = db
+      .select()
+      .from(channels)
+      .where(eq(channels.id, c.req.param('id')))
+      .get();
+    if (!channel) return c.json({ error: 'Channel not found.' }, 404);
+    return c.json(await listPlaces(channel.path));
+  });
+
   app.post('/api/threads', async (c) => {
     const body = await c.req.json().catch(() => ({}));
     const message = readMessage(body, store);
@@ -102,25 +111,28 @@ export function createApp({ db, query, home, images, worktrees, web }: Deps) {
       .from(channels)
       .where(eq(channels.id, String(body.channelId)))
       .get();
-    if (!message || !channel || typeof body.worktree !== 'boolean')
-      return c.json({ error: 'Needs a channel, a message and a full set of settings.' }, 400);
+    if (!message || !channel) return c.json({ error: 'Needs a channel, a message and a full set of settings.' }, 400);
     const id = randomUUID();
     const short = id.slice(0, 8);
-    // A worktree is a second working copy of the repository. It starts on a new branch, from the commit the
-    // repository is on right now.
-    const path = body.worktree ? join(worktrees, channel.name, short) : null;
-    if (path) {
-      try {
-        await run('git', ['-C', channel.path, 'worktree', 'add', '-b', `acocrew/${short}`, path]);
-      } catch (err) {
-        return c.json({ error: `Could not make a worktree: ${(err as { stderr?: string }).stderr || err}` }, 500);
-      }
+    // The thread works in a folder that exists already, or in a new worktree: a second working copy of the
+    // repository, on a new branch. Only what git itself lists can be picked.
+    let place: Places['worktrees'][number];
+    try {
+      const places = await listPlaces(channel.path);
+      const existing = places.worktrees.find((worktree) => worktree.path === body.path);
+      const from = places.branches.find((branch) => branch.name === body.from);
+      if (!existing && !from) return c.json({ error: 'Pick a branch to start from, or a worktree that exists.' }, 400);
+      place = existing ?? { path: join(worktrees, channel.name, short), branch: `acocrew/${short}` };
+      if (!existing) await addWorktree(channel.path, place.path, place.branch!, from!);
+    } catch (err) {
+      return c.json({ error: `Could not make a worktree: ${(err as { stderr?: string }).stderr || err}` }, 500);
     }
     const now = Date.now();
     const row = {
       id,
       channelId: channel.id,
-      path,
+      path: place.path === channel.path ? null : place.path,
+      branch: place.branch,
       title: firstLine(message.text) || 'Image',
       model: message.model,
       effort: message.effort,
