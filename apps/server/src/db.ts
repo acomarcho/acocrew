@@ -40,6 +40,7 @@ export const threadCols = {
   people: threads.people,
   automationId: threads.automationId,
   updatedAt: threads.updatedAt,
+  pinnedAt: threads.pinnedAt,
 };
 
 export const automationCols = {

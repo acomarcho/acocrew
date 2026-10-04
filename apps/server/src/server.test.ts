@@ -1195,6 +1195,38 @@ test('a thread on screen is seen by that person, on all their devices and after 
   expect((await see('yesterday')).status).toBe(400);
 });
 
+test('a thread is pinned and unpinned for everyone, stays pinned through a reload and a reply, and is not news', async () => {
+  const jordan = await teammate('jordan', 'Jordan');
+  const tab = await connect();
+  const theirs = await as(jordan.cookie, connect);
+  const thread = await startThread('make notes');
+  const done = await tab.status(thread.id, 'done');
+  expect(done.pinnedAt).toBeNull();
+
+  const pin = (pinned: unknown, id = thread.id) => post(`/api/threads/${id}/pin`, { pinned });
+  const told = async (to: typeof tab, pinned: boolean) =>
+    (await to.until('thread', (e) => (e.thread.pinnedAt !== null) === pinned)).thread;
+  // A teammate pins it. Everyone is told, and nothing else about the thread changes: it is not new to anyone.
+  expect((await as(jordan.cookie, () => pin(true))).status).toBe(200);
+  const pinned = await told(tab, true);
+  expect(pinned).toEqual({ ...done, pinnedAt: expect.any(Number) });
+  expect(await told(theirs, true)).toEqual(pinned);
+  expect((await connect()).hello.threads).toEqual([pinned]);
+
+  // What Claude does in it afterwards leaves it pinned.
+  await say(thread, 'what is in them?');
+  await tab.status(thread.id, 'working');
+  expect((await tab.status(thread.id, 'done')).pinnedAt).toBe(pinned.pinnedAt);
+
+  expect((await pin(false)).status).toBe(200);
+  expect((await told(theirs, false)).pinnedAt).toBeNull();
+  expect((await connect()).hello.threads[0].pinnedAt).toBeNull();
+
+  expect((await pin(true, 'nope')).status).toBe(400);
+  expect((await pin('yes')).status).toBe(400);
+  expect((await pin(undefined)).status).toBe(400);
+});
+
 test('a Claude process with nothing to do for ten minutes is closed, and the next message resumes', async () => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
   const tab = await connect();

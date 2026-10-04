@@ -64,6 +64,13 @@
       "when": 1791101450644,
       "tag": "0008_smart_clea",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1791111523897,
+      "tag": "0009_small_bullseye",
+      "breakpoints": true
     }
   ]
 }

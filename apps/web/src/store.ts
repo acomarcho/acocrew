@@ -118,6 +118,10 @@ export function needsYou(thread: Thread, seen: Seen, me: string) {
   return stopped && thread.updatedAt > (seen[thread.id] ?? 0);
 }
 
+// The pinned ones of these threads. The one pinned last comes first.
+export const pinnedOf = (threads: Thread[]) =>
+  threads.filter((thread) => thread.pinnedAt !== null).sort((a, b) => b.pinnedAt! - a.pinnedAt!);
+
 const JSON_BODY = { 'content-type': 'application/json' };
 
 export async function request<T>(path: string, body?: unknown): Promise<T> {
@@ -235,6 +239,8 @@ export function useAppState(login: Me, recheck: () => Promise<unknown>) {
   const sendMessage = (threadId: string, body: NewMessage) => request(`/api/threads/${threadId}/messages`, body);
   const answer = (threadId: string, body: Answer) => request(`/api/threads/${threadId}/answers`, body);
   const stopThread = (threadId: string) => request(`/api/threads/${threadId}/stop`, {});
+  // Pins the thread for everyone, or unpins it. The list changes when the server tells everyone.
+  const pinThread = (threadId: string, pinned: boolean) => request(`/api/threads/${threadId}/pin`, { pinned });
 
   const rename = (name: string) => request(ME_PATH, { name });
   const logOut = () => request(LOGOUT_PATH, {}).then(recheck);
@@ -269,6 +275,7 @@ export function useAppState(login: Me, recheck: () => Promise<unknown>) {
     sendMessage,
     answer,
     stopThread,
+    pinThread,
   };
 }
 

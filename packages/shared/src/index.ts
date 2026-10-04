@@ -33,6 +33,8 @@ export type Thread = {
   // The branch its folder was on when Claude last finished a turn there. Null when it was on no branch.
   branch: string | null;
   updatedAt: number;
+  // When it was pinned to the top of its repository's thread list, for everyone. Null when it is not pinned.
+  pinnedAt: number | null;
   // Everyone who sent a message in the thread, as user ids. Whoever started it comes first.
   people: string[];
   // The automation that started this thread. Null when a person did, or when that automation is deleted.
