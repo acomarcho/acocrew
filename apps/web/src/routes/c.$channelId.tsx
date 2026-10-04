@@ -188,7 +188,7 @@ function Inbox() {
             <div className="truncate font-bold">#{channel.name}</div>
             <div className="truncate font-mono text-xs text-muted-foreground">{channel.path}</div>
           </div>
-          <NewThreadButton channelId={channel.id} />
+          <NewThreadButton channelId={channel.id} iconOnly />
         </header>
         {/* Two filters side by side: whose threads, then in which state. */}
         <div className="flex items-center gap-1 border-b border-border px-1.5 pb-1.5">
