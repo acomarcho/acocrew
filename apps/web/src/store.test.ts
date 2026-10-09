@@ -1,6 +1,17 @@
 import type { Automation, Channel, Item, ServerEvent, Status, Thread } from '@acocrew/shared';
 import { expect, test, vi } from 'vite-plus/test';
-import { connect, needsYou, openThread, orderChannels, pinnedOf, reduce, START, useApp } from './store';
+import {
+  connect,
+  githubChoices,
+  needsYou,
+  openThread,
+  orderChannels,
+  pinnedOf,
+  reduce,
+  START,
+  switchGithub,
+  useApp,
+} from './store';
 
 const repo = (name: string): Channel => ({ id: name, name, path: `/home/me/${name}` });
 const names = (state: typeof START) => state.channels.map((channel) => channel.name);
@@ -177,4 +188,55 @@ test('the GitHub accounts of the machine are not known until the server says, an
     { host: 'github.com', login: 'hubot', active: true },
   ];
   expect(reduce(START, { type: 'github', accounts }).github).toEqual(accounts);
+});
+
+test('a GitHub account is offered to switch to only where its host has more than one logged in', () => {
+  const account = (host: string, login: string, active = false) => ({ host, login, active });
+  const mona = account('github.com', 'monalisa', true);
+  const hubot = account('github.com', 'hubot');
+  const work = account('github.acme.example', 'mona-acme', true);
+  const bot = account('github.acme.example', 'deploy-bot');
+  expect(githubChoices([mona, hubot])).toEqual([[mona, hubot]]);
+  // Nothing to pick: the server has not said, the machine has no gh, nobody is logged in, or just one is.
+  for (const none of [null, [], [mona]]) expect(githubChoices(none)).toEqual([]);
+  // A company's own GitHub next to github.com: each host is a choice of its own, and one with a single
+  // account is none.
+  expect(githubChoices([mona, work, hubot])).toEqual([[mona, hubot]]);
+  expect(githubChoices([mona, hubot, work, bot])).toEqual([
+    [mona, hubot],
+    [work, bot],
+  ]);
+});
+
+test('a switch of GitHub account shows right away, and is taken back if the server turns it down', async () => {
+  const mona = { host: 'github.com', login: 'monalisa', active: true };
+  const hubot = { host: 'github.com', login: 'hubot', active: false };
+  const work = { host: 'github.acme.example', login: 'mona-acme', active: true };
+  const before = [mona, hubot, work];
+  // Only the picked account's host changes.
+  const after = [{ ...mona, active: false }, { ...hubot, active: true }, work];
+  const shown = () => useApp.getState().github;
+  // The server answers when the test lets it: with how the accounts are now, or with why not.
+  type Reply = { ok: boolean; body: unknown };
+  let answer!: (reply: Reply) => void;
+  const server = async () => {
+    const { ok, body } = await new Promise<Reply>((resolve) => (answer = resolve));
+    return { ok, status: ok ? 200 : 400, json: async () => body };
+  };
+  vi.stubGlobal('fetch', vi.fn(server));
+
+  useApp.setState({ github: before });
+  let done = switchGithub(hubot);
+  expect(shown()).toEqual(after);
+  answer({ ok: true, body: after });
+  await done;
+  expect(shown()).toEqual(after);
+
+  useApp.setState({ github: before });
+  done = switchGithub(hubot);
+  expect(shown()).toEqual(after);
+  answer({ ok: false, body: { error: 'not logged in to github.com account hubot' } });
+  await expect(done).rejects.toThrow('not logged in to github.com account hubot');
+  expect(shown()).toEqual(before);
+  vi.unstubAllGlobals();
 });

@@ -40,8 +40,8 @@ type State = {
   people: Person[];
   // What the person logged in has seen of each thread.
   seen: Seen;
-  // The GitHub accounts logged in on the server machine. Null until an admin's Settings screen has asked, and
-  // on a machine without the GitHub CLI.
+  // The GitHub accounts logged in on the server machine. Null until an admin's screen has asked, and on a
+  // machine without the GitHub CLI.
   github: GithubAccount[] | null;
   // The thread on screen. `items` is null until the server has sent what is in it.
   openId: string | null;
@@ -287,8 +287,25 @@ export const resetPassword = (id: string) => request<Temporary>(`${USERS_PATH}/$
 export const setAdmin = (id: string, admin: boolean) => request(`${USERS_PATH}/${id}/admin`, { admin });
 export const deleteUser = (id: string) => request(`${USERS_PATH}/${id}/delete`, {});
 
+// Where there is a GitHub account to switch to: the accounts of each host that has more than one logged in.
+export function githubChoices(accounts: GithubAccount[] | null) {
+  const all = accounts ?? [];
+  const hosts = [...new Set(all.map((account) => account.host))];
+  return hosts.map((host) => all.filter((account) => account.host === host)).filter((list) => list.length > 1);
+}
+
 // Asks which GitHub accounts the machine is logged in to. Only an admin is told.
 export const loadGithub = async () => useApp.setState({ github: await request<GithubAccount[] | null>(GITHUB_PATH) });
-// Makes this GitHub account the active one, for the whole machine. Gives back how the accounts are now.
-export const switchGithub = async ({ host, login }: GithubAccount) =>
-  dispatch({ type: 'github', accounts: await request<GithubAccount[]>(GITHUB_PATH, { host, login }) });
+// Makes this GitHub account the active one, for the whole machine. Shows it right away, as the server takes a
+// moment. If the server turns it down, the accounts are shown as they were and the caller gets the reason.
+export const switchGithub = async ({ host, login }: GithubAccount) => {
+  const before = useApp.getState().github ?? [];
+  const picked = (account: GithubAccount) =>
+    account.host === host ? { ...account, active: account.login === login } : account;
+  dispatch({ type: 'github', accounts: before.map(picked) });
+  const accounts = await request<GithubAccount[]>(GITHUB_PATH, { host, login }).catch((err) => {
+    dispatch({ type: 'github', accounts: before });
+    throw err;
+  });
+  dispatch({ type: 'github', accounts });
+};
