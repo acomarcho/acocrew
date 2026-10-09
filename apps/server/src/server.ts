@@ -5,6 +5,7 @@ import {
   CONTEXTS,
   DECISIONS,
   EFFORTS,
+  GITHUB_PATH,
   HEALTH_PATH,
   IMAGE_MAX_BYTES,
   IMAGE_TYPES,
@@ -60,6 +61,7 @@ import {
 } from './db.ts';
 import { folderInside, isRepo, listFolders } from './folders.ts';
 import { addWorktree, listPlaces } from './git.ts';
+import { listAccounts, switchAccount } from './github.ts';
 import { createHub } from './hub.ts';
 import { openImages, type Images } from './images.ts';
 import { createRunner, type QueryFn } from './runner.ts';
@@ -71,6 +73,7 @@ import { firstLine } from './title.ts';
 // `worktrees` is the folder where threads get their own working copy of a repository.
 // `web` is the folder with the built web app. Without it the server only answers `/api` and `/ws`.
 // `secret` signs the login cookies. `https` marks them as for https only.
+// `gh` is the GitHub CLI: the program that is asked which GitHub accounts the machine is logged in to.
 export type Deps = {
   db: Db;
   query: QueryFn;
@@ -80,6 +83,7 @@ export type Deps = {
   secret: string;
   https?: boolean;
   web?: string;
+  gh?: string;
 };
 
 const NAME_MAX = 50;
@@ -114,7 +118,7 @@ function readMessage(body: Partial<NewMessage>, store: Images): NewMessage | nul
 const readVisibility = (value: unknown) =>
   VISIBILITY.some((option) => option.id === value) ? (value as Visibility) : null;
 
-export async function createApp({ db, query, home, images, worktrees, secret, https = false, web }: Deps) {
+export async function createApp({ db, query, home, images, worktrees, secret, https = false, web, gh = 'gh' }: Deps) {
   const auth = createAuth(db, secret, https);
   await seedAdmin(auth, db);
   const hub = createHub();
@@ -202,8 +206,8 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
     return c.json({ ok: true });
   });
 
-  // Accounts are made and changed by admins only.
-  for (const path of [USERS_PATH, `${USERS_PATH}/*`]) {
+  // Accounts are made and changed by admins only. So is which GitHub account the machine works as.
+  for (const path of [USERS_PATH, `${USERS_PATH}/*`, GITHUB_PATH]) {
     app.use(path, async (c, next) => {
       if (!c.get('user').admin) return c.json({ error: 'Only an admin can do this.' }, 403);
       await next();
@@ -265,6 +269,34 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
     hub.kick(person.id);
     changed(person.id);
     return c.json({ ok: true });
+  });
+
+  // The GitHub accounts logged in on the machine. Null when it has no GitHub CLI, so there is nothing to show.
+  app.get(GITHUB_PATH, (c) =>
+    listAccounts(gh).then(
+      (accounts) => c.json(accounts),
+      (err) => refuse(c, err),
+    ),
+  );
+
+  // Switches which GitHub account is the active one. That goes for the whole machine: every thread, and
+  // everyone. Only an account gh itself lists can be picked. The other admins are told.
+  app.post(GITHUB_PATH, async (c) => {
+    const { host, login } = await c.req.json().catch(() => ({}));
+    try {
+      const before = (await listAccounts(gh)) ?? [];
+      const picked = before.find((account) => account.host === host && account.login === login);
+      if (!picked) return refuse(c, 'That GitHub account is not logged in on this machine.');
+      await switchAccount(gh, picked);
+      // A host has one active account, so the rest of the list is as it was.
+      const accounts = before.map((account) =>
+        account.host === host ? { ...account, active: account === picked } : account,
+      );
+      hub.toSome({ type: 'github', accounts }, (id) => findPerson(db, id)!.admin);
+      return c.json(accounts);
+    } catch (err) {
+      return refuse(c, err);
+    }
   });
 
   app.get('/api/folders', (c) => {

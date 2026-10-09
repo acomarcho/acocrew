@@ -1,10 +1,21 @@
-// Settings: your own name and password, and for admins the accounts of the team.
+// Settings: your own name and password, and for admins the accounts of the team and the machine's GitHub account.
 import type { Person, Temporary } from '@acocrew/shared';
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { Check, ChevronLeft, Copy } from 'lucide-react';
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Field, Form, PasswordForm } from '../login';
-import { addUser, deleteUser, logOut, rename, resetPassword, setAdmin, useApp, useMe } from '../store';
+import {
+  addUser,
+  deleteUser,
+  loadGithub,
+  logOut,
+  rename,
+  resetPassword,
+  setAdmin,
+  switchGithub,
+  useApp,
+  useMe,
+} from '../store';
 import { Avatar, Popup } from '../ui';
 
 export const Route = createFileRoute('/settings')({ component: Settings });
@@ -225,6 +236,64 @@ function Users() {
   );
 }
 
+// Which GitHub account the server machine works as. Not there on a machine without the GitHub CLI.
+function Github() {
+  const accounts = useApp((state) => state.github);
+  const [error, setError] = useState('');
+  // A switch was asked for, and the server has not answered yet.
+  const [busy, setBusy] = useState(false);
+  useEffect(() => void loadGithub().catch((err) => setError(err.message)), []);
+  if (!accounts && !error) return null;
+  return (
+    <Section title="GitHub account">
+      <p className="text-sm text-muted-foreground">
+        What Claude does on GitHub, and what git pushes, is done as the active account. It is the same one for everyone
+        and every thread: switching changes it for the whole machine.
+      </p>
+      {accounts?.length === 0 && (
+        <p className="mt-3 text-sm">
+          No GitHub account is logged in on this machine. Run <code className="font-mono">gh auth login</code> on it to
+          add one.
+        </p>
+      )}
+      <ul className="mt-1">
+        {accounts?.map((account) => (
+          <li
+            key={`${account.host}/${account.login}`}
+            className="flex items-center gap-2 border-b border-border py-2.5 last:border-b-0"
+          >
+            <span className="min-w-0 flex-1 truncate">
+              <span className="font-medium">{account.login}</span>{' '}
+              <span className="text-sm text-muted-foreground">{account.host}</span>
+            </span>
+            {account.active ? (
+              <span className="rounded bg-primary/15 px-1.5 text-[11px] font-medium text-primary">Active</span>
+            ) : (
+              <button
+                type="button"
+                disabled={busy}
+                className={`${ACTION} disabled:opacity-50`}
+                onClick={() => {
+                  setBusy(true);
+                  void switchGithub(account)
+                    .then(
+                      () => setError(''),
+                      (err) => setError(err.message),
+                    )
+                    .finally(() => setBusy(false));
+                }}
+              >
+                Switch
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+      {error && <p className="mt-1 text-sm text-rose-500">{error}</p>}
+    </Section>
+  );
+}
+
 function Settings() {
   const me = useMe();
   return (
@@ -245,6 +314,7 @@ function Settings() {
         </div>
         <Profile />
         <Password />
+        {me.admin && <Github />}
         {me.admin && <Users />}
       </div>
     </div>

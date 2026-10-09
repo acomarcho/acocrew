@@ -1,6 +1,6 @@
 # Technical decisions
 
-Last updated: 2026-10-04
+Last updated: 2026-10-09
 
 ## What we are building
 
@@ -343,6 +343,23 @@ What this does not do:
 - An attached image is not tied to a thread. Whoever is logged in and has its id (a long random one) can load it.
 
 Not built: read-only sharing, sharing an automation with named people, and handing a deleted account's threads to someone else. A private thread of a deleted account in which Claude is still busy is not stopped either: it runs until Claude is done.
+
+## Decision 12: The machine's GitHub account is switched in Settings
+
+Claude reaches GitHub through the GitHub CLI (`gh`) of the server machine, and git pushes through it too. `gh` can be logged in to several accounts, and one per host is the active one. Admins switch which one that is in Settings, under "GitHub account". Before, the only way was to ask Claude in a thread to run `gh auth switch`.
+
+Why this and not a terminal in the app: switching accounts was the one thing a terminal was wanted for. A terminal is a much bigger thing to build and to keep safe, and Decision 2 already says a raw terminal is the wrong screen for our users.
+
+How it works (`apps/server/src/github.ts` and two routes on `/api/github`):
+
+- **Listing.** The server runs `gh auth status --json hosts` and passes on three things per account: the host, the name, and whether it is the active one. Nothing else `gh` prints leaves the server.
+- **Switching.** The server runs `gh auth switch --hostname <host> --user <name>`, and only for an account that is in the list it just read. Then it tells every connected admin how the accounts are now, so an open Settings screen follows.
+- **It is machine-wide.** The switch changes the account for everyone and every thread at once, also for a thread where Claude is working right now. The section says so. That is why only admins see and use it.
+- **No `gh`, no section.** On a machine without the program the server answers "nothing", and Settings does not draw the section at all. With `gh` but nobody logged in, the section says how to log in on the machine.
+- **We ask `gh`, we do not read its files.** Where `gh` keeps accounts and tokens is its own business and can change. Its commands are what it promises to keep.
+- **Tests run a stand-in program.** `apps/server/src/fixtures/gh.js` answers the two commands the server uses, starting from what a real `gh` 2.93 printed.
+
+Not built: logging in to GitHub or out of it from the app (that is still `gh auth login` on the machine), a GitHub account per thread or per person, and anything for a `GH_TOKEN` set in `~/.acocrew/env` (`gh` then uses that token whatever is switched here).
 
 ## UI direction: the Inbox layout
 
