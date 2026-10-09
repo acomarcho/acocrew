@@ -169,3 +169,12 @@ test('a new order shows right away, and the old one comes back when the server t
   refuse();
   await vi.waitFor(() => expect(shown()).toEqual(['shop', 'blog']));
 });
+
+test('the GitHub accounts of the machine are not known until the server says, and follow a switch by anyone', () => {
+  expect(START.github).toBeNull();
+  const accounts = [
+    { host: 'github.com', login: 'monalisa', active: false },
+    { host: 'github.com', login: 'hubot', active: true },
+  ];
+  expect(reduce(START, { type: 'github', accounts }).github).toEqual(accounts);
+});

@@ -1,6 +1,7 @@
 import {
   AUTOMATIONS_PATH,
   COMMANDS_PATH,
+  GITHUB_PATH,
   HEALTH_PATH,
   LOGIN_PATH,
   LOGOUT_PATH,
@@ -12,6 +13,7 @@ import {
   type Channel,
   type Command,
   type FolderList,
+  type GithubAccount,
   type Item,
   type Me,
   type Person,
@@ -24,9 +26,10 @@ import {
 import type { PermissionResult, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { eq } from 'drizzle-orm';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterAll, afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from 'vite-plus/test';
 import { WebSocket } from 'ws';
 import { FIRST_ADMIN } from './auth.ts';
@@ -192,6 +195,15 @@ mkdirSync(join(home, '.secret'));
 symlinkSync('/etc', join(home, 'way-out'));
 const images = join(home, '.acocrew', 'attachments');
 const worktrees = join(home, '.acocrew', 'worktrees');
+// A stand-in for the GitHub CLI, run as a real program (see fixtures/gh.js). It keeps who is logged in in
+// `hosts.json` in this folder. The real one is told where its files are the same way, so no test can touch
+// the GitHub logins of the machine it runs on.
+const GH = fileURLToPath(new URL('./fixtures/gh.js', import.meta.url));
+process.env.GH_CONFIG_DIR = join(home, '.gh');
+mkdirSync(process.env.GH_CONFIG_DIR);
+const githubLogins = join(process.env.GH_CONFIG_DIR, 'hosts.json');
+// What a real `gh auth status --json hosts` printed with two accounts logged in (names changed).
+const TWO_ACCOUNTS = fileURLToPath(new URL('./fixtures/gh-status.json', import.meta.url));
 const git = (dir: string, ...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim();
 const me = ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', '-c', 'commit.gpgsign=false'];
 const commit = (dir: string, file: string, words: string) => {
@@ -221,12 +233,14 @@ let db: Db;
 let claude: ReturnType<typeof fakeClaude>;
 let server: Awaited<ReturnType<typeof startServer>>;
 let sockets: WebSocket[];
+// The program the server runs as the GitHub CLI.
+let gh = GH;
 
 // Starts (or restarts) the server with a Claude that plays `script`.
 async function serve(script: Line[], naming?: Line[]) {
   server?.close();
   claude = fakeClaude(script, naming);
-  server = await startServer(0, { db, query: claude.query, home, images, worktrees, secret: 'test' }); // 0 = any free port
+  server = await startServer(0, { db, query: claude.query, home, images, worktrees, secret: 'test', gh }); // 0 = any free port
 }
 
 // The login cookie of whoever the test is acting as. Every request and every tab sends it, like a browser.
@@ -252,6 +266,8 @@ beforeEach(async () => {
   db = openDb(fresh);
   sockets = [];
   cookie = adminCookie;
+  gh = GH;
+  copyFileSync(TWO_ACCOUNTS, githubLogins);
   await serve(TWO_TURNS);
 });
 afterEach(() => {
@@ -1429,6 +1445,11 @@ test('bad requests are turned away', async () => {
   expect(db.select().from(threads).where(eq(threads.channelId, thread.channelId)).all()).toHaveLength(1);
 });
 
+// The two GitHub accounts logged in on the machine. The first one is the active one.
+const MONA = { host: 'github.com', login: 'monalisa' };
+const HUBOT = { host: 'github.com', login: 'hubot' };
+const githubAccounts = async (res: Response) => (await res.json()) as GithubAccount[] | null;
+
 // Runs `what` as the person this cookie belongs to.
 async function as<T>(theirs: string, what: () => Promise<T>) {
   const mine = cookie;
@@ -1473,6 +1494,8 @@ test('nothing is given out without a login', async () => {
       post(`/api/threads/${thread.id}/messages`, { text: 'hi', ...HAIKU }),
       post(`/api/threads/${thread.id}/stop`),
       post(USERS_PATH, { username: 'sneaky', name: 'Sneaky', password: 'sneaky password' }),
+      ask(GITHUB_PATH),
+      post(GITHUB_PATH, HUBOT),
       post('/api/auth/sign-up/email', { email: 'a@b.co', name: 'Sneaky', password: 'sneaky password' }),
     ]);
 
@@ -2224,4 +2247,90 @@ test('a deleted account’s private threads stay hidden, and its private automat
     ['write a digest', false],
     ['for everyone', true],
   ]);
+});
+
+test('an admin sees the GitHub accounts of the machine and switches between them, and the other admins are told', async () => {
+  const jordan = await teammate('jordan', 'Jordan');
+  const robin = await teammate('robin', 'Robin');
+  await post(`${USERS_PATH}/${robin.id}/admin`, { admin: true });
+  const theirs = await as(robin.cookie, connect);
+  const outsider = await as(jordan.cookie, connect);
+  // Nothing of what gh prints besides the host, the name and which one is active is passed on.
+  expect(await githubAccounts(await ask(GITHUB_PATH))).toEqual([
+    { ...MONA, active: true },
+    { ...HUBOT, active: false },
+  ]);
+
+  const switched = [
+    { ...MONA, active: false },
+    { ...HUBOT, active: true },
+  ];
+  expect(await githubAccounts(await post(GITHUB_PATH, HUBOT))).toEqual(switched);
+  expect((await theirs.until('github')).accounts).toEqual(switched);
+  // It is the machine's account that changed, so it is still that one when asked again, by any admin.
+  expect(await as(robin.cookie, async () => githubAccounts(await ask(GITHUB_PATH)))).toEqual(switched);
+
+  // Someone who is not an admin can neither look nor switch, and is not told.
+  await as(jordan.cookie, async () => {
+    expect((await ask(GITHUB_PATH)).status).toBe(403);
+    expect((await post(GITHUB_PATH, MONA)).status).toBe(403);
+  });
+  await post(ME_PATH, { name: 'Boss' });
+  await outsider.until('person', (e) => e.person.name === 'Boss');
+  expect(outsider.events.filter((e) => e.type === 'github')).toEqual([]);
+  expect(await githubAccounts(await ask(GITHUB_PATH))).toEqual(switched);
+});
+
+test('only a GitHub account that is logged in on the machine can be switched to', async () => {
+  const bad = [
+    { host: 'github.com', login: 'nobody' },
+    { host: 'evil.example', login: 'monalisa' },
+    { host: '--help', login: 'monalisa' },
+    { login: 'hubot' },
+    {},
+  ];
+  for (const body of bad) expect((await post(GITHUB_PATH, body)).status, JSON.stringify(body)).toBe(400);
+  expect(await githubAccounts(await ask(GITHUB_PATH))).toEqual([
+    { ...MONA, active: true },
+    { ...HUBOT, active: false },
+  ]);
+});
+
+test('each GitHub host has an active account of its own', async () => {
+  // A company's own GitHub next to github.com, the way gh lists a second host.
+  const status = JSON.parse(readFileSync(TWO_ACCOUNTS, 'utf8'));
+  const work = { host: 'github.acme.example', login: 'mona-acme' };
+  const bot = { host: 'github.acme.example', login: 'deploy-bot' };
+  status.hosts[work.host] = [
+    { ...status.hosts['github.com'][0], ...work },
+    { ...status.hosts['github.com'][1], ...bot },
+  ];
+  writeFileSync(githubLogins, JSON.stringify(status));
+
+  expect(await githubAccounts(await post(GITHUB_PATH, bot))).toEqual([
+    { ...MONA, active: true },
+    { ...HUBOT, active: false },
+    { ...work, active: false },
+    { ...bot, active: true },
+  ]);
+});
+
+test('with nobody logged in to GitHub the list is empty, and on a machine without gh there is no list', async () => {
+  // What a real gh prints when nobody is logged in.
+  writeFileSync(githubLogins, '{"hosts":{}}');
+  expect(await githubAccounts(await ask(GITHUB_PATH))).toEqual([]);
+
+  gh = join(home, 'no-gh-here');
+  await serve(TWO_TURNS);
+  const res = await ask(GITHUB_PATH);
+  expect([res.status, await githubAccounts(res)]).toEqual([200, null]);
+  expect((await post(GITHUB_PATH, MONA)).status).toBe(400);
+});
+
+test('a gh that cannot say who is logged in gets the admin the reason, not a broken page', async () => {
+  // The program stops with an error, the way a gh too old to know `--json` does.
+  writeFileSync(githubLogins, 'not json');
+  const res = await ask(GITHUB_PATH);
+  expect(res.status).toBe(400);
+  expect(await error(res)).toBeTruthy();
 });

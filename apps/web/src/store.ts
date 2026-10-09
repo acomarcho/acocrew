@@ -1,5 +1,6 @@
 import {
   AUTOMATIONS_PATH,
+  GITHUB_PATH,
   LOGOUT_PATH,
   ME_PATH,
   USERS_PATH,
@@ -9,6 +10,7 @@ import {
   type Channel,
   type ClientEvent,
   type FolderList,
+  type GithubAccount,
   type Item,
   type Me,
   type NewAutomation,
@@ -38,6 +40,9 @@ type State = {
   people: Person[];
   // What the person logged in has seen of each thread.
   seen: Seen;
+  // The GitHub accounts logged in on the server machine. Null until an admin's Settings screen has asked, and
+  // on a machine without the GitHub CLI.
+  github: GithubAccount[] | null;
   // The thread on screen. `items` is null until the server has sent what is in it.
   openId: string | null;
   items: Item[] | null;
@@ -54,6 +59,7 @@ export const START: State = {
   utcOffset: 0,
   people: [],
   seen: {},
+  github: null,
   openId: null,
   items: null,
 };
@@ -80,6 +86,8 @@ export function reduce(state: State, action: Action): State {
     }
     case 'person':
       return { ...state, people: upsert(state.people, action.person) };
+    case 'github':
+      return { ...state, github: action.accounts };
     case 'thread': {
       // The same row can arrive twice (as the answer to a request and over the socket). The newest wins.
       const known = state.threads.find((t) => t.id === action.thread.id);
@@ -278,3 +286,9 @@ export const addUser = (body: NewUser) => request<Person & Temporary>(USERS_PATH
 export const resetPassword = (id: string) => request<Temporary>(`${USERS_PATH}/${id}/password`, {});
 export const setAdmin = (id: string, admin: boolean) => request(`${USERS_PATH}/${id}/admin`, { admin });
 export const deleteUser = (id: string) => request(`${USERS_PATH}/${id}/delete`, {});
+
+// Asks which GitHub accounts the machine is logged in to. Only an admin is told.
+export const loadGithub = async () => useApp.setState({ github: await request<GithubAccount[] | null>(GITHUB_PATH) });
+// Makes this GitHub account the active one, for the whole machine. Gives back how the accounts are now.
+export const switchGithub = async ({ host, login }: GithubAccount) =>
+  dispatch({ type: 'github', accounts: await request<GithubAccount[]>(GITHUB_PATH, { host, login }) });

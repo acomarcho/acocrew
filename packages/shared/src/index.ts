@@ -128,6 +128,11 @@ export const ACCESS = [
   { id: 'ask', name: 'Ask first', hint: 'Asks before changing things' },
 ];
 
+// A GitHub account that is logged in on the server machine, with the GitHub CLI (`gh`). `host` is which GitHub
+// it is an account of (`github.com`, or a company's own). One account per host is the `active` one: what Claude
+// does on GitHub in any thread, and what git pushes, is done as that account.
+export type GithubAccount = { host: string; login: string; active: boolean };
+
 // When an automation runs: at `time` ('HH:MM', 24 hours) on `days` of the week (0 is Monday, 6 is Sunday).
 // The time is the server machine's own clock. The first WebSocket message says which clock that is (`utcOffset`).
 export type Schedule = { time: string; days: number[] };
@@ -163,6 +168,8 @@ export type ServerEvent =
   // The ids of all channels, in the order the sidebar shows them.
   | { type: 'order'; ids: string[] }
   | { type: 'person'; person: Person }
+  // Every GitHub account on the machine, after an admin switched which one is active. Sent to admins only.
+  | { type: 'github'; accounts: GithubAccount[] }
   | { type: 'thread'; thread: Thread }
   // The person may no longer see this thread.
   | { type: 'thread-gone'; id: string }
@@ -236,6 +243,7 @@ export const COMMANDS_PATH = '/api/commands';
 export const ME_PATH = '/api/me';
 export const USERS_PATH = '/api/users';
 export const AUTOMATIONS_PATH = '/api/automations';
+export const GITHUB_PATH = '/api/github';
 // These two are answered by Better Auth itself.
 export const LOGIN_PATH = '/api/auth/sign-in/username';
 export const LOGOUT_PATH = '/api/auth/sign-out';
