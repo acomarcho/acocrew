@@ -1,12 +1,12 @@
-import type { Item, Seen, Thread, Visibility } from '@acocrew/shared';
+import type { Item, Seen, Thread, Unread, Visibility } from '@acocrew/shared';
 import Database from 'better-sqlite3';
-import { asc, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { automations, channels, events, seen, threads } from './schema.ts';
+import { automations, channels, chats, events, seen, threads } from './schema.ts';
 
 const MIGRATIONS = fileURLToPath(new URL('../drizzle', import.meta.url));
 
@@ -99,4 +99,33 @@ export function loadItems(db: Db, threadId: string): Item[] {
   const items = new Map<string, Item>();
   for (const row of rows) items.set(row.item.id, row.item);
   return [...items.values()];
+}
+
+export const chatCols = { id: chats.id, at: chats.at, userId: chats.userId, text: chats.text, tagged: chats.tagged };
+export const loadChats = (db: Db, threadId: string) =>
+  db.select(chatCols).from(chats).where(eq(chats.threadId, threadId)).orderBy(asc(chats.id)).all();
+
+// The id of the last chat message of a thread that this person had on screen. 0 when none.
+export const chatSeen = (db: Db, userId: string, threadId: string) =>
+  db
+    .select({ chat: seen.chat })
+    .from(seen)
+    .where(and(eq(seen.userId, userId), eq(seen.threadId, threadId)))
+    .get()?.chat ?? 0;
+
+// The one rule for which chat messages are new to a person: it came after the last one they had on screen
+// (their own are on screen as they write them), and they take part in the thread or it tags them. Counted per
+// thread, for every thread or for one. A thread with nothing new is not in the answer.
+export function listUnread(db: Db, userId: string, threadId?: string): Record<string, Unread> {
+  const has = (list: unknown) => sql`exists (select 1 from json_each(${list}) where value = ${userId})`;
+  const rows = db.all<{ threadId: string; count: number; tagged: number }>(sql`
+    select ${chats.threadId} as threadId, count(*) as count, max(${has(chats.tagged)}) as tagged
+    from ${chats}
+    join ${threads} on ${threads.id} = ${chats.threadId}
+    left join ${seen} on ${seen.threadId} = ${chats.threadId} and ${seen.userId} = ${userId}
+    where ${chats.id} > coalesce(${seen.chat}, 0)
+      and (${has(threads.people)} or ${has(chats.tagged)})
+      and ${threadId ? eq(chats.threadId, threadId) : sql`true`}
+    group by ${chats.threadId}`);
+  return Object.fromEntries(rows.map((row) => [row.threadId, { count: row.count, tagged: Boolean(row.tagged) }]));
 }

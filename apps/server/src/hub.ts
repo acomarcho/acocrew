@@ -26,6 +26,13 @@ export function createHub() {
     toSome(event: ServerEvent, can: (userId: string) => boolean) {
       for (const [socket, tab] of sockets) if (can(tab.userId)) send(socket, event);
     },
+    // To every browser, what `make` says for the person on it. Nothing for the people it has nothing for.
+    toEach(make: (userId: string) => ServerEvent | undefined) {
+      for (const [socket, tab] of sockets) {
+        const event = make(tab.userId);
+        if (event) send(socket, event);
+      }
+    },
     // How a thread is now, to everyone who sees it.
     thread(thread: Thread) {
       this.toSome({ type: 'thread', thread }, (userId) => canSee(thread, userId));

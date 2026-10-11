@@ -8,6 +8,7 @@ import {
   type Answer,
   type Automation,
   type Channel,
+  type Chat,
   type ClientEvent,
   type FolderList,
   type GithubAccount,
@@ -22,6 +23,7 @@ import {
   type ServerEvent,
   type Temporary,
   type Thread,
+  type Unread,
   type Visibility,
 } from '@acocrew/shared';
 import { create } from 'zustand';
@@ -46,6 +48,14 @@ type State = {
   // The thread on screen. `items` is null until the server has sent what is in it.
   openId: string | null;
   items: Item[] | null;
+  // What people wrote to each other in that thread, and the first of it they had not had on screen when it
+  // was opened (null when they had seen it all).
+  chats: Chat[];
+  chatNew: number | null;
+  // The id of the last chat message of that thread the person had on screen.
+  chatSeen: number;
+  // How much chat is new to the person logged in, by thread id.
+  unread: Record<string, Unread>;
 };
 
 type Action = ServerEvent | { type: 'open'; threadId: string } | { type: 'offline' };
@@ -62,9 +72,13 @@ export const START: State = {
   github: null,
   openId: null,
   items: null,
+  chats: [],
+  chatNew: null,
+  chatSeen: 0,
+  unread: {},
 };
 
-const upsert = <T extends { id: string }>(list: T[], next: T) =>
+const upsert = <T extends { id: string | number }>(list: T[], next: T) =>
   list.some((x) => x.id === next.id) ? list.map((x) => (x.id === next.id ? next : x)) : [...list, next];
 
 export function reduce(state: State, action: Action): State {
@@ -72,8 +86,8 @@ export function reduce(state: State, action: Action): State {
   if ('threadId' in action && action.type !== 'open' && action.threadId !== state.openId) return state;
   switch (action.type) {
     case 'hello': {
-      const { channels, threads, people, seen, automations, utcOffset } = action;
-      return { ...state, ready: true, online: true, channels, threads, people, seen, automations, utcOffset };
+      const { type: _, ...lists } = action;
+      return { ...state, ready: true, online: true, ...lists };
     }
     case 'offline':
       return { ...state, online: false };
@@ -108,9 +122,15 @@ export function reduce(state: State, action: Action): State {
       return { ...state, automations, threads: state.threads.map(loose) };
     }
     case 'open':
-      return { ...state, openId: action.threadId, items: null };
-    case 'items':
-      return { ...state, items: action.items };
+      return { ...state, openId: action.threadId, items: null, chats: [], chatNew: null, chatSeen: 0 };
+    case 'items': {
+      const { items, chats, chatSeen } = action;
+      return { ...state, items, chats, chatSeen, chatNew: chats.find((chat) => chat.id > chatSeen)?.id ?? null };
+    }
+    case 'chat':
+      return { ...state, chats: upsert(state.chats, action.chat) };
+    case 'unread':
+      return { ...state, unread: { ...state.unread, ...action.unread } };
     case 'item':
       return { ...state, items: upsert(state.items ?? [], action.item) };
     case 'delta':
@@ -164,11 +184,14 @@ export const changePassword = (currentPassword: string, newPassword: string) =>
 
 // Everything the screens know is kept here. A screen reads only the parts it shows, so it is drawn again
 // only when those change. `login` is who logged in, and is set before any screen is drawn.
-export const useApp = create<State & { login: Me; navOpen: boolean }>(() => ({
+// `tag` is the chat message that last tagged the person somewhere they were not looking, until it is put away.
+export const useApp = create<State & { login: Me; navOpen: boolean; tag: Tag | null }>(() => ({
   ...START,
   login: null!,
   navOpen: false,
+  tag: null,
 }));
+type Tag = { threadId: string; chat: Chat };
 
 const dispatch = (action: Action) => useApp.setState((state) => reduce(state, action));
 
@@ -198,7 +221,15 @@ export function connect(recheck: () => Promise<unknown>) {
       const { openId } = useApp.getState();
       if (openId) tell({ type: 'open', threadId: openId });
     };
-    ws.onmessage = (message) => dispatch(JSON.parse(message.data));
+    ws.onmessage = (message) => {
+      const event: ServerEvent = JSON.parse(message.data);
+      dispatch(event);
+      // A tag pops up, unless the person is looking at that thread right now.
+      const { login, openId } = useApp.getState();
+      const looking = event.type === 'chat' && event.threadId === openId && !document.hidden;
+      if (event.type === 'chat' && event.chat.tagged.includes(login.id) && !looking)
+        useApp.setState({ tag: { threadId: event.threadId, chat: event.chat } });
+    };
     ws.onclose = () => {
       if (stopped) return;
       dispatch({ type: 'offline' });
@@ -212,7 +243,7 @@ export function connect(recheck: () => Promise<unknown>) {
     stopped = true;
     clearTimeout(retry);
     socket?.close();
-    useApp.setState({ ...START, navOpen: false });
+    useApp.setState({ ...START, navOpen: false, tag: null });
   };
 }
 
@@ -221,11 +252,28 @@ export const openThread = (threadId: string) => {
   tell({ type: 'open', threadId });
 };
 
+// The thread left the screen. Nothing is on screen until another one is opened, so what happens in this one
+// is news again: a tag in it pops up, and its chat is not read.
+export const closeThread = () => {
+  const { openId, items, chats, chatNew, chatSeen } = START;
+  useApp.setState({ openId, items, chats, chatNew, chatSeen });
+};
+
 // The person has the thread in front of them. Shown right away, and kept by the server for their other
 // devices. If the server did not get it, it says so on the next connect and the thread asks again.
 export const markSeen = (thread: Thread) => {
   dispatch({ type: 'seen', seen: { [thread.id]: thread.updatedAt } });
   request(`/api/threads/${thread.id}/seen`, { at: thread.updatedAt }).catch(() => {});
+};
+
+// What a person writes to the other people in a thread. It shows when the server tells everyone.
+export const sendChat = (threadId: string, text: string) => request(`/api/threads/${threadId}/chats`, { text });
+// The person has the open thread's chat in front of them, up to the message with this id. Like `markSeen`.
+// Said for everyone who looks, also someone the chat was not new to: it would be once they take part.
+export const markChatSeen = (threadId: string, id: number) => {
+  useApp.setState({ chatSeen: id });
+  dispatch({ type: 'unread', unread: { [threadId]: { count: 0, tagged: false } } });
+  request(`/api/threads/${threadId}/chats/seen`, { id }).catch(() => {});
 };
 
 export const listFolders = (path?: string) =>

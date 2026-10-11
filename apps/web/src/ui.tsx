@@ -13,6 +13,7 @@ import {
   type Places,
   type Status,
   type Thread,
+  type Unread,
   type Visibility,
 } from '@acocrew/shared';
 import { Link, useNavigate } from '@tanstack/react-router';
@@ -33,6 +34,7 @@ import {
   Lock,
   LogOut,
   Menu,
+  MessagesSquare,
   Pin,
   Plus,
   Search,
@@ -44,7 +46,7 @@ import {
   X,
   Zap,
 } from 'lucide-react';
-import { CommandMenu, suggest, useCommands } from './commands';
+import { CommandMenu, suggest, useCommands, useSuggestions } from './commands';
 import { draftOf, draftsIn, dropDraft, editDraft, hasContent, useDraft, useDrafts, type Draft } from './drafts';
 import { imageUrl, uploadImage } from './images';
 import {
@@ -465,6 +467,11 @@ type ComposerProps = {
   sendLabel?: string;
 };
 
+// The place to type in a message box. It starts 2 lines tall and grows with the text up to 8 lines, then
+// scrolls inside. The extra spacing(3) matches pt-3.
+export const BOX =
+  'block field-sizing-content max-h-[calc(8lh+--spacing(3))] min-h-[calc(2lh+--spacing(3))] w-full resize-none bg-transparent px-3.5 pt-3 text-base text-foreground outline-none placeholder:text-muted-foreground md:text-sm';
+
 export function Composer({
   placeholder,
   value,
@@ -489,26 +496,12 @@ export function Composer({
   const [uploading, setUploading] = useState(0);
   const picker = useRef<HTMLInputElement>(null);
   const box = useRef<HTMLTextAreaElement>(null);
-  // Where the typing caret was after the last change to the text, which row of the suggestions is lit, and
-  // whether they were closed since that change (with Escape, by moving the caret or by leaving the box).
-  const [caret, setCaret] = useState(0);
-  const [lit, setLit] = useState(0);
-  const [closed, setClosed] = useState(false);
-  const menu = closed || textOnly ? null : suggest(commands, text, caret);
-  const edited = () => {
-    const text = box.current!.value;
-    onChange((value) => ({ ...value, text }));
-    setCaret(box.current!.selectionStart);
-    setLit(0);
-    setClosed(false);
-  };
-  // Swaps the word the caret is in for the whole name, and leaves the caret after it.
-  const pick = (command: Command) => {
-    const end = caret + text.slice(caret).search(/\s|$/);
-    box.current!.setRangeText(`/${command.name} `, menu!.start, end, 'end');
-    // Told to the box the way typing is, so it is taken in like any other change.
-    box.current!.dispatchEvent(new Event('input', { bubbles: true }));
-  };
+  // Nothing is suggested while the box takes words only.
+  const list = useSuggestions(
+    box,
+    (caret) => (textOnly ? null : suggest(commands, text, caret)),
+    (command: Command) => `/${command.name}`,
+  );
   const clean = text.trim();
   const ready = Boolean(clean || images.length || canSendEmpty) && !sending && !uploading;
   // Pasting, dropping and the attach button all end up here. Whether this did anything with the files.
@@ -551,7 +544,7 @@ export function Composer({
         addImages(e.dataTransfer.files);
       }}
     >
-      {menu && <CommandMenu items={menu.items} active={lit} onActive={setLit} onPick={pick} />}
+      <CommandMenu list={list} />
       {(images.length > 0 || uploading > 0) && (
         <div className="flex flex-wrap gap-2 px-3.5 pt-3">
           {images.map((id) => (
@@ -576,15 +569,18 @@ export function Composer({
           )}
         </div>
       )}
-      {/* Starts 2 lines tall and grows with the text up to 8 lines, then scrolls inside. The extra spacing(3) matches pt-3. */}
       <textarea
         ref={box}
         autoFocus={autoFocus}
         value={text}
         placeholder={placeholder}
-        onChange={edited}
-        onSelect={(e) => e.currentTarget.selectionStart !== caret && setClosed(true)}
-        onBlur={() => setClosed(true)}
+        onChange={(e) => {
+          const text = e.target.value;
+          onChange((value) => ({ ...value, text }));
+          list.edited();
+        }}
+        onSelect={list.moved}
+        onBlur={list.close}
         onPaste={(e) => {
           // Spreadsheets and documents put a picture of the copied cells next to the formatted words. The
           // words win. A copied image file comes with its name as plain words only, and is still an image.
@@ -593,22 +589,12 @@ export function Composer({
         }}
         onKeyDown={(e) => {
           // A key pressed while a word is being put together (Chinese, Japanese, Korean) belongs to that.
-          if (e.nativeEvent.isComposing) return;
-          // While suggestions are open, the keys that would move the caret or send the message work the list.
-          const step = e.key === 'ArrowDown' ? 1 : e.key === 'ArrowUp' ? -1 : 0;
-          const picks = (e.key === 'Enter' || e.key === 'Tab') && !e.shiftKey;
-          if (menu && (step || picks || e.key === 'Escape')) {
-            e.preventDefault();
-            if (step) setLit((lit + step + menu.items.length) % menu.items.length);
-            else if (picks) pick(menu.items[lit]);
-            else setClosed(true);
-            return;
-          }
+          if (e.nativeEvent.isComposing || list.key(e)) return;
           if (e.key !== 'Enter' || e.shiftKey) return;
           e.preventDefault();
           void submit();
         }}
-        className="block field-sizing-content max-h-[calc(8lh+--spacing(3))] min-h-[calc(2lh+--spacing(3))] w-full resize-none bg-transparent px-3.5 pt-3 text-base text-foreground outline-none placeholder:text-muted-foreground md:text-sm"
+        className={BOX}
       />
       {error && <p className="px-3.5 pb-1 text-xs text-rose-500">{error}</p>}
       <div className="flex items-center gap-0.5 px-1.5 pb-1.5">
@@ -865,7 +851,10 @@ export function PinButton({ thread, className = '' }: { thread: Thread; classNam
 export function ThreadRow({ thread: t }: { thread: Thread }) {
   const seen = useApp((state) => state.seen);
   const me = useMe();
+  const unread = useApp((state) => state.unread[t.id]);
+  // Claude's side needs this person. A tag in the chat makes the row stand out the same way.
   const flagged = needsYou(t, seen, me.id);
+  const loud = flagged || unread?.tagged;
   const calm = !flagged && !t.since;
   const stopped = t.status === 'done' || t.status === 'failed';
   const pinned = t.pinnedAt !== null;
@@ -877,7 +866,7 @@ export function ThreadRow({ thread: t }: { thread: Thread }) {
         params={{ channelId: t.channelId, threadId: t.id }}
         className="block border-b border-border px-3.5 py-3 hover:bg-muted"
         activeProps={{ className: 'bg-muted' }}
-        inactiveProps={{ className: flagged ? 'bg-primary/[0.07]' : '' }}
+        inactiveProps={{ className: loud ? 'bg-primary/[0.07]' : '' }}
       >
         <span className={`flex items-center gap-2 ${pinned ? 'pr-8' : ''}`}>
           {calm ? (
@@ -885,9 +874,17 @@ export function ThreadRow({ thread: t }: { thread: Thread }) {
           ) : (
             <StatusDot status={t.status} />
           )}
-          <span className={`min-w-0 flex-1 truncate ${flagged ? 'font-semibold' : 'font-medium text-foreground/70'}`}>
+          <span
+            className={`min-w-0 flex-1 truncate ${loud || unread?.count ? 'font-semibold' : 'font-medium text-foreground/70'}`}
+          >
             {t.title}
           </span>
+          {Boolean(unread?.count) && (
+            <span className="flex shrink-0 items-center gap-1 text-muted-foreground">
+              <MessagesSquare size={13} />
+              <UnreadBadge unread={unread} />
+            </span>
+          )}
           {unsent && (
             <span title="You have a reply here that is not sent yet" className="shrink-0 text-amber-600">
               <SquarePen size={12} />
@@ -923,6 +920,47 @@ export function ThreadRow({ thread: t }: { thread: Thread }) {
       {/* A pinned thread can be unpinned right in the list. The button lies on the row: a link cannot hold one. */}
       {pinned && <PinButton thread={t} className="absolute top-1 right-1.5" />}
     </div>
+  );
+}
+
+// How many chat messages are new to the person. It takes the app's main color and an @ when one tags them.
+export function UnreadBadge({ unread }: { unread?: Unread }) {
+  if (!unread?.count) return null;
+  return (
+    <span
+      title={unread.tagged ? 'Someone tagged you in the chat' : 'New in the chat'}
+      className={`shrink-0 rounded-full px-1.5 text-xs font-semibold tabular-nums ${
+        unread.tagged ? 'bg-primary text-primary-foreground' : 'bg-foreground/70 text-background'
+      }`}
+    >
+      {unread.tagged && '@'}
+      {unread.count}
+    </span>
+  );
+}
+
+// A row of choices where one is picked. `after` goes behind the name of a choice.
+type SegmentsProps<T extends string> = {
+  value: T;
+  onChange: (id: T) => void;
+  options: { id: T; name: string; after?: ReactNode }[];
+};
+export function Segments<T extends string>({ value, onChange, options }: SegmentsProps<T>) {
+  return (
+    <span className="inline-flex shrink-0 rounded-lg bg-muted p-0.5">
+      {options.map((option) => (
+        <button
+          key={option.id}
+          type="button"
+          aria-pressed={value === option.id}
+          onClick={() => onChange(option.id)}
+          className="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium text-muted-foreground aria-pressed:bg-card aria-pressed:text-foreground aria-pressed:shadow-sm"
+        >
+          {option.name}
+          {option.after}
+        </button>
+      ))}
+    </span>
   );
 }
 

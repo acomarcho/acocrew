@@ -1,6 +1,7 @@
-import type { Automation, Channel, Item, ServerEvent, Status, Thread } from '@acocrew/shared';
+import type { Automation, Channel, Chat, Item, Me, ServerEvent, Status, Thread } from '@acocrew/shared';
 import { expect, test, vi } from 'vite-plus/test';
 import {
+  closeThread,
   connect,
   githubChoices,
   needsYou,
@@ -70,6 +71,7 @@ test('what was seen comes with the first message, and is added to as threads are
     threads: [],
     people: [],
     seen: { a: 1, b: 2 },
+    unread: {},
     automations: [],
     utcOffset: 420,
   };
@@ -132,6 +134,7 @@ const HELLO: ServerEvent = {
   threads: [],
   people: [],
   seen: {},
+  unread: {},
   automations: [],
   utcOffset: 0,
 };
@@ -148,9 +151,9 @@ test('the app fills up from the socket, follows the open thread, and forgets it 
 
   openThread('t');
   expect(JSON.parse(Socket.last.sent[0])).toEqual({ type: 'open', threadId: 't' });
-  Socket.last.says({ type: 'items', threadId: 't', items: [] });
+  Socket.last.says({ type: 'items', threadId: 't', items: [], chats: [], chatSeen: 0 });
   // What happens in a thread that is not on screen is left out.
-  Socket.last.says({ type: 'items', threadId: 'other', items: [{ id: 'i' } as Item] });
+  Socket.last.says({ type: 'items', threadId: 'other', items: [{ id: 'i' } as Item], chats: [], chatSeen: 0 });
   expect(useApp.getState().items).toEqual([]);
 
   // The line drops: the screens stay, the server is asked who is logged in, and the open thread is asked for again.
@@ -238,5 +241,71 @@ test('a switch of GitHub account shows right away, and is taken back if the serv
   answer({ ok: false, body: { error: 'not logged in to github.com account hubot' } });
   await expect(done).rejects.toThrow('not logged in to github.com account hubot');
   expect(shown()).toEqual(before);
+  vi.unstubAllGlobals();
+});
+
+// A chat message as the server sends it.
+const chat = (id: number, userId: string, tagged: string[] = []): Chat => ({
+  id,
+  at: id,
+  userId,
+  text: `#${id}`,
+  tagged,
+});
+
+test('the chat of the open thread comes with it and grows, and what is new in every thread is kept up to date', () => {
+  let state = reduce(START, { ...HELLO, unread: { t: { count: 2, tagged: true } } });
+  expect(state.unread).toEqual({ t: { count: 2, tagged: true } });
+  state = reduce(state, { type: 'open', threadId: 't' });
+  // The first message the person had not had on screen is where the "New" line goes.
+  const chats = [chat(1, 'ann'), chat(2, 'me'), chat(3, 'ann'), chat(4, 'ann')];
+  state = reduce(state, { type: 'items', threadId: 't', items: [], chats, chatSeen: 2 });
+  expect([state.chats, state.chatNew, state.chatSeen]).toEqual([chats, 3, 2]);
+  // A message that comes in while the thread is open is added once, however often it arrives.
+  state = reduce(state, { type: 'chat', threadId: 't', chat: chat(5, 'ann') });
+  state = reduce(state, { type: 'chat', threadId: 't', chat: chat(5, 'ann') });
+  // One for another thread is not shown here.
+  state = reduce(state, { type: 'chat', threadId: 'other', chat: chat(6, 'ann') });
+  expect([state.chats.map((one) => one.id), state.chatNew]).toEqual([[1, 2, 3, 4, 5], 3]);
+
+  // Only the threads the server names change.
+  state = reduce(state, { type: 'unread', unread: { other: { count: 1, tagged: false } } });
+  state = reduce(state, { type: 'unread', unread: { t: { count: 0, tagged: false } } });
+  expect(state.unread).toEqual({ t: { count: 0, tagged: false }, other: { count: 1, tagged: false } });
+
+  // Everything was seen already: no line. Another thread starts with nothing until its own chat arrives.
+  expect(reduce(state, { type: 'items', threadId: 't', items: [], chats, chatSeen: 4 }).chatNew).toBeNull();
+  expect(reduce(state, { type: 'open', threadId: 'other' })).toMatchObject({ chats: [], chatNew: null, chatSeen: 0 });
+});
+
+test('a tag pops up, unless the person is looking at that thread or it tags someone else', () => {
+  vi.stubGlobal('WebSocket', Socket);
+  vi.stubGlobal('location', { origin: 'http://here' });
+  const screen = { hidden: false };
+  vi.stubGlobal('document', screen);
+  const hangUp = connect(async () => {});
+  useApp.setState({ login: { id: 'me' } as Me });
+  Socket.last.says(HELLO);
+  openThread('t');
+  const says = (threadId: string, tagged: string[]) => {
+    useApp.setState({ tag: null });
+    Socket.last.says({ type: 'chat', threadId, chat: chat(1, 'ann', tagged) });
+    return useApp.getState().tag;
+  };
+  expect(says('other', ['me'])).toEqual({ threadId: 'other', chat: chat(1, 'ann', ['me']) });
+  expect(says('other', ['bob'])).toBeNull();
+  expect(says('other', [])).toBeNull();
+  // The thread on screen: nothing to point at, unless the browser tab itself is out of sight.
+  expect(says('t', ['me'])).toBeNull();
+  screen.hidden = true;
+  expect(says('t', ['me'])).toMatchObject({ threadId: 't' });
+  // Once the thread is off the screen, a tag in it is news like any other, and its chat is no longer kept.
+  screen.hidden = false;
+  closeThread();
+  expect(says('t', ['me'])).toMatchObject({ threadId: 't' });
+  expect(useApp.getState()).toMatchObject({ openId: null, items: null, chats: [] });
+
+  hangUp();
+  expect(useApp.getState().tag).toBeNull();
   vi.unstubAllGlobals();
 });

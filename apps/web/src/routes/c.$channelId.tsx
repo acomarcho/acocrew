@@ -1,5 +1,5 @@
 // The Inbox screen: channels, then a thread list, then the open thread, like an email app.
-import type { Channel } from '@acocrew/shared';
+import type { Channel, Thread } from '@acocrew/shared';
 import { DragDropProvider, KeyboardSensor, PointerSensor } from '@dnd-kit/react';
 import { isSortable, useSortable } from '@dnd-kit/react/sortable';
 import { createFileRoute, Link, Navigate, Outlet, useChildMatches } from '@tanstack/react-router';
@@ -32,12 +32,15 @@ const SENSORS = [
 function Repo({ channel, index }: { channel: Channel; index: number }) {
   const threads = useApp((state) => state.threads);
   const seen = useApp((state) => state.seen);
+  const unread = useApp((state) => state.unread);
   const me = useMe();
   const { ref, isDragging } = useSortable({ id: channel.id, index });
   const here = threads.filter((t) => t.channelId === channel.id);
   // The number is what waits for this person. Claude being busy only gets a small dot.
-  const count = here.filter((t) => needsYou(t, seen, me.id)).length;
+  // A tag in a thread's chat counts like Claude needing them there.
+  const count = here.filter((t) => needsYou(t, seen, me.id) || unread[t.id]?.tagged).length;
   const busy = here.filter((t) => t.since).length;
+  const chat = here.some((t) => unread[t.id]?.count);
   return (
     <Link
       ref={ref}
@@ -61,6 +64,7 @@ function Repo({ channel, index }: { channel: Channel; index: number }) {
           className="size-1.5 shrink-0 animate-pulse rounded-full bg-amber-500"
         />
       )}
+      {chat && <span title="New in a chat" className="size-1.5 shrink-0 rounded-full bg-sky-500" />}
       {count > 0 && (
         <span
           title={`${count} ${count === 1 ? 'thread needs' : 'threads need'} you`}
@@ -81,7 +85,7 @@ const WHOSE = [
 // 'you' is only the threads that need this person, which covers the ones where Claude waits for an answer.
 const STATES = [
   { id: 'all', name: 'Any state', hint: 'Nothing is left out' },
-  { id: 'you', name: 'Needs you', hint: 'Your answer, or new to you' },
+  { id: 'you', name: 'Needs you', hint: 'Your answer, new to you, or a tag' },
   { id: 'working', name: statusLabel('working'), hint: 'Claude is at it' },
   { id: 'waiting', name: statusLabel('waiting'), hint: 'Background work is running' },
   { id: 'failed', name: statusLabel('failed'), hint: 'Broke off with an error' },
@@ -93,6 +97,7 @@ function Inbox() {
   const channels = useApp((state) => state.channels);
   const threads = useApp((state) => state.threads);
   const seen = useApp((state) => state.seen);
+  const unread = useApp((state) => state.unread);
   const me = useMe();
   const [whose, setWhose] = useState('all');
   const [state, setState] = useState('all');
@@ -102,9 +107,10 @@ function Inbox() {
   const detailOpen = useChildMatches({ select: (matches) => matches.some((m) => m.routeId !== '/c/$channelId/') });
   const channel = channels.find((c) => c.id === channelId);
   if (!channel) return <Navigate to="/" replace />;
+  const calls = (t: Thread) => needsYou(t, seen, me.id) || unread[t.id]?.tagged;
   const rows = threads
     .filter((t) => t.channelId === channel.id)
-    .filter((t) => state === 'all' || (state === 'you' ? needsYou(t, seen, me.id) : t.status === state))
+    .filter((t) => state === 'all' || (state === 'you' ? calls(t) : t.status === state))
     .filter((t) => whose === 'all' || t.people.includes(me.id))
     .sort((a, b) => b.updatedAt - a.updatedAt);
   // Pinned threads get a part of their own, and are not repeated under the rest.

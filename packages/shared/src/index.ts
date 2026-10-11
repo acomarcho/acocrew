@@ -62,6 +62,26 @@ export type Thread = {
 // A thread they never opened is not in it.
 export type Seen = Record<string, number>;
 
+// One message people wrote to each other in a thread. Claude never gets these. `id` counts up, so it also says
+// which one came first. `tagged` are the people it names with an `@`, as user ids: only people who could see
+// the thread when it was written, and never whoever wrote it.
+export type Chat = { id: number; at: number; userId: string; text: string; tagged: string[] };
+
+// How many chat messages of a thread are new to a person, and whether one of them tags that person.
+// A message is new to whoever takes part in the thread (`people`) or is tagged in it, until they had it on screen.
+export type Unread = { count: number; tagged: boolean };
+
+// An `@username` in a chat message. It has to start a word, so an email address is left alone, and it does not
+// end in a dot, so the full stop after a name is not part of it. Cutting a message up with this gives the
+// tags at every second place.
+export const TAG = /(?<=^|\s)(@[\w.]*\w)/;
+// The usernames a chat message names, in small letters.
+export const tagsIn = (text: string) =>
+  text
+    .split(TAG)
+    .filter((_, i) => i % 2)
+    .map((tag) => tag.slice(1).toLowerCase());
+
 // A multiple-choice question Claude asks the user.
 export type Question = {
   question: string;
@@ -155,6 +175,8 @@ export type ServerEvent =
       threads: Thread[];
       people: Person[];
       seen: Seen;
+      // The person's unread chat, by thread id. A thread with none is not in it.
+      unread: Record<string, Unread>;
       automations: Automation[];
       utcOffset: number;
     }
@@ -173,7 +195,12 @@ export type ServerEvent =
   | { type: 'thread'; thread: Thread }
   // The person may no longer see this thread.
   | { type: 'thread-gone'; id: string }
-  | { type: 'items'; threadId: string; items: Item[] }
+  // Everything in a thread so far. `chatSeen` is the id of the last chat message this person had on screen.
+  | { type: 'items'; threadId: string; items: Item[]; chats: Chat[]; chatSeen: number }
+  // Someone wrote in a thread's chat. Sent to everyone who sees the thread, wherever they are in the app.
+  | { type: 'chat'; threadId: string; chat: Chat }
+  // How much chat is new to the person now, for the threads where that changed.
+  | { type: 'unread'; unread: Record<string, Unread> }
   | { type: 'item'; threadId: string; item: Item }
   // Words to add to the end of a bubble that Claude is still writing.
   | { type: 'delta'; threadId: string; itemId: string; text: string };

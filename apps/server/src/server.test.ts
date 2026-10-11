@@ -11,6 +11,7 @@ import {
   type Answer,
   type Automation,
   type Channel,
+  type Chat,
   type Command,
   type FolderList,
   type GithubAccount,
@@ -2006,6 +2007,9 @@ test('an automation needs a message, a real time, a day, a branch git lists and 
 const show = (thread: Thread, visibility: unknown) => post(`/api/threads/${thread.id}/visibility`, { visibility });
 const share = (thread: Thread, userId: unknown, shared: unknown = true) =>
   post(`/api/threads/${thread.id}/shares`, { userId, shared });
+// What people write to each other in a thread, and what they say they have read of it.
+const write = (thread: Thread, text: unknown) => post(`/api/threads/${thread.id}/chats`, { text });
+const read = (thread: Thread, id: unknown) => post(`/api/threads/${thread.id}/chats/seen`, { id });
 // Everything a browser can ask about one thread.
 const reach = (thread: Thread) =>
   Promise.all([
@@ -2014,6 +2018,8 @@ const reach = (thread: Thread) =>
     post(`/api/threads/${thread.id}/stop`),
     post(`/api/threads/${thread.id}/pin`, { pinned: true }),
     post(`/api/threads/${thread.id}/seen`, { at: 1 }),
+    write(thread, 'let me in'),
+    read(thread, 1),
     show(thread, 'public'),
     share(thread, 'nobody'),
     ask(`${COMMANDS_PATH}?thread=${thread.id}`),
@@ -2333,4 +2339,151 @@ test('a gh that cannot say who is logged in gets the admin the reason, not a bro
   const res = await ask(GITHUB_PATH);
   expect(res.status).toBe(400);
   expect(await error(res)).toBeTruthy();
+});
+
+type Tab = Awaited<ReturnType<typeof connect>>;
+// What a tab that opens the thread now is given of its chat.
+const chatOf = async (thread: Thread) => {
+  const tab = await connect();
+  await tab.open(thread.id);
+  const { chats, chatSeen } = tab.events.findLast((e) => e.type === 'items')!;
+  return { said: chats.map((chat) => chat.text), chatSeen };
+};
+// Waits until the tab is told this much chat is new in the thread.
+const unread = async (tab: Tab, thread: Thread, count: number) =>
+  (await tab.until('unread', (e) => e.unread[thread.id]?.count === count)).unread[thread.id];
+
+test('people write to each other in a thread: everyone who sees it gets it, it is kept, and Claude never hears of it', async () => {
+  const admin = await whoAmI();
+  const jordan = await teammate('jordan', 'Jordan');
+  const tab = await connect();
+  const theirs = await as(jordan.cookie, connect);
+  const thread = await startThread('make notes', PUBLIC);
+  await tab.open(thread.id);
+  const done = await tab.status(thread.id, 'done');
+  expect(await chatOf(thread)).toEqual({ said: [], chatSeen: 0 });
+  const logged = db.select().from(events).all().length;
+
+  const res = await as(jordan.cookie, () => write(thread, '  looks good to me  '));
+  expect(res.status).toBe(200);
+  const chat = (await res.json()) as Chat;
+  expect(chat).toMatchObject({ userId: jordan.id, text: 'looks good to me', tagged: [] });
+  // The tab that has the thread open hears of it, and so does one that is somewhere else in the app.
+  expect(await tab.until('chat')).toEqual({ type: 'chat', threadId: thread.id, chat });
+  expect(await theirs.until('chat')).toEqual({ type: 'chat', threadId: thread.id, chat });
+  // Writing in the chat is taking part in the thread. It is not news about Claude, so the thread is no newer.
+  const joined = (await tab.until('thread', (e) => e.thread.people.length === 2)).thread;
+  expect(joined).toMatchObject({ people: [admin.id, jordan.id], updatedAt: done.updatedAt, status: 'done' });
+
+  // Whoever writes has read everything up to their own message.
+  expect(await unread(tab, thread, 1)).toEqual({ count: 1, tagged: false });
+  await write(thread, 'thanks');
+  const last = (await (await write(thread, 'thanks')).json()) as Chat;
+  expect(await unread(tab, thread, 0)).toEqual({ count: 0, tagged: false });
+  expect(await chatOf(thread)).toEqual({ said: ['looks good to me', 'thanks', 'thanks'], chatSeen: last.id });
+  expect((await connect()).hello.threads[0].people).toEqual([admin.id, jordan.id]);
+
+  // Nothing of it reached Claude, or the log of what Claude and people said to each other.
+  expect(claude.said).toHaveLength(1);
+  expect(db.select().from(events).all()).toHaveLength(logged);
+  expect(tab.screen(thread.id)).toEqual(TURN_1);
+
+  for (const text of ['', '   ', 5, undefined]) expect((await write(thread, text)).status, String(text)).toBe(400);
+  expect((await post('/api/threads/nope/chats', { text: 'hi' })).status).toBe(404);
+});
+
+test('a chat message is new to whoever takes part in the thread or is tagged, on all their devices, until they had it on screen', async () => {
+  const admin = await whoAmI();
+  const jordan = await teammate('jordan', 'Jordan');
+  const robin = await teammate('Robin.Lee', 'Robin');
+  const tab = await connect();
+  const phone = await connect();
+  const robins = await as(robin.cookie, connect);
+  const thread = await startThread('make notes', PUBLIC);
+  await tab.status(thread.id, 'done');
+  const chat = async (text: string) => (await (await as(jordan.cookie, () => write(thread, text))).json()) as Chat;
+
+  // The admin started the thread. Robin has nothing to do with it yet.
+  const first = await chat('are the notes done?');
+  expect(await unread(tab, thread, 1)).toEqual({ count: 1, tagged: false });
+  expect(await unread(phone, thread, 1)).toEqual({ count: 1, tagged: false });
+  expect(await unread(robins, thread, 0)).toEqual({ count: 0, tagged: false });
+
+  // A tag reaches someone who does not take part. The full stop after a name is not part of it, capital
+  // letters do not matter, and an email address tags nobody.
+  const second = await chat('@admin can you look? Ask @Robin.Lee. Or mail me at jordan@admin');
+  expect(second.tagged).toEqual([admin.id, robin.id]);
+  expect(await unread(tab, thread, 2)).toEqual({ count: 2, tagged: true });
+  expect(await unread(robins, thread, 1)).toEqual({ count: 1, tagged: true });
+  // It is the same after a reload. What someone wrote themselves is never new to them.
+  expect((await connect()).hello.unread).toEqual({ [thread.id]: { count: 2, tagged: true } });
+  expect((await as(robin.cookie, connect)).hello.unread).toEqual({ [thread.id]: { count: 1, tagged: true } });
+  expect((await as(jordan.cookie, connect)).hello.unread).toEqual({});
+
+  // Read up to the first one: the tag is still new. Every device of the person is told.
+  expect((await read(thread, first.id)).status).toBe(200);
+  expect(await unread(tab, thread, 1)).toEqual({ count: 1, tagged: true });
+  expect(await unread(phone, thread, 1)).toEqual({ count: 1, tagged: true });
+  expect((await chatOf(thread)).chatSeen).toBe(first.id);
+  // A browser cannot have read more than there is, and a device that is behind cannot take back what was read.
+  await read(thread, second.id + 100);
+  expect(await unread(tab, thread, 0)).toEqual({ count: 0, tagged: false });
+  expect((await chatOf(thread)).chatSeen).toBe(second.id);
+  await read(thread, first.id);
+  expect((await chatOf(thread)).chatSeen).toBe(second.id);
+  expect((await connect()).hello.unread).toEqual({});
+  // What one person read says nothing about another.
+  expect((await as(robin.cookie, connect)).hello.unread).toEqual({ [thread.id]: { count: 1, tagged: true } });
+
+  // Once Robin wrote in the chat, Robin takes part: what comes next is new to them without a tag.
+  await as(robin.cookie, () => read(thread, second.id));
+  await unread(robins, thread, 0);
+  await as(robin.cookie, () => write(thread, 'on it'));
+  await chat('thanks both');
+  expect(await unread(robins, thread, 1)).toEqual({ count: 1, tagged: false });
+  expect(await unread(tab, thread, 2)).toEqual({ count: 2, tagged: false });
+
+  // Someone who only looked reads the chat too. When they then take part, none of it is new to them.
+  const sam = await teammate('sam', 'Sam');
+  expect((await as(sam.cookie, connect)).hello.unread).toEqual({});
+  await as(sam.cookie, () => read(thread, second.id + 100));
+  await as(sam.cookie, () => say(thread, 'what is in them?'));
+  await tab.until('thread', (e) => e.thread.people.includes(sam.id));
+  expect((await as(sam.cookie, connect)).hello.unread).toEqual({});
+
+  for (const id of ['last', 1.5, undefined]) expect((await read(thread, id)).status, String(id)).toBe(400);
+});
+
+test('the chat of a private thread is for the people who see it, and only they can be tagged', async () => {
+  const jordan = await teammate('jordan', 'Jordan');
+  const robin = await teammate('robin', 'Robin');
+  const tab = await connect();
+  const thread = await startThread('make notes');
+  await tab.status(thread.id, 'done');
+  await share(thread, jordan.id);
+  const theirs = await as(jordan.cookie, connect);
+  const robins = await as(robin.cookie, connect);
+  const tagged = async (text: string) => ((await (await write(thread, text)).json()) as Chat).tagged;
+
+  // Robin cannot see the thread, nobody tags themselves, and nobody is called that.
+  expect(await tagged('@jordan @robin @admin @nobody what now?')).toEqual([jordan.id]);
+  expect(await unread(theirs, thread, 1)).toEqual({ count: 1, tagged: true });
+  for (const res of await as(robin.cookie, () => reach(thread))) expect(res.status, res.url).toBe(404);
+  expect((await as(robin.cookie, connect)).hello.unread).toEqual({});
+
+  // Jordan no longer sees the thread: nothing of its chat is theirs any more, old or new.
+  await share(thread, jordan.id, false);
+  await theirs.until('thread-gone');
+  const before = theirs.events.length;
+  expect(await tagged('@jordan are you still there?')).toEqual([]);
+  await tab.until('chat', (e) => e.chat.text.includes('still there'));
+  expect((await as(jordan.cookie, connect)).hello.unread).toEqual({});
+  expect(theirs.events).toHaveLength(before);
+  expect(robins.events.some((e) => e.type === 'chat' || e.type === 'unread')).toBe(false);
+
+  // Someone whose account is gone cannot be tagged.
+  await show(thread, 'public');
+  expect(await tagged('@robin welcome')).toEqual([robin.id]);
+  await post(`${USERS_PATH}/${robin.id}/delete`);
+  expect(await tagged('@robin bye')).toEqual([]);
 });
