@@ -17,6 +17,7 @@ import {
   USERS_PATH,
   VISIBILITY,
   WS_PATH,
+  tagsIn,
   type Answer,
   type ClientEvent,
   type Me,
@@ -28,7 +29,7 @@ import {
 } from '@acocrew/shared';
 import { serve, upgradeWebSocket } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
-import { and, eq, ne, sql } from 'drizzle-orm';
+import { and, eq, max, ne, sql } from 'drizzle-orm';
 import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { randomUUID } from 'node:crypto';
@@ -50,10 +51,14 @@ import {
   automationCols,
   canSee,
   channelCols,
+  chatCols,
+  chatSeen,
   listAutomations,
   listChannels,
   listSeen,
   listThreads,
+  listUnread,
+  loadChats,
   loadItems,
   threadCols,
   type Db,
@@ -65,7 +70,7 @@ import { listAccounts, switchAccount } from './github.ts';
 import { createHub } from './hub.ts';
 import { openImages, type Images } from './images.ts';
 import { createRunner, type QueryFn } from './runner.ts';
-import { automations, channels, seen, session as sessions, shares, threads, user } from './schema.ts';
+import { automations, channels, chats, seen, session as sessions, shares, threads, user } from './schema.ts';
 import { firstLine } from './title.ts';
 
 // `home` is the only folder tree that repositories can be picked from.
@@ -608,6 +613,78 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
     return c.json({ ok: true });
   });
 
+  // How much of a thread's chat is new to this person, as they are told.
+  const unreadIn = (userId: string, threadId: string) => ({
+    type: 'unread' as const,
+    unread: { [threadId]: listUnread(db, userId, threadId)[threadId] ?? { count: 0, tagged: false } },
+  });
+
+  // Notes that the person had the thread's chat on screen up to the message with this id. What was read once
+  // stays read: a device that is behind cannot take it back.
+  const readChat = (userId: string, threadId: string, chat: number) =>
+    db
+      .insert(seen)
+      .values({ userId, threadId, at: 0, chat })
+      .onConflictDoUpdate({
+        target: [seen.userId, seen.threadId],
+        set: { chat: sql`max(${seen.chat}, excluded.chat)` },
+      })
+      .run();
+
+  // Something a person writes to the other people in the thread. It is kept apart from what is said to Claude
+  // and never handed to it. Everyone who sees the thread is told, wherever they are in the app. This is not
+  // news about Claude: the thread keeps its `updatedAt`.
+  app.post('/api/threads/:id/chats', async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const text = typeof body.text === 'string' ? body.text.trim() : '';
+    if (!text) return c.json({ error: 'Needs a message.' }, 400);
+    const me = c.get('user').id;
+    // How the thread is right now: who sees it may have changed while the message came in.
+    const thread = findThread(c.get('thread').id, me);
+    if (!thread) return c.json({ error: 'Thread not found.' }, 404);
+    // Only someone else who sees the thread can be tagged.
+    const names = tagsIn(text);
+    const tagged = listPeople(db)
+      .filter((person) => person.id !== me && canSee(thread, person.id))
+      .filter((person) => person.username && names.includes(person.username.toLowerCase()))
+      .map((person) => person.id);
+    const chat = db
+      .insert(chats)
+      .values({ threadId: thread.id, userId: me, text, tagged, at: Date.now() })
+      .returning(chatCols)
+      .get();
+    // Whoever writes has the chat in front of them, so everything up to their own message is read.
+    readChat(me, thread.id, chat.id);
+    // Writing in the chat is taking part in the thread.
+    if (!thread.people.includes(me)) {
+      thread.people.push(me);
+      const set = { people: thread.people };
+      hub.thread(
+        runner.withLive(db.update(threads).set(set).where(eq(threads.id, thread.id)).returning(threadCols).get()),
+      );
+    }
+    hub.toSome({ type: 'chat', threadId: thread.id, chat }, (userId) => canSee(thread, userId));
+    hub.toEach((userId) => (canSee(thread, userId) ? unreadIn(userId, thread.id) : undefined));
+    return c.json(chat);
+  });
+
+  // The person had the thread's chat on screen, up to the message with this id. Their other devices are told.
+  app.post('/api/threads/:id/chats/seen', async (c) => {
+    const { id } = await c.req.json().catch(() => ({}));
+    const thread = c.get('thread');
+    if (!Number.isInteger(id)) return c.json({ error: 'Needs the id of a chat message.' }, 400);
+    // Nobody can have read more than there is.
+    const me = c.get('user').id;
+    const { last } = db
+      .select({ last: max(chats.id) })
+      .from(chats)
+      .where(eq(chats.threadId, thread.id))
+      .get()!;
+    readChat(me, thread.id, Math.min(id, last ?? 0));
+    hub.toUser(me, unreadIn(me, thread.id));
+    return c.json({ ok: true });
+  });
+
   // Pins the thread to the top of the list for everyone who sees it, or takes it off again. This is not news:
   // the thread keeps its `updatedAt`, so it does not turn up as new for anyone.
   app.post('/api/threads/:id/pin', async (c) => {
@@ -676,8 +753,13 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
         const mine = (row: Parameters<typeof canSee>[0]) => canSee(row, id);
         const threads = listThreads(db).filter(mine).map(runner.withLive);
         const seen = listSeen(db, id);
+        // Chat in a thread the person no longer sees is not theirs any more.
+        const unread = Object.fromEntries(
+          Object.entries(listUnread(db, id)).filter(([threadId]) => threads.some((thread) => thread.id === threadId)),
+        );
         const automated = listAutomations(db).filter(mine).map(shown);
-        const lists = { channels: listChannels(db), threads, people: listPeople(db), seen, automations: automated };
+        const channels = listChannels(db);
+        const lists = { channels, threads, people: listPeople(db), seen, unread, automations: automated };
         // JavaScript counts how far UTC is ahead of this machine. We say it the other way around.
         hub.send(ws, { type: 'hello', ...lists, utcOffset: -new Date().getTimezoneOffset() });
       },
@@ -685,10 +767,12 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
       // everything so far in the same step, so nothing can slip in between.
       onMessage(message, ws) {
         const { threadId } = JSON.parse(String(message.data)) as ClientEvent;
-        if (!findThread(threadId, c.get('user').id)) return;
+        const { id } = c.get('user');
+        if (!findThread(threadId, id)) return;
         hub.open(ws, threadId);
         const items = [...loadItems(db, threadId), ...runner.live(threadId)].sort((a, b) => a.at - b.at);
-        hub.send(ws, { type: 'items', threadId, items });
+        const chat = { chats: loadChats(db, threadId), chatSeen: chatSeen(db, id, threadId) };
+        hub.send(ws, { type: 'items', threadId, items, ...chat });
       },
       onClose: (_, ws) => void hub.remove(ws),
     })),

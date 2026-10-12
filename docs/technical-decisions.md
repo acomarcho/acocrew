@@ -1,6 +1,6 @@
 # Technical decisions
 
-Last updated: 2026-10-09
+Last updated: 2026-10-11
 
 ## What we are building
 
@@ -145,7 +145,8 @@ Tables:
 | `automations` | One row per automation: its repository, message, time, days, branch, settings, who made it, and whether it is on. See Decision 10.                                                                            |
 | `events`      | A numbered log per thread. Each row is one whole item: a chat bubble, a tool card, or an error.                                                                                                               |
 | `user`        | One row per account: display name, username, whether it is an admin. See Decision 8.                                                                                                                          |
-| `seen`        | One row per person and thread they opened: how far they have seen it. See Decision 9.                                                                                                                         |
+| `seen`        | One row per person and thread they opened: how far they have seen it (Decision 9), and how far they have read its chat (Decision 13).                                                                         |
+| `chats`       | What people wrote to each other in a thread: who, the words, who is tagged, when. Never handed to Claude. See Decision 13.                                                                                    |
 | `shares`      | One row per thread and person it is shared with, and what that person can do there (`role`). See Decision 11.                                                                                                 |
 
 The `events` log is only ever added to. A tool card is written twice (started, finished). When a thread is loaded, the newest row per item wins.
@@ -362,6 +363,21 @@ How it works (`apps/server/src/github.ts` and two routes on `/api/github`):
 
 Not built: logging in to GitHub or out of it from the app (that is still `gh auth login` on the machine), a GitHub account per thread or per person, and anything for a `GH_TOKEN` set in `~/.acocrew/env` (`gh` then uses that token whatever is switched here).
 
+## Decision 13: People talk to each other in a thread's chat, which Claude never sees
+
+A thread has a second kind of message: what the people in it write to each other. It is for "can you merge this?" and "finance wants dates as YYYY-MM-DD", which Claude should not act on.
+
+- **Kept apart.** Chat messages live in their own table (`chats`), not in `events`, the log of what is said to and by Claude. They are written through their own route (`POST /api/threads/<id>/chats`), which does not know the code that runs Claude. So no bug in one can leak into the other, and the screen is free to show the chat however it likes. Today that is one timeline (see the UI rules). Tabs or a side panel would be a change in the web app only.
+- **Who can write and read.** Whoever sees the thread (Decision 11). The chat goes out with everything else in the thread when a browser opens it (the `items` message), and a new message is told to everyone who sees the thread (`chat`), wherever they are in the app.
+- **Tags.** `@username` in a message tags that person. The server reads the tags out of the words when the message comes in and keeps them as user ids (`tagged`): only someone else who has an account and sees the thread at that moment counts. The web app highlights what the server kept, so a name that tagged nobody looks like plain words.
+- **Taking part.** Writing in the chat adds the person to the thread's `people`, the same list that writing to Claude adds them to. There is one meaning of "takes part".
+- **What is new to you** (`listUnread` in `apps/server/src/db.ts`, the only place this is worked out). A chat message is new to a person when it came after the last one they had on screen, and they take part in the thread or the message tags them. The server tells each person how many are new per thread and whether one tags them (`unread`): in the first WebSocket message, and again whenever that changes.
+- **What counts as read.** Like Decision 9: the chat is on screen in a browser tab that is visible. The browser then says the id of the last message it shows (`POST /api/threads/<id>/chats/seen`), kept per person and thread in `seen.chat`. Ids only count up, so one number says how far someone has read. Writing a message reads everything before it.
+- **Not Claude news.** A chat message leaves the thread's `updatedAt` and status alone. It does not move the thread in the list or make Claude's last answer look new.
+- **A tag pops up.** When a message tags you and you are not looking at that thread, a small box says who and what for a few seconds. A click opens the thread. This is in the app only.
+
+Not built: editing or deleting a message, images, reactions, tagging in a message to Claude, notifications outside the app. Someone who loses sight of a thread and gets it back keeps an old count until they reload.
+
 ## UI direction: the Inbox layout
 
 We mocked five layouts (Slack, Topics, Inbox, Board, Focus). Marcho likes the Inbox one, so `apps/web` now holds only that. The other four are still in git history, in commit `d98b9b7`.
@@ -402,6 +418,11 @@ Rules of the UI:
 - A private thread or automation has a small lock in the list.
 - The message box has a model picker, a reasoning picker, a context window picker (200k or 1M), a fast mode picker and an access picker (Full access or Ask first). A new thread starts on medium reasoning, 1M and fast mode off. A picker is only shown for models that have that setting. While Claude is doing something, the box also has a Stop button.
 - Typing `/` in the message box opens a list of commands and skills right above it. It narrows as you type (later in a message only to names that start with what was typed, so a path like `/docs` is left alone). Arrow keys move, Enter or Tab picks, Escape closes, and a row can be clicked or tapped. Picking puts `/name ` into the box as plain text. While the box is answering a question from Claude, nothing is suggested.
+- A thread shows one timeline: what was said to and done by Claude, and between it, by time, what people wrote to each other (Decision 13). A chat message has a blue tint and says "People only". A row of three choices under the header shows Everything, only Claude, or only People.
+- Above the message box a switch says who the next message is for: "To Claude" (the box as it was) or "To people" (a plainer box: words and tags, no model pickers, no images, no `/` commands, with a blue send button). What is typed there is kept until it is sent, like a reply to Claude.
+- Typing `@` in the "To people" box, or pressing its @ button, opens a list of the people who can see the thread. It is the same list as the one for `/`, with the same keys. Picking puts `@username ` into the box. The message then shows the person's display name, in orange when it is you.
+- Chat that is new to you shows as a count next to the thread's title in the list, and makes the title bold. When one of the messages tags you, the count is orange with an @ and the row is tinted like one that needs you. In the sidebar a tag counts toward the repository's number, and other new chat shows as a small blue dot.
+- In the thread, a "New" line sits above the first chat message you had not seen when you opened it. While the timeline is set to only Claude, the chat is not read, and the People choice carries the count.
 - The 1M context window is asked for with `[1m]` after the model name. Leaving that off is not enough for 200k: in a live run the newer models still got 1M. So 200k also sets `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` for that Claude process. Fast mode is the `fastMode` setting, and it only really runs if the Claude account has extra usage switched on.
 
 - Claude's answers are shown as formatted text (bold, lists, tables, code blocks with colors and a copy button). We use Streamdown for this, a markdown renderer made for AI chat: it copes with half-written formatting while the answer is still streaming in. Your own messages stay plain text, so what you type shows exactly as typed.

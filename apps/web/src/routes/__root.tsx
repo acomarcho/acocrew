@@ -1,6 +1,7 @@
 import type { Me } from '@acocrew/shared';
 import { createRootRoute, Outlet } from '@tanstack/react-router';
 import { useCallback, useEffect, useState } from 'react';
+import { TagToast } from '../chat';
 import { Login, SetPassword } from '../login';
 import { keepDraftsOf } from '../drafts';
 import { connect, LOGGED_OUT, useApp, whoAmI } from '../store';
@@ -48,6 +49,7 @@ function App({ me, recheck }: { me: Me; recheck: () => Promise<unknown> }) {
   return (
     <div className="h-dvh bg-background text-foreground">
       {ready ? <Outlet /> : <p className="grid h-full place-items-center text-muted-foreground">Connecting...</p>}
+      <TagToast />
       {ready && !online && (
         <p className="fixed inset-x-0 top-2 z-50 mx-auto w-fit rounded-full bg-foreground px-3 py-1 text-xs text-background">
           Connection lost. Reconnecting...

@@ -14,6 +14,8 @@ import {
   Hand,
   Info,
   LoaderCircle,
+  Sparkles,
+  Users,
   X,
 } from 'lucide-react';
 import {
@@ -27,12 +29,13 @@ import {
   type ReactNode,
 } from 'react';
 import { defaultRehypePlugins, Streamdown, type StreamdownProps } from 'streamdown';
+import { ChatBox, ChatWords, timeline, type Entry, type Show } from './chat';
 import { ApprovalPanel, isAsking, QuestionPanel, useQuestions } from './pending';
 import { useCommands } from './commands';
 import { draftOf, editDraft, useDraft } from './drafts';
-import { answer, markSeen, openThread, sendMessage, stopThread, useApp } from './store';
+import { answer, closeThread, markChatSeen, markSeen, openThread, sendMessage, stopThread, useApp } from './store';
 import { ShareButton } from './sharing';
-import { Avatar, Composer, Elapsed, Picture, PinButton, StatusBadge, type Settings } from './ui';
+import { Avatar, Composer, Elapsed, Picture, PinButton, Segments, StatusBadge, UnreadBadge, type Settings } from './ui';
 
 type Tool = Extract<Item, { kind: 'tool' }>;
 
@@ -49,15 +52,16 @@ const rehypePlugins = Object.values({
 
 const clock = (at: number) => new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 
-const byUser = (item?: Item) => !item || (item.kind === 'message' && item.by === 'user');
+// Whether a person wrote this row (or nothing came before). What Claude does next starts under its own name.
+const byUser = (entry?: Entry) => !entry || entry.kind === 'chat' || (entry.kind === 'message' && entry.by === 'user');
 
 // Gives a card the steps a subagent took under it.
 const ThreadCtx = createContext<(id: string) => Item[]>(null!);
 
 // One row of the chat. `lead` rows show who is talking; the rows under them belong to the same speaker.
-// The speaker is Claude (`agent`), or the person whose user id is `by`.
-type Speaker = { agent?: boolean; by?: string };
-function Row({ agent, by, lead, at, children }: Speaker & { lead: boolean; at?: number; children: ReactNode }) {
+// The speaker is Claude (`agent`), or the person whose user id is `by`. `note` is a few words after the time.
+type Speaker = { agent?: boolean; by?: string; note?: string };
+function Row({ agent, by, note, lead, at, children }: Speaker & { lead: boolean; at?: number; children: ReactNode }) {
   const people = useApp((state) => state.people);
   const person: Person | undefined = people.find((known) => known.id === by);
   return (
@@ -69,6 +73,7 @@ function Row({ agent, by, lead, at, children }: Speaker & { lead: boolean; at?: 
             <span className="font-semibold">{agent ? 'Claude' : (person?.name ?? 'Someone')}</span>
             {agent && <span className="rounded bg-primary/15 px-1.5 text-[11px] font-medium text-primary">Agent</span>}
             {at && <span className="text-xs text-muted-foreground">{clock(at)}</span>}
+            {note && <span className="truncate text-[11px] text-sky-700">{note}</span>}
           </div>
         )}
         {children}
@@ -220,6 +225,29 @@ function ItemView({ item, lead, nested }: { item: Item; lead: boolean; nested?: 
   );
 }
 
+// Something a person wrote to the other people in the thread. It is tinted, so it cannot be taken for a
+// message to Claude.
+function ChatRow({ chat, fresh }: { chat: Extract<Entry, { kind: 'chat' }>; fresh: boolean }) {
+  return (
+    <>
+      {fresh && (
+        <div className="flex items-center gap-2 px-4 pt-2 text-[11px] font-semibold text-primary uppercase">
+          <span className="h-px flex-1 bg-primary/40" />
+          New
+          <span className="h-px flex-1 bg-primary/40" />
+        </div>
+      )}
+      <div className="my-1 border-l-2 border-sky-400 bg-sky-500/[0.07]">
+        <Row by={chat.userId} lead at={chat.at} note="People only">
+          <p className="break-words whitespace-pre-wrap">
+            <ChatWords chat={chat} />
+          </p>
+        </Row>
+      </div>
+    </>
+  );
+}
+
 function Working({ lead, since }: { lead: boolean; since: number | null }) {
   return (
     <Row agent lead={lead}>
@@ -272,7 +300,13 @@ const tabVisible = () => !document.hidden;
 // The full chat for one thread.
 export function ThreadView({ thread, channel }: { thread: Thread; channel: Channel }) {
   const items = useApp((state) => state.items);
+  const chats = useApp((state) => state.chats);
+  const chatNew = useApp((state) => state.chatNew);
+  const unread = useApp((state) => state.unread[thread.id]);
   const seenAt = useApp((state) => state.seen[thread.id] ?? 0);
+  // Which part of the thread shows, and who the message box writes to.
+  const [show, setShow] = useState<Show>('all');
+  const [to, setTo] = useState<'claude' | 'people'>('claude');
   const commands = useCommands(`thread=${thread.id}`);
   // What this person typed and has not sent yet. Of the settings it holds only what they changed. The rest
   // follows the thread, so a teammate's change shows up here and is not undone by the next reply.
@@ -285,6 +319,7 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
   const all = items ?? [];
   // What a subagent did is shown inside its card, not in the main flow.
   const top = all.filter((item) => !item.parent);
+  const rows = timeline(top, chats, show);
   const todos = all.find((item) => item.kind === 'todos');
   // The first thing Claude is waiting on the user for, wherever it is (a subagent's step counts too).
   const asking = all.find(isAsking);
@@ -293,7 +328,10 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
   const active =
     thread.status === 'working' || thread.status === 'waiting' || all.some((i) => i.kind === 'tool' && !i.done);
 
-  useEffect(() => openThread(thread.id), [thread.id]);
+  useEffect(() => {
+    openThread(thread.id);
+    return closeThread;
+  }, [thread.id]);
 
   // Whatever happens in the thread while the person has it in front of them is seen. Said before the screen
   // is drawn, so the thread never shows as new in the list while it is being looked at.
@@ -303,10 +341,18 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
     if (visible && unseen) markSeen(thread);
   }, [visible, unseen, thread]);
 
+  // The same goes for the chat, while it is not filtered away: it is read up to its last message. Not before
+  // the store holds this thread's chat (right after a switch it still has the last thread's).
+  const lastChat = chats.at(-1)?.id ?? 0;
+  const unseenChat = useApp((state) => state.openId === thread.id && lastChat > state.chatSeen) && show !== 'claude';
+  useEffect(() => {
+    if (visible && unseenChat) markChatSeen(thread.id, lastChat);
+  }, [visible, unseenChat, thread.id, lastChat]);
+
   useEffect(() => {
     const el = scroller.current;
     if (el && stick.current) el.scrollTop = el.scrollHeight;
-  }, [items, thread.status]);
+  }, [items, chats, show, thread.status]);
 
   return (
     <ThreadCtx.Provider value={(id) => all.filter((item) => item.parent === id)}>
@@ -328,6 +374,18 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
           <PinButton thread={thread} />
           <StatusBadge status={thread.status} />
         </header>
+        <div className="border-b border-border px-3 py-1.5">
+          <Segments
+            value={show}
+            onChange={setShow}
+            options={[
+              { id: 'all', name: 'Everything' },
+              { id: 'claude', name: 'Claude' },
+              // The chat is not read while it is filtered away, so what is new in it is counted here.
+              { id: 'people', name: 'People', after: <UnreadBadge unread={unread} /> },
+            ]}
+          />
+        </div>
         <div
           ref={scroller}
           onScroll={(e) => {
@@ -336,10 +394,16 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
           }}
           className="min-h-0 flex-1 overflow-y-auto py-3"
         >
-          {top.map((item, i) => (
-            <ItemView key={item.id} item={item} lead={byUser(top[i - 1])} />
-          ))}
-          {thread.status === 'working' && <Working lead={byUser(top.at(-1))} since={thread.since} />}
+          {rows.map((row, i) =>
+            row.kind === 'chat' ? (
+              <ChatRow key={`chat-${row.id}`} chat={row} fresh={row.id === chatNew} />
+            ) : (
+              <ItemView key={row.id} item={row} lead={byUser(rows[i - 1])} />
+            ),
+          )}
+          {thread.status === 'working' && show !== 'people' && (
+            <Working lead={byUser(rows.at(-1))} since={thread.since} />
+          )}
         </div>
         <div className="p-3 pt-0">
           {todos?.kind === 'todos' && <Todos todos={todos.todos} />}
@@ -354,29 +418,42 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
           )}
           {questions && <QuestionPanel flow={questions} />}
           {asking && !questions && <ApprovalPanel key={asking.id} tool={asking} reply={reply} />}
-          <Composer
-            placeholder={
-              questions ? 'Type your own answer, or leave this blank to use the selected option' : 'Reply in thread'
-            }
-            value={draft}
-            onChange={(change) => editDraft(thread.id, change(draftOf(thread.id)))}
-            settings={settings}
-            onSettings={(next) => {
-              const changed = Object.entries(next).filter(([key, value]) => thread[key as keyof Settings] !== value);
-              editDraft(thread.id, { settings: Object.fromEntries(changed) });
-            }}
-            commands={commands}
-            canSendEmpty={questions?.canSend}
-            textOnly={Boolean(questions)}
-            onSend={async (text, images) => {
-              stick.current = true;
-              // While Claude has a question open, the message box answers it.
-              if (questions) return questions.send(text);
-              await sendMessage(thread.id, { text, images, ...settings });
-              editDraft(thread.id, { settings: {} });
-            }}
-            onStop={active ? () => void stopThread(thread.id).catch(() => {}) : undefined}
-          />
+          <div className="mb-2">
+            <Segments
+              value={to}
+              onChange={setTo}
+              options={[
+                { id: 'claude', name: 'To Claude', after: <Sparkles size={12} /> },
+                { id: 'people', name: 'To people', after: <Users size={12} /> },
+              ]}
+            />
+          </div>
+          {to === 'people' && <ChatBox thread={thread} />}
+          {to === 'claude' && (
+            <Composer
+              placeholder={
+                questions ? 'Type your own answer, or leave this blank to use the selected option' : 'Reply in thread'
+              }
+              value={draft}
+              onChange={(change) => editDraft(thread.id, change(draftOf(thread.id)))}
+              settings={settings}
+              onSettings={(next) => {
+                const changed = Object.entries(next).filter(([key, value]) => thread[key as keyof Settings] !== value);
+                editDraft(thread.id, { settings: Object.fromEntries(changed) });
+              }}
+              commands={commands}
+              canSendEmpty={questions?.canSend}
+              textOnly={Boolean(questions)}
+              onSend={async (text, images) => {
+                stick.current = true;
+                // While Claude has a question open, the message box answers it.
+                if (questions) return questions.send(text);
+                await sendMessage(thread.id, { text, images, ...settings });
+                editDraft(thread.id, { settings: {} });
+              }}
+              onStop={active ? () => void stopThread(thread.id).catch(() => {}) : undefined}
+            />
+          )}
         </div>
       </div>
     </ThreadCtx.Provider>

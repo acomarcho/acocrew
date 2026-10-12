@@ -1,5 +1,5 @@
 // Database tables. After changing this file, run `pnpm db:generate` to create a migration.
-import type { Access, Item, Role, Status, Visibility } from '@acocrew/shared';
+import type { Access, Chat, Item, Role, Status, Visibility } from '@acocrew/shared';
 import { index, integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 // The four tables below are Better Auth's own (see auth.ts). It reads and writes them by these names.
@@ -162,7 +162,28 @@ export const events = sqliteTable(
   (t) => [index('events_thread').on(t.threadId, t.seq)],
 );
 
-// Who has looked at which thread: the thread's `updatedAt` when the person last had it on screen.
+// What people wrote to each other in a thread. Kept apart from `events`, which is what Claude and people said
+// to each other: nothing in here is ever handed to Claude. The id counts up, so it is also the order.
+export const chats = sqliteTable(
+  'chats',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    threadId: text('thread_id')
+      .notNull()
+      .references(() => threads.id),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id),
+    text: text('text').notNull(),
+    // The people it names with an `@`, as user ids.
+    tagged: text('tagged', { mode: 'json' }).$type<Chat['tagged']>().notNull(),
+    at: integer('at').notNull(),
+  },
+  (t) => [index('chats_thread').on(t.threadId, t.id)],
+);
+
+// Who has looked at which thread: the thread's `updatedAt` when the person last had it on screen, and the id
+// of the last chat message they had on screen (0 when none).
 export const seen = sqliteTable(
   'seen',
   {
@@ -173,6 +194,7 @@ export const seen = sqliteTable(
       .notNull()
       .references(() => threads.id),
     at: integer('at').notNull(),
+    chat: integer('chat').notNull().default(0),
   },
   (t) => [primaryKey({ columns: [t.userId, t.threadId] })],
 );
