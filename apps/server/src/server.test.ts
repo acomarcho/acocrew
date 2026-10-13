@@ -567,6 +567,43 @@ test('a thread runs Claude in the repo folder and streams two turns through one 
   expect(late.screen(thread.id)).toEqual(screen);
 });
 
+test("a thread says how full Claude's context window is after every call, and that is not news", async () => {
+  const { tab, thread } = await watch(TWO_TURNS, 'make notes');
+  expect(thread.contextUsed).toBeNull();
+  const working = await tab.until('thread', (e) => e.thread.since !== null);
+  // The first call ends with Claude asking for a tool, in the middle of the turn.
+  const first = await tab.until('thread', (e) => e.thread.contextUsed !== null);
+  expect(first.thread).toMatchObject({ id: thread.id, status: 'working', contextUsed: 16531 });
+  // The thread keeps its place in the list, and stays seen for whoever saw it.
+  expect(first.thread.updatedAt).toBe(working.thread.updatedAt);
+  expect((await tab.status(thread.id, 'done')).contextUsed).toBe(17622);
+
+  // It is what the last call took, not everything the turn's calls took together (that would be 35948).
+  await say(thread, 'what is in them?');
+  await tab.status(thread.id, 'working');
+  expect((await tab.status(thread.id, 'done')).contextUsed).toBe(18122);
+  // It is kept, so a tab that opens later, or after a restart, knows it too.
+  await serve(TWO_TURNS);
+  expect((await connect()).hello.threads).toMatchObject([{ id: thread.id, contextUsed: 18122 }]);
+});
+
+test('when Claude summarizes the conversation, the thread says from what size to what size', async () => {
+  const { tab, thread } = await watch(recording('compact'), 'what are these files?');
+  expect((await tab.status(thread.id, 'done')).contextUsed).toBe(18813);
+
+  await say(thread, '/compact');
+  await tab.status(thread.id, 'working');
+  expect((await tab.status(thread.id, 'done')).contextUsed).toBe(2470);
+  expect(tab.screen(thread.id).at(-1)).toBe(
+    'notice: Claude summarized the earlier conversation. Context went from 19K to 2.5K.',
+  );
+
+  // Claude's count after a summary leaves out its instructions and tools. Its next call counts them again.
+  await say(thread, 'what did we look at?');
+  await tab.status(thread.id, 'working');
+  expect((await tab.status(thread.id, 'done')).contextUsed).toBe(17070);
+});
+
 test('a new thread starts out named after its first line, then gets a name from Claude on every device', async () => {
   await serve(TWO_TURNS, NAMING);
   const release = claude.pause((msg) => msg.type === 'system');
@@ -940,9 +977,13 @@ test("a subagent's card stays open while it works and lists what it did", async 
   await tab.open(thread.id);
   await tab.shows(thread.id, (screen) => screen.filter((l) => l === '  Read done').length === 2);
   expect(tab.screen(thread.id)).toEqual(['message: ask a subagent', 'Agent running', '  Read done', '  Read done']);
+  // The subagent has a conversation of its own (13786 so far). The thread's is the main one.
+  const used = () => tab.events.findLast((e) => e.type === 'thread')!.thread.contextUsed;
+  expect(used()).toBe(17668);
 
   finish();
   await tab.status(thread.id, 'done');
+  expect(used()).toBe(19050);
   const screen = tab.screen(thread.id);
   expect(screen.slice(0, 4)).toEqual(['message: ask a subagent', 'Agent done', '  Read done', '  Read done']);
   expect(screen[4]).toMatch(/^message: Here's the report from the subagent/);

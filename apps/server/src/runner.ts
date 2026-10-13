@@ -18,7 +18,7 @@ import type { Hub } from './hub.ts';
 import type { Images } from './images.ts';
 import { channels, threads } from './schema.ts';
 import { inferTitle } from './title.ts';
-import { createTranslator, nextAt, wasAborted, type Out } from './translate.ts';
+import { contextUsed, createTranslator, nextAt, wasAborted, type Out } from './translate.ts';
 
 // The part of the Claude Agent SDK we use. Tests pass a fake with the same shape.
 export type QueryFn = (params: {
@@ -321,6 +321,8 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images) {
       session.failed = msg.is_error && !wasAborted(msg);
       void noteBranch(threadId);
     }
+    const used = contextUsed(msg);
+    if (used) setThread(threadId, { contextUsed: used }, false);
     emit(threadId, session.translator.translate(msg));
     sync(threadId);
   }

@@ -119,6 +119,8 @@ export const threads = sqliteTable('threads', {
   branch: text('branch'),
   // Claude's own id for the conversation. Lets a new Claude process pick up where the last one stopped.
   sessionId: text('session_id'),
+  // How many tokens the conversation took up in Claude's latest call. Empty until Claude has answered once.
+  contextUsed: integer('context_used'),
   // Who started the thread. They decide who sees it.
   createdBy: text('created_by').references(() => user.id),
   // private: only whoever started it and the people in `shares`. public: everyone with an account.

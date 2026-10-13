@@ -1,6 +1,6 @@
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { expect, test } from 'vite-plus/test';
-import { createTranslator } from './translate.ts';
+import { contextUsed, createTranslator } from './translate.ts';
 
 // Hand-made messages in the same shape as the recorded ones, for cases the recording does not have.
 const assistant = (content: unknown[], parent: string | null = null) =>
@@ -98,7 +98,12 @@ test('retries, usage limits, compaction and a signed-out machine each leave a pl
   expect(text(system('api_retry', { attempt: 2, max_retries: 10 }))).toEqual([
     "notice: Claude's servers did not answer. Trying again (attempt 2 of 10).",
   ]);
-  expect(text(system('compact_boundary', {}))[0]).toMatch(/^notice: The conversation got long/);
+  const summarized = (compact_metadata: object) => text(system('compact_boundary', { compact_metadata }));
+  expect(summarized({ pre_tokens: 181_300, post_tokens: 12_040 })).toEqual([
+    'notice: Claude summarized the earlier conversation. Context went from 181K to 12K.',
+  ]);
+  // An older Claude does not say how big the conversation is afterwards.
+  expect(summarized({ pre_tokens: 181_300 })).toEqual(['notice: Claude summarized the earlier conversation.']);
   expect(text({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', resetsAt: 1791049200 } })[0]).toMatch(
     /^notice: The usage limit of this Claude account is reached. It resets at /,
   );
@@ -106,4 +111,23 @@ test('retries, usage limits, compaction and a signed-out machine each leave a pl
   expect(text({ ...(assistant([]) as object), error: 'authentication_failed' })[0]).toMatch(
     /^error: Claude is signed out/,
   );
+});
+
+test('how full the conversation is comes from a finished call of the main agent, never from a subagent', () => {
+  const usage = {
+    input_tokens: 8,
+    cache_creation_input_tokens: 320,
+    cache_read_input_tokens: 17671,
+    output_tokens: 123,
+  };
+  const call = (parent: string | null) =>
+    ({
+      type: 'stream_event',
+      event: { type: 'message_delta', usage },
+      parent_tool_use_id: parent,
+    }) as unknown as SDKMessage;
+  expect(contextUsed(call(null))).toBe(18122);
+  expect(contextUsed(call('tool-9'))).toBeUndefined();
+  // This one has the numbers too, but the count of what Claude wrote is not final in it.
+  expect(contextUsed({ ...(assistant([]) as object), usage } as SDKMessage)).toBeUndefined();
 });

@@ -52,6 +52,8 @@ export type Thread = {
   people: string[];
   // The automation that started this thread. Null when a person did, or when that automation is deleted.
   automationId: string | null;
+  // How many tokens the conversation took up in Claude's latest call. Null until Claude has answered once.
+  contextUsed: number | null;
   // What Claude is waiting on in the background right now, in its own words. Not stored.
   tasks: string[];
   // Since when Claude has been busy in this thread without a break. Null when it is not. Not stored.
@@ -132,11 +134,20 @@ export const EFFORTS = [
   { id: 'max', name: 'Max', hint: 'Slowest, most careful' },
 ];
 
-// How much of the conversation Claude can keep in view at once.
+// How much of the conversation Claude can keep in view at once. `tokens` is that size as a number.
 export const CONTEXTS = [
-  { id: '200k', name: '200k', hint: 'Standard context window' },
-  { id: '1m', name: '1M', hint: 'Keeps far more in view' },
+  { id: '200k', name: '200k', hint: 'Standard context window', tokens: 200_000 },
+  { id: '1m', name: '1M', hint: 'Keeps far more in view', tokens: 1_000_000 },
 ];
+// A token count the way it is shown: 182000 is "182K".
+const short = new Intl.NumberFormat('en', { notation: 'compact' });
+export const tokens = (count: number) => short.format(count);
+// The size these settings give. A model without the 1M window has the standard one, whatever was picked.
+export function contextWindow({ model, context }: { model: string; context: string }) {
+  const big = MODELS.find((option) => option.id === model)?.bigContext;
+  const picked = CONTEXTS.find((option) => big && option.id === context);
+  return (picked ?? CONTEXTS[0]).tokens;
+}
 
 export const VISIBILITY = [
   { id: 'private', name: 'Private', hint: 'Only you and people you share it with' },

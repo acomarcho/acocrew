@@ -56,6 +56,14 @@ const SCENARIOS: Record<string, Scenario> = {
       'Use the AskUserQuestion tool to ask me exactly this question: "Which color do you prefer?" with header "Color" and the options Red and Blue. Then tell me which one I picked.',
     ],
   },
+  // The middle message makes Claude summarize the conversation so far, the way it does on its own when it gets long.
+  compact: {
+    prompts: [
+      'Read math.js and README.md and say what each one is in one sentence.',
+      '/compact',
+      'In one sentence, what did we look at?',
+    ],
+  },
   todos: {
     prompts: [
       'Make a to-do list with exactly two items using your task list tool: "Read math.js" and "Say hi". Then do them one by one, marking each as in progress and then completed. Finish with "hi".',

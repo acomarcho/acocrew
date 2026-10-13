@@ -1,0 +1,1 @@
+ALTER TABLE `threads` ADD `context_used` integer;
