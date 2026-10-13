@@ -1,5 +1,14 @@
 // The open thread: everything said and done in it, and the box to reply.
-import type { Answer, Channel, Item, Person, Thread, Todo } from '@acocrew/shared';
+import {
+  contextWindow,
+  tokens,
+  type Answer,
+  type Channel,
+  type Item,
+  type Person,
+  type Thread,
+  type Todo,
+} from '@acocrew/shared';
 import { code } from '@streamdown/code';
 import { Link } from '@tanstack/react-router';
 import {
@@ -198,15 +207,19 @@ function ItemView({ item, lead, nested }: { item: Item; lead: boolean; nested?: 
     <>
       {item.kind === 'tool' && <ToolCard tool={item} />}
       {item.kind === 'error' && (
-        <p className="rounded-md border border-rose-500/30 bg-rose-500/10 px-2.5 py-1.5 text-sm whitespace-pre-wrap text-rose-500">
-          {item.text}
-        </p>
+        <Copyable text={item.text}>
+          <p className="rounded-md border border-rose-500/30 bg-rose-500/10 px-2.5 py-1.5 text-sm whitespace-pre-wrap text-rose-500">
+            {item.text}
+          </p>
+        </Copyable>
       )}
       {item.kind === 'notice' && (
-        <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <Info size={13} className="shrink-0" />
-          {item.text}
-        </p>
+        <Copyable text={item.text}>
+          <p className="flex items-center gap-1.5">
+            <Info size={15} className="shrink-0 text-muted-foreground" />
+            {item.text}
+          </p>
+        </Copyable>
       )}
       {item.kind === 'message' && (
         <Copyable text={item.text}>
@@ -262,6 +275,29 @@ function Working({ lead, since }: { lead: boolean; since: number | null }) {
             />
           ))}
         </span>
+      </div>
+    </Row>
+  );
+}
+
+// How full Claude's context window is after its latest call, as a bar and as "182K / 1M".
+function ContextBar({ thread }: { thread: Thread }) {
+  const used = thread.contextUsed;
+  if (used === null) return null;
+  const max = contextWindow(thread);
+  return (
+    <Row agent lead={false}>
+      <div className="flex items-center gap-2 text-xs text-muted-foreground tabular-nums" title="Context window used">
+        <div
+          role="progressbar"
+          aria-label="Context window used"
+          aria-valuenow={used}
+          aria-valuemax={max}
+          className="h-1 w-24 overflow-hidden rounded-full bg-muted"
+        >
+          <div className="h-full bg-primary" style={{ width: `${(used / max) * 100}%` }} />
+        </div>
+        {tokens(used)} / {tokens(max)}
       </div>
     </Row>
   );
@@ -404,6 +440,8 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
           {thread.status === 'working' && show !== 'people' && (
             <Working lead={byUser(rows.at(-1))} since={thread.since} />
           )}
+          {/* The bar is about Claude, so it goes away with the rest of Claude's side. */}
+          {show !== 'people' && <ContextBar thread={thread} />}
         </div>
         <div className="p-3 pt-0">
           {todos?.kind === 'todos' && <Todos todos={todos.todos} />}

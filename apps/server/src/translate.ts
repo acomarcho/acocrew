@@ -1,4 +1,4 @@
-import type { Item, Question, Todo } from '@acocrew/shared';
+import { tokens, type Item, type Question, type Todo } from '@acocrew/shared';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { randomUUID } from 'node:crypto';
 
@@ -34,6 +34,17 @@ function textOf(content: unknown): string {
 // True for a turn that ended because someone stopped it, not because something broke.
 export const wasAborted = (msg: SDKMessage) =>
   msg.type === 'result' && (msg.terminal_reason === 'aborted_streaming' || msg.terminal_reason === 'aborted_tools');
+
+// How many tokens the conversation takes up, for a message that says so. One is the end of a call of the main
+// agent, which has what Claude read for it and what it wrote. A subagent has a conversation of its own. The
+// `result` of a turn does not say: it adds up all the calls of the turn. The other is Claude having summarized
+// the conversation. That count leaves out Claude's instructions and tools, so the next call says a bit more.
+export function contextUsed(msg: SDKMessage) {
+  if (msg.type === 'system' && msg.subtype === 'compact_boundary') return msg.compact_metadata.post_tokens;
+  if (msg.type !== 'stream_event' || msg.parent_tool_use_id || msg.event.type !== 'message_delta') return;
+  const { input_tokens, cache_creation_input_tokens, cache_read_input_tokens, output_tokens } = msg.event.usage;
+  return (input_tokens ?? 0) + (cache_creation_input_tokens ?? 0) + (cache_read_input_tokens ?? 0) + output_tokens;
+}
 
 // Turns raw Claude messages into our own items. One translator per Claude process.
 // `todos` is the to-do list as it was last saved, so updates after a restart still land on it.
@@ -155,7 +166,9 @@ export function createTranslator(todos: Todo[] = []) {
     }
 
     if (msg.type === 'system' && msg.subtype === 'compact_boundary') {
-      return [notice('The conversation got long, so Claude summarized the earlier part to keep going.')];
+      const { pre_tokens, post_tokens } = msg.compact_metadata;
+      const went = post_tokens ? ` Context went from ${tokens(pre_tokens)} to ${tokens(post_tokens)}.` : '';
+      return [notice(`Claude summarized the earlier conversation.${went}`)];
     }
     if (msg.type === 'system' && msg.subtype === 'api_retry') {
       return [notice(`Claude's servers did not answer. Trying again (attempt ${msg.attempt} of ${msg.max_retries}).`)];

@@ -1,4 +1,14 @@
-import type { Automation, Channel, Chat, Item, Me, ServerEvent, Status, Thread } from '@acocrew/shared';
+import {
+  contextWindow,
+  type Automation,
+  type Channel,
+  type Chat,
+  type Item,
+  type Me,
+  type ServerEvent,
+  type Status,
+  type Thread,
+} from '@acocrew/shared';
 import { expect, test, vi } from 'vite-plus/test';
 import {
   closeThread,
@@ -62,6 +72,13 @@ test('a pin reaches the list though the thread is no newer, and pinned threads c
   expect(pinnedOf(state.threads).map((t) => t.id)).toEqual(['b', 'c', 'a']);
   state = reduce(state, { type: 'thread', thread: { ...rows[2], pinnedAt: null } });
   expect(pinnedOf(state.threads).map((t) => t.id)).toEqual(['b', 'a']);
+});
+
+test('the size of the context window follows the model and what was picked for it', () => {
+  expect(contextWindow({ model: 'claude-opus-5-5', context: '1m' })).toBe(1_000_000);
+  expect(contextWindow({ model: 'claude-opus-5-5', context: '200k' })).toBe(200_000);
+  // A model without the 1M window has the standard one, whatever was picked.
+  expect(contextWindow({ model: 'claude-haiku-4-5-20251001', context: '1m' })).toBe(200_000);
 });
 
 test('what was seen comes with the first message, and is added to as threads are looked at', () => {

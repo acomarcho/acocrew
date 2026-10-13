@@ -37,6 +37,7 @@ export const threadCols = {
   status: threads.status,
   path: threads.path,
   branch: threads.branch,
+  contextUsed: threads.contextUsed,
   people: threads.people,
   automationId: threads.automationId,
   updatedAt: threads.updatedAt,
