@@ -472,6 +472,12 @@ type ComposerProps = {
 export const BOX =
   'block field-sizing-content max-h-[calc(8lh+--spacing(3))] min-h-[calc(2lh+--spacing(3))] w-full resize-none bg-transparent px-3.5 pt-3 text-base text-foreground outline-none placeholder:text-muted-foreground md:text-sm';
 
+// Enter starts a new line in a message box, so a phone keyboard never sends by itself. Cmd+Enter on a Mac,
+// or Ctrl+Enter elsewhere, sends. On a phone the send button does.
+export const sends = (e: { key: string; metaKey: boolean; ctrlKey: boolean }) =>
+  e.key === 'Enter' && (e.metaKey || e.ctrlKey);
+export const SEND_KEYS = '⌘+Enter or Ctrl+Enter';
+
 export function Composer({
   placeholder,
   value,
@@ -589,8 +595,7 @@ export function Composer({
         }}
         onKeyDown={(e) => {
           // A key pressed while a word is being put together (Chinese, Japanese, Korean) belongs to that.
-          if (e.nativeEvent.isComposing || list.key(e)) return;
-          if (e.key !== 'Enter' || e.shiftKey) return;
+          if (e.nativeEvent.isComposing || list.key(e) || !sends(e)) return;
           e.preventDefault();
           void submit();
         }}
@@ -683,6 +688,7 @@ export function Composer({
           onClick={() => void submit()}
           disabled={!ready}
           aria-label={sendLabel ?? 'Send'}
+          title={`${sendLabel ?? 'Send'} (${SEND_KEYS})`}
           className={`shrink-0 rounded-full bg-primary text-primary-foreground disabled:opacity-40 ${sendLabel ? 'px-3.5 py-1.5 text-sm font-semibold' : 'grid size-8 place-items-center'}`}
         >
           {sendLabel ?? <ArrowUp size={16} />}
