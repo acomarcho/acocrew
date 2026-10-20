@@ -19,6 +19,31 @@ export function timeline(items: Item[], chats: Chat[], show: Show): Entry[] {
   return [...(show === 'people' ? [] : items), ...(show === 'claude' ? [] : said)].sort((a, b) => a.at - b.at);
 }
 
+// Which day something happened on this device's clock.
+export const dayOf = (at: number) => new Date(at).toDateString();
+
+// The timeline cut into days on this device's clock. Each day gets its own divider in the chat.
+export function byDay<T extends { at: number }>(rows: T[]): T[][] {
+  const days: T[][] = [];
+  for (const row of rows) {
+    const last = days.at(-1);
+    if (last && dayOf(last[0].at) === dayOf(row.at)) last.push(row);
+    else days.push([row]);
+  }
+  return days;
+}
+
+// What a day divider says: Today, Yesterday, or the date, with the year only when it is not this year.
+export function dayLabel(at: number, now = Date.now()) {
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (dayOf(at) === dayOf(now)) return 'Today';
+  if (dayOf(at) === yesterday.toDateString()) return 'Yesterday';
+  const date = new Date(at);
+  const year = date.getFullYear() === new Date(now).getFullYear() ? undefined : 'numeric';
+  return date.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric', year });
+}
+
 // Who sees a thread: everyone when it is public, otherwise whoever started it and the people it is shared
 // with. The same rule the server has. People whose account is gone are left out.
 export const peopleOf = (thread: Thread, people: Person[]) =>

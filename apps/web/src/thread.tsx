@@ -38,7 +38,7 @@ import {
   type ReactNode,
 } from 'react';
 import { defaultRehypePlugins, Streamdown, type StreamdownProps } from 'streamdown';
-import { ChatBox, ChatWords, timeline, type Entry, type Show } from './chat';
+import { byDay, ChatBox, ChatWords, dayLabel, dayOf, timeline, type Entry, type Show } from './chat';
 import { ApprovalPanel, isAsking, QuestionPanel, useQuestions } from './pending';
 import { useCommands } from './commands';
 import { draftOf, editDraft, useDraft } from './drafts';
@@ -261,6 +261,21 @@ function ChatRow({ chat, fresh }: { chat: Extract<Entry, { kind: 'chat' }>; fres
   );
 }
 
+// One day of the chat, under a line that says which day it is. The day's pill stays at the top while its
+// rows scroll by, and the next day's section pushes it away, since a sticky thing never leaves its section.
+function DaySection({ at, children }: { at: number; children: ReactNode }) {
+  return (
+    <section className="relative before:absolute before:inset-x-4 before:top-3.5 before:border-t before:border-border">
+      <div className="pointer-events-none sticky top-0 z-10 flex h-7 items-center justify-center">
+        <span className="rounded-full border border-border bg-background px-3 py-0.5 text-xs font-medium shadow-sm">
+          {dayLabel(at)}
+        </span>
+      </div>
+      {children}
+    </section>
+  );
+}
+
 function Working({ lead, since }: { lead: boolean; since: number | null }) {
   return (
     <Row agent lead={lead}>
@@ -430,13 +445,18 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
           }}
           className="min-h-0 flex-1 overflow-y-auto py-3"
         >
-          {rows.map((row, i) =>
-            row.kind === 'chat' ? (
-              <ChatRow key={`chat-${row.id}`} chat={row} fresh={row.id === chatNew} />
-            ) : (
-              <ItemView key={row.id} item={row} lead={byUser(rows[i - 1])} />
-            ),
-          )}
+          {byDay(rows).map((day) => (
+            // Keyed by the day, so switching what shows does not redraw a day (and close its open cards).
+            <DaySection key={dayOf(day[0].at)} at={day[0].at}>
+              {day.map((row, i) =>
+                row.kind === 'chat' ? (
+                  <ChatRow key={`chat-${row.id}`} chat={row} fresh={row.id === chatNew} />
+                ) : (
+                  <ItemView key={row.id} item={row} lead={byUser(day[i - 1])} />
+                ),
+              )}
+            </DaySection>
+          ))}
           {thread.status === 'working' && show !== 'people' && (
             <Working lead={byUser(rows.at(-1))} since={thread.since} />
           )}
