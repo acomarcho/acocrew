@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from 'react';
 import { SuggestMenu, useSuggestions } from './commands';
 import { editDraft, useDraft } from './drafts';
 import { sendChat, useApp, useMe } from './store';
-import { Avatar, BOX } from './ui';
+import { Avatar, BOX, SEND_KEYS, sends } from './ui';
 
 // One row of a thread's timeline: something Claude or a person did there, or a chat message.
 export type Entry = Item | ({ kind: 'chat' } & Chat);
@@ -115,8 +115,7 @@ export function ChatBox({ thread }: { thread: Thread }) {
         onSelect={list.moved}
         onBlur={list.close}
         onKeyDown={(e) => {
-          if (e.nativeEvent.isComposing || list.key(e)) return;
-          if (e.key !== 'Enter' || e.shiftKey) return;
+          if (e.nativeEvent.isComposing || list.key(e) || !sends(e)) return;
           e.preventDefault();
           void submit();
         }}
@@ -149,6 +148,7 @@ export function ChatBox({ thread }: { thread: Thread }) {
           onClick={() => void submit()}
           disabled={!clean || sending}
           aria-label="Send to people"
+          title={`Send to people (${SEND_KEYS})`}
           className="grid size-8 shrink-0 place-items-center rounded-full bg-sky-600 text-white disabled:opacity-40"
         >
           <ArrowUp size={16} />
