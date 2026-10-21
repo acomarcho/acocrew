@@ -654,7 +654,8 @@ export function Composer({
         {efforts.length > 0 && (
           <Picker
             icon={<Brain size={14} />}
-            value={settings.effort}
+            // A level saved before the model's levels were known shows as the one that will run.
+            value={model ? nearestEffort(model.efforts, settings.effort) : settings.effort}
             options={efforts}
             onChange={(effort) => onSettings({ ...settings, effort })}
             menuClass="-left-20 sm:left-0"

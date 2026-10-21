@@ -53,7 +53,8 @@ export function createProxy(db: Db) {
     });
     if (!res.ok) throw new Error(`The model proxy said no (${res.status}): ${(await res.text()).slice(0, 200)}`);
     type Listed = { slug: string; supported_reasoning_levels: { effort: string }[] | null };
-    const { models } = (await res.json()) as { models: Listed[] };
+    const { models } = (await res.json()) as { models?: Listed[] };
+    if (!Array.isArray(models)) throw new Error('The model proxy did not list its models the way CLIProxyAPI does.');
     return models
       .filter((model) => !isClaude(model.slug))
       .map(({ slug, supported_reasoning_levels }) => {
