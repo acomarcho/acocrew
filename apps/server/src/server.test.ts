@@ -6,6 +6,9 @@ import {
   LOGIN_PATH,
   LOGOUT_PATH,
   ME_PATH,
+  MODELS,
+  MODELS_PATH,
+  PROXY_PATH,
   USERS_PATH,
   WS_PATH,
   type Answer,
@@ -17,8 +20,10 @@ import {
   type GithubAccount,
   type Item,
   type Me,
+  type Model,
   type Person,
   type Places,
+  type ProxySettings,
   type ServerEvent,
   type Status,
   type Temporary,
@@ -28,6 +33,8 @@ import type { PermissionResult, SDKMessage, SDKUserMessage } from '@anthropic-ai
 import { eq } from 'drizzle-orm';
 import { execFileSync } from 'node:child_process';
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -36,6 +43,7 @@ import { WebSocket } from 'ws';
 import { FIRST_ADMIN } from './auth.ts';
 import { CHECK_MS } from './automations.ts';
 import { openDb, type Db } from './db.ts';
+import { createProxy, PROXY_DEFAULTS } from './proxy.ts';
 import type { QueryFn } from './runner.ts';
 import { automations, channels, events, session as sessions, threads } from './schema.ts';
 import { startServer } from './server.ts';
@@ -63,6 +71,33 @@ const NAME = '📝 Create note-taking feature';
 // skills (`broken` has a skill file with no header, `ship` is an old-style command file), one from the home
 // folder that the repository also has under the same name (`concise-mode`), one from a plugin, and built-ins.
 const COMMANDS = JSON.parse(readFileSync(new URL('./fixtures/commands.json', import.meta.url), 'utf8'));
+
+// What a real CLIProxyAPI with OpenCode Go in it answered at `/v1/models?client_version=1`, cut down to the
+// fields of each model that matter here, and the model ids in it, sorted. Its config names each model's levels.
+const PROXY_LIST = readFileSync(new URL('./fixtures/proxy-models.json', import.meta.url), 'utf8');
+const PROXY_MODELS: string[] = JSON.parse(PROXY_LIST)
+  .models.map((model: { slug: string }) => model.slug)
+  .sort();
+const PROXY_KEY = 'test-proxy-key';
+// A stand-in for the model proxy. Like the real one it lists its models only for the right key, and turns
+// anything else down the way the real one does.
+let proxyServer: Server;
+let proxyUrl: string;
+const proxyAsked: string[] = [];
+function startProxy() {
+  proxyServer = createServer((req, res) => {
+    proxyAsked.push(`${req.method} ${req.url}`);
+    const listing = req.url === '/v1/models?client_version=1' && req.headers.authorization === `Bearer ${PROXY_KEY}`;
+    res.writeHead(listing ? 200 : 401, { 'content-type': 'application/json' });
+    res.end(listing ? PROXY_LIST : '{"error":"Invalid API key"}');
+  });
+  return new Promise<void>((resolve) =>
+    proxyServer.listen(0, '127.0.0.1', () => {
+      proxyUrl = `http://127.0.0.1:${(proxyServer.address() as AddressInfo).port}`;
+      resolve();
+    }),
+  );
+}
 
 // A stand-in for Claude that plays a recording back. Like the real thing it waits for a user message only
 // where the recording had one, asks for permission where the recording did, and otherwise talks on its own.
@@ -255,13 +290,17 @@ const DAY = 24 * 60 * 60_000;
 // first start and a real login, done once (hashing passwords is slow on purpose).
 let fresh: Buffer;
 let adminCookie: string;
+// The admin has also pointed the machine at the stand-in model proxy, so no test reaches a real one.
 beforeAll(async () => {
   db = openDb(':memory:');
+  await startProxy();
   await serve(TWO_TURNS);
   cookie = adminCookie = await logIn(FIRST_ADMIN.username, FIRST_ADMIN.password);
   await post(`${ME_PATH}/password`, { currentPassword: FIRST_ADMIN.password, newPassword: PASSWORD });
+  await post(PROXY_PATH, { url: proxyUrl, background: PROXY_DEFAULTS.background, key: PROXY_KEY });
   fresh = db.$client.serialize();
 });
+afterAll(() => void proxyServer.close());
 
 beforeEach(async () => {
   db = openDb(fresh);
@@ -1538,6 +1577,9 @@ test('nothing is given out without a login', async () => {
       post(USERS_PATH, { username: 'sneaky', name: 'Sneaky', password: 'sneaky password' }),
       ask(GITHUB_PATH),
       post(GITHUB_PATH, HUBOT),
+      ask(PROXY_PATH),
+      post(PROXY_PATH, { url: proxyUrl, background: 'x', key: 'stolen' }),
+      ask(MODELS_PATH),
       post('/api/auth/sign-up/email', { email: 'a@b.co', name: 'Sneaky', password: 'sneaky password' }),
     ]);
 
@@ -2527,4 +2569,190 @@ test('the chat of a private thread is for the people who see it, and only they c
   expect(await tagged('@robin welcome')).toEqual([robin.id]);
   await post(`${USERS_PATH}/${robin.id}/delete`);
   expect(await tagged('@robin bye')).toEqual([]);
+});
+
+// The model proxy.
+
+const proxySettings = async (res: Response) => (await res.json()) as ProxySettings;
+const SIDE = PROXY_DEFAULTS.background;
+// A thread on a model of the stand-in proxy.
+const DEEPSEEK = { ...HAIKU, model: 'deepseek-v4-pro', effort: 'high' };
+
+test('out of the box the proxy is CLIProxyAPI at its own address, with a quick model for side jobs and no key', () => {
+  expect(createProxy(openDb(':memory:')).read()).toEqual({
+    url: 'http://127.0.0.1:8317',
+    key: '',
+    background: 'deepseek-v4.1-flash',
+  });
+});
+
+test('an admin sets up the model proxy and sees what it offers, but never the key', async () => {
+  const res = await ask(PROXY_PATH);
+  expect(await res.clone().text()).not.toContain(PROXY_KEY);
+  expect(await proxySettings(res)).toEqual({
+    url: proxyUrl,
+    background: SIDE,
+    keySet: true,
+    models: PROXY_MODELS,
+    error: null,
+  });
+
+  // An empty key keeps the one there is. A slash at the end of the address is dropped.
+  const kept = await proxySettings(
+    await post(PROXY_PATH, { url: `${proxyUrl}/`, background: 'glm-5.3-flash', key: '' }),
+  );
+  expect(kept).toMatchObject({ url: proxyUrl, background: 'glm-5.3-flash', keySet: true, models: PROXY_MODELS });
+
+  // A wrong key is saved, and the admin sees what the proxy said about it.
+  const wrong = await proxySettings(await post(PROXY_PATH, { url: proxyUrl, background: SIDE, key: 'wrong' }));
+  expect(wrong).toMatchObject({ keySet: true, models: [], error: expect.stringContaining('Invalid API key') });
+
+  // Someone who is not an admin can neither look nor change it.
+  const jordan = await teammate('jordan', 'Jordan');
+  await as(jordan.cookie, async () => {
+    expect((await ask(PROXY_PATH)).status).toBe(403);
+    expect((await post(PROXY_PATH, { url: 'http://evil.example', background: SIDE, key: 'theirs' })).status).toBe(403);
+  });
+  expect(await proxySettings(await ask(PROXY_PATH))).toMatchObject({ url: proxyUrl, error: expect.any(String) });
+});
+
+test('a proxy set-up that cannot work is turned down and changes nothing', async () => {
+  const bad = [
+    { url: 'not an address', background: SIDE },
+    { url: 'file:///etc/passwd', background: SIDE },
+    { url: proxyUrl, background: '  ' },
+    { url: proxyUrl },
+    {},
+  ];
+  for (const body of bad) expect((await post(PROXY_PATH, body)).status, JSON.stringify(body)).toBe(400);
+  expect(await proxySettings(await ask(PROXY_PATH))).toMatchObject({ url: proxyUrl, background: SIDE, error: null });
+});
+
+test("the model picker offers Claude's models and then the proxy's, and only Claude's while the proxy is away", async () => {
+  // Anyone with an account gets the list, not just admins.
+  const jordan = await teammate('jordan', 'Jordan');
+  const list = await as(jordan.cookie, async () => (await (await ask(MODELS_PATH)).json()) as Model[]);
+  expect(list.map((model) => model.id)).toEqual([...MODELS.map((model) => model.id), ...PROXY_MODELS]);
+  expect(list.find((model) => model.id === 'deepseek-v4-pro')).toEqual({
+    id: 'deepseek-v4-pro',
+    name: 'deepseek-v4-pro',
+    hint: 'Through the model proxy',
+    bigContext: false,
+    fast: false,
+    efforts: ['high', 'max'],
+  });
+  // Each model has the levels the proxy names for it, in order, and only ones Claude Code can ask for: MiniMax M3's
+  // "none" is not one of them, and the MiMo models cannot be told how hard to think at all.
+  const efforts = Object.fromEntries(list.map((model) => [model.id, model.efforts]));
+  expect(efforts).toMatchObject({
+    'claude-opus-5-5': ['low', 'medium', 'high', 'xhigh', 'max'],
+    'kimi-k3': ['max'],
+    'qwen3.8-max': ['low', 'medium', 'xhigh'],
+    'glm-5.1': ['low', 'medium', 'high'],
+    'minimax-m3': [],
+    'mimo-v2.6-pro': [],
+  });
+
+  // Port 1 has nothing listening on it.
+  await post(PROXY_PATH, { url: 'http://127.0.0.1:1', background: SIDE, key: '' });
+  expect(((await (await ask(MODELS_PATH)).json()) as Model[]).map((model) => model.id)).toEqual(
+    MODELS.map((model) => model.id),
+  );
+  expect((await proxySettings(await ask(PROXY_PATH))).error).toBe('Nothing answers at http://127.0.0.1:1.');
+});
+
+test('a thread on a proxy model runs Claude pointed at the proxy, signed in with its key', async () => {
+  const tab = await connect();
+  const thread = await startThread('make notes', DEEPSEEK);
+  expect(thread.model).toBe('deepseek-v4-pro');
+  await tab.status(thread.id, 'done');
+  const [call] = claude.calls;
+  expect(call).toMatchObject({ model: 'deepseek-v4-pro', effort: 'high' });
+  // Every one of Claude Code's model slots is filled, so nothing it does on its own goes to Anthropic.
+  expect(call.settings).toEqual({
+    fastMode: false,
+    env: {
+      CLAUDE_CODE_DISABLE_1M_CONTEXT: '1',
+      ANTHROPIC_BASE_URL: proxyUrl,
+      ANTHROPIC_DEFAULT_OPUS_MODEL: 'deepseek-v4-pro',
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'deepseek-v4-pro',
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: SIDE,
+    },
+  });
+  // The key is in the environment Claude gets, next to the server's own, and nowhere in its settings.
+  expect(call.env).toEqual({ ...process.env, ANTHROPIC_AUTH_TOKEN: PROXY_KEY });
+  expect(JSON.stringify(call.settings)).not.toContain(PROXY_KEY);
+});
+
+test("a Claude thread keeps the machine's own Claude login and settings, and never waits on the proxy", async () => {
+  const tab = await connect();
+  const asked = proxyAsked.length;
+  const thread = await startThread('make notes', OPUS);
+  await tab.status(thread.id, 'done');
+  expect(proxyAsked.length).toBe(asked);
+  expect(claude.calls[0].env).toBeUndefined();
+  expect(claude.calls[0].settings).toEqual({ fastMode: false, env: {} });
+});
+
+test('a model neither Claude nor the proxy has is turned down', async () => {
+  const channel = await addChannel();
+  const res = await post('/api/threads', {
+    channelId: channel.id,
+    text: 'hi',
+    path: channel.path,
+    ...HAIKU,
+    model: 'gpt-9',
+  });
+  expect(res.status).toBe(400);
+  expect(claude.calls).toEqual([]);
+});
+
+test('an idle thread can go from a proxy model to Claude and back, in the same conversation', async () => {
+  const tab = await connect();
+  const thread = await startThread('make notes', DEEPSEEK);
+  await tab.status(thread.id, 'done');
+  await say(thread, 'what is in them?', OPUS);
+  await tab.status(thread.id, 'done');
+  expect(claude.closed()).toBe(1);
+  expect(claude.calls[1]).toMatchObject({ model: 'claude-opus-5-5[1m]', resume: SESSION, env: undefined });
+  expect(claude.calls[1].settings).toEqual({ fastMode: false, env: {} });
+});
+
+test('a new proxy set-up reaches an idle proxy thread with its next message', async () => {
+  const tab = await connect();
+  const thread = await startThread('make notes', DEEPSEEK);
+  await tab.status(thread.id, 'done');
+  await post(PROXY_PATH, { url: proxyUrl, background: 'glm-5.3-flash', key: '' });
+  await say(thread, 'what is in them?', DEEPSEEK);
+  await tab.status(thread.id, 'done');
+  expect(claude.closed()).toBe(1);
+  expect(claude.calls[1]).toMatchObject({ model: 'deepseek-v4-pro', resume: SESSION });
+  expect(claude.calls[1].settings).toMatchObject({ env: { ANTHROPIC_DEFAULT_HAIKU_MODEL: 'glm-5.3-flash' } });
+});
+
+test('while the proxy is away, a proxy thread is told so, and a proxy automation can still be paused', async () => {
+  const tab = await connect();
+  const thread = await startThread('make notes', DEEPSEEK);
+  await tab.status(thread.id, 'done');
+  const made = await automate(DEEPSEEK);
+  expect(made.model).toBe('deepseek-v4-pro');
+
+  // Port 1 has nothing listening on it.
+  await post(PROXY_PATH, { url: 'http://127.0.0.1:1', background: SIDE, key: '' });
+  const res = await say(thread, 'what is in them?', DEEPSEEK);
+  expect(res.status).toBe(400);
+  expect(await error(res)).toBe('deepseek-v4-pro is not offered right now. Is the model proxy running?');
+  expect((await change(made, { on: false })).status).toBe(200);
+  // Picking it anew is another matter.
+  expect((await change(made, { model: 'kimi-k3' })).status).toBe(400);
+});
+
+test('the next message on an idle proxy thread with nothing changed goes to the same Claude process', async () => {
+  const tab = await connect();
+  const thread = await startThread('make notes', DEEPSEEK);
+  await tab.status(thread.id, 'done');
+  await say(thread, 'what is in them?', DEEPSEEK);
+  await tab.status(thread.id, 'done');
+  expect(claude.closed()).toBe(0);
+  expect(claude.calls).toHaveLength(1);
 });

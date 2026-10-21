@@ -293,7 +293,8 @@ export function Picker({
 }: PickerProps) {
   const [open, setOpen] = useState(false);
   const [typed, setTyped] = useState('');
-  const picked = options.find((o) => o.id === value)?.name;
+  // A value that is not among the options (a proxy model while the proxy is away) still shows as itself.
+  const picked = options.find((o) => o.id === value)?.name ?? value;
   const words = typed.trim().toLowerCase();
   const shown = options.filter((o) => `${o.name} ${o.hint}`.toLowerCase().includes(words));
   const pick = (id: string) => {
@@ -436,6 +437,14 @@ export const NEW_THREAD: Settings = {
   access: 'full',
 };
 
+// The level of `efforts` closest to `effort`, the higher one on a tie. The model proxy does the same with a level a
+// model does not have, so the picker shows what will really be asked for.
+export function nearestEffort(efforts: string[], effort: string) {
+  const at = (id: string) => EFFORTS.findIndex((option) => option.id === id);
+  const away = (id: string) => Math.abs(at(id) - at(effort));
+  return efforts.toSorted((a, b) => away(a) - away(b) || at(b) - at(a))[0] ?? effort;
+}
+
 const SPEEDS = [
   { id: 'off', name: 'Standard', hint: 'Normal speed and price' },
   { id: 'on', name: 'Fast', hint: 'Quicker answers, costs more' },
@@ -525,7 +534,10 @@ export function Composer({
     });
     return true;
   };
-  const model = MODELS.find((option) => option.id === settings.model);
+  const models = useApp((state) => state.models);
+  const model = models.find((option) => option.id === settings.model);
+  // A model the list does not have (a proxy model while the proxy is away) keeps every level on offer.
+  const efforts = EFFORTS.filter((option) => model?.efforts.includes(option.id) ?? true);
   // The text stays in the box until the server has taken it, so a failed send loses nothing.
   const submit = async () => {
     if (!ready) return;
@@ -631,18 +643,25 @@ export function Composer({
         <Picker
           icon={<Sparkles size={14} className="text-primary" />}
           value={settings.model}
-          options={MODELS}
-          onChange={(model) => onSettings({ ...settings, model })}
+          options={models}
+          onChange={(id) => {
+            const picked = models.find((option) => option.id === id)!;
+            onSettings({ ...settings, model: id, effort: nearestEffort(picked.efforts, settings.effort) });
+          }}
         />
-        {/* nudged left on phones so the menus stay on screen */}
-        <Picker
-          icon={<Brain size={14} />}
-          value={settings.effort}
-          options={EFFORTS}
-          onChange={(effort) => onSettings({ ...settings, effort })}
-          menuClass="-left-20 sm:left-0"
-          labelClass={ICON_ON_PHONE}
-        />
+        {/* Only the levels the model has. Not there for a model whose thinking cannot be set.
+            Nudged left on phones so the menus stay on screen. */}
+        {efforts.length > 0 && (
+          <Picker
+            icon={<Brain size={14} />}
+            // A level saved before the model's levels were known shows as the one that will run.
+            value={model ? nearestEffort(model.efforts, settings.effort) : settings.effort}
+            options={efforts}
+            onChange={(effort) => onSettings({ ...settings, effort })}
+            menuClass="-left-20 sm:left-0"
+            labelClass={ICON_ON_PHONE}
+          />
+        )}
         {model?.bigContext && (
           <Picker
             icon={<Layers size={14} />}
