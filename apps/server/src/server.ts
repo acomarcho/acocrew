@@ -132,7 +132,7 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
   const hub = createHub();
   const store = openImages(images);
   const proxy = createProxy(db);
-  const runner = createRunner(db, hub, query, store, proxy.read);
+  const runner = createRunner(db, hub, query, store, proxy);
   // Why a thread cannot run on this model right now, or nothing when it can. A proxy model is off the list while
   // the proxy is away, which is worth saying in so many words.
   const unoffered = async (model: string) =>

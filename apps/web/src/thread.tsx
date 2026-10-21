@@ -297,9 +297,10 @@ function Working({ lead, since }: { lead: boolean; since: number | null }) {
 
 // How full Claude's context window is after its latest call, as a bar and as "182K / 1M".
 function ContextBar({ thread }: { thread: Thread }) {
+  const models = useApp((state) => state.models);
   const used = thread.contextUsed;
   if (used === null) return null;
-  const max = contextWindow(thread);
+  const max = contextWindow(thread, models);
   return (
     <Row agent lead={false}>
       <div className="flex items-center gap-2 text-xs text-muted-foreground tabular-nums" title="Context window used">

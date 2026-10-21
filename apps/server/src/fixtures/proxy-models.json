@@ -1,9 +1,39 @@
 {
   "models": [
     {
+      "slug": "beam-free",
+      "display_name": "beam-free",
+      "context_window": 1048576,
+      "max_context_window": 1048576,
+      "default_reasoning_level": "medium",
+      "supported_reasoning_levels": [
+        {
+          "description": "Fast responses with lighter reasoning",
+          "effort": "low"
+        },
+        {
+          "description": "Balances speed and reasoning depth for everyday tasks",
+          "effort": "medium"
+        },
+        {
+          "description": "Greater reasoning depth for complex problems",
+          "effort": "high"
+        },
+        {
+          "description": "Extra high reasoning depth for complex problems",
+          "effort": "xhigh"
+        },
+        {
+          "description": "Maximum available reasoning depth for complex problems",
+          "effort": "max"
+        }
+      ]
+    },
+    {
       "slug": "deepseek-v4-pro",
       "display_name": "deepseek-v4-pro",
-      "context_window": 500000,
+      "context_window": 1000000,
+      "max_context_window": 1000000,
       "default_reasoning_level": "high",
       "supported_reasoning_levels": [
         {
@@ -19,7 +49,8 @@
     {
       "slug": "deepseek-v4.1-flash",
       "display_name": "deepseek-v4.1-flash",
-      "context_window": 500000,
+      "context_window": 1000000,
+      "max_context_window": 1000000,
       "default_reasoning_level": "low",
       "supported_reasoning_levels": [
         {
@@ -37,29 +68,10 @@
       ]
     },
     {
-      "slug": "glm-5.1",
-      "display_name": "glm-5.1",
-      "context_window": 500000,
-      "default_reasoning_level": "medium",
-      "supported_reasoning_levels": [
-        {
-          "description": "Fast responses with lighter reasoning",
-          "effort": "low"
-        },
-        {
-          "description": "Balances speed and reasoning depth for everyday tasks",
-          "effort": "medium"
-        },
-        {
-          "description": "Greater reasoning depth for complex problems",
-          "effort": "high"
-        }
-      ]
-    },
-    {
       "slug": "glm-5.2",
       "display_name": "glm-5.2",
-      "context_window": 500000,
+      "context_window": 1000000,
+      "max_context_window": 1000000,
       "default_reasoning_level": "high",
       "supported_reasoning_levels": [
         {
@@ -75,7 +87,8 @@
     {
       "slug": "glm-5.3",
       "display_name": "glm-5.3",
-      "context_window": 500000,
+      "context_window": 1000000,
+      "max_context_window": 1000000,
       "default_reasoning_level": "low",
       "supported_reasoning_levels": [
         {
@@ -95,7 +108,8 @@
     {
       "slug": "glm-5.3-flash",
       "display_name": "glm-5.3-flash",
-      "context_window": 500000,
+      "context_window": 1000000,
+      "max_context_window": 1000000,
       "default_reasoning_level": "low",
       "supported_reasoning_levels": [
         {
@@ -115,7 +129,8 @@
     {
       "slug": "hy3",
       "display_name": "hy3",
-      "context_window": 500000,
+      "context_window": 256000,
+      "max_context_window": 256000,
       "default_reasoning_level": "low",
       "supported_reasoning_levels": [
         {
@@ -135,7 +150,8 @@
     {
       "slug": "hy4-preview",
       "display_name": "hy4-preview",
-      "context_window": 500000,
+      "context_window": 1024000,
+      "max_context_window": 1024000,
       "default_reasoning_level": "high",
       "supported_reasoning_levels": [
         {
@@ -149,36 +165,18 @@
       ]
     },
     {
-      "slug": "kimi-k2.6",
-      "display_name": "kimi-k2.6",
-      "context_window": 500000,
-      "default_reasoning_level": "medium",
-      "supported_reasoning_levels": [
-        {
-          "description": "Fast responses with lighter reasoning",
-          "effort": "low"
-        },
-        {
-          "description": "Balances speed and reasoning depth for everyday tasks",
-          "effort": "medium"
-        },
-        {
-          "description": "Greater reasoning depth for complex problems",
-          "effort": "high"
-        }
-      ]
-    },
-    {
       "slug": "kimi-k2.7-code",
       "display_name": "kimi-k2.7-code",
-      "context_window": 500000,
+      "context_window": 262144,
+      "max_context_window": 262144,
       "default_reasoning_level": null,
       "supported_reasoning_levels": []
     },
     {
       "slug": "kimi-k3",
       "display_name": "kimi-k3",
-      "context_window": 500000,
+      "context_window": 1048576,
+      "max_context_window": 1048576,
       "default_reasoning_level": "max",
       "supported_reasoning_levels": [
         {
@@ -190,7 +188,8 @@
     {
       "slug": "longcat-2.0",
       "display_name": "longcat-2.0",
-      "context_window": 500000,
+      "context_window": 1000000,
+      "max_context_window": 1000000,
       "default_reasoning_level": "medium",
       "supported_reasoning_levels": [
         {
@@ -208,23 +207,63 @@
       ]
     },
     {
+      "slug": "longcat-2.5-preview-free",
+      "display_name": "longcat-2.5-preview-free",
+      "context_window": 1000000,
+      "max_context_window": 1000000,
+      "default_reasoning_level": "medium",
+      "supported_reasoning_levels": [
+        {
+          "description": "Fast responses with lighter reasoning",
+          "effort": "low"
+        },
+        {
+          "description": "Balances speed and reasoning depth for everyday tasks",
+          "effort": "medium"
+        },
+        {
+          "description": "Greater reasoning depth for complex problems",
+          "effort": "high"
+        }
+      ]
+    },
+    {
+      "slug": "mimo-v2.5",
+      "display_name": "mimo-v2.5",
+      "context_window": 1000000,
+      "max_context_window": 1000000,
+      "default_reasoning_level": null,
+      "supported_reasoning_levels": []
+    },
+    {
+      "slug": "mimo-v2.5-pro",
+      "display_name": "mimo-v2.5-pro",
+      "context_window": 1048576,
+      "max_context_window": 1048576,
+      "default_reasoning_level": null,
+      "supported_reasoning_levels": []
+    },
+    {
       "slug": "mimo-v2.6-flash",
       "display_name": "mimo-v2.6-flash",
-      "context_window": 500000,
+      "context_window": 1048576,
+      "max_context_window": 1048576,
       "default_reasoning_level": null,
       "supported_reasoning_levels": []
     },
     {
       "slug": "mimo-v2.6-pro",
       "display_name": "mimo-v2.6-pro",
-      "context_window": 500000,
+      "context_window": 1048576,
+      "max_context_window": 1048576,
       "default_reasoning_level": null,
       "supported_reasoning_levels": []
     },
     {
       "slug": "minimax-m3",
       "display_name": "minimax-m3",
-      "context_window": 500000,
+      "context_window": 1000000,
+      "max_context_window": 1000000,
       "default_reasoning_level": "none",
       "supported_reasoning_levels": [
         {
@@ -236,7 +275,8 @@
     {
       "slug": "minimax-m3.1-flash-free",
       "display_name": "minimax-m3.1-flash-free",
-      "context_window": 500000,
+      "context_window": 1000000,
+      "max_context_window": 1000000,
       "default_reasoning_level": "medium",
       "supported_reasoning_levels": [
         {
@@ -250,13 +290,22 @@
         {
           "description": "Greater reasoning depth for complex problems",
           "effort": "high"
+        },
+        {
+          "description": "Extra high reasoning depth for complex problems",
+          "effort": "xhigh"
+        },
+        {
+          "description": "Maximum available reasoning depth for complex problems",
+          "effort": "max"
         }
       ]
     },
     {
       "slug": "qwen3.7-plus",
       "display_name": "qwen3.7-plus",
-      "context_window": 500000,
+      "context_window": 1000000,
+      "max_context_window": 1000000,
       "default_reasoning_level": "high",
       "supported_reasoning_levels": [
         {
@@ -272,7 +321,8 @@
     {
       "slug": "qwen3.8-flash",
       "display_name": "qwen3.8-flash",
-      "context_window": 500000,
+      "context_window": 1000000,
+      "max_context_window": 1000000,
       "default_reasoning_level": "medium",
       "supported_reasoning_levels": [
         {
@@ -292,7 +342,8 @@
     {
       "slug": "qwen3.8-max",
       "display_name": "qwen3.8-max",
-      "context_window": 500000,
+      "context_window": 1000000,
+      "max_context_window": 1000000,
       "default_reasoning_level": "medium",
       "supported_reasoning_levels": [
         {
@@ -312,7 +363,8 @@
     {
       "slug": "step-5-preview",
       "display_name": "step-5-preview",
-      "context_window": 500000,
+      "context_window": 1000000,
+      "max_context_window": 1000000,
       "default_reasoning_level": "medium",
       "supported_reasoning_levels": [
         {

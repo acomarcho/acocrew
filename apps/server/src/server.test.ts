@@ -82,6 +82,8 @@ const PROXY_KEY = 'test-proxy-key';
 // A stand-in for the model proxy. Like the real one it lists its models only for the right key, and turns
 // anything else down the way the real one does.
 let proxyServer: Server;
+// What the stand-in lists. A test can swap it, and it is put back before each test.
+let proxyList = PROXY_LIST;
 let proxyUrl: string;
 const proxyAsked: string[] = [];
 function startProxy() {
@@ -89,7 +91,7 @@ function startProxy() {
     proxyAsked.push(`${req.method} ${req.url}`);
     const listing = req.url === '/v1/models?client_version=1' && req.headers.authorization === `Bearer ${PROXY_KEY}`;
     res.writeHead(listing ? 200 : 401, { 'content-type': 'application/json' });
-    res.end(listing ? PROXY_LIST : '{"error":"Invalid API key"}');
+    res.end(listing ? proxyList : '{"error":"Invalid API key"}');
   });
   return new Promise<void>((resolve) =>
     proxyServer.listen(0, '127.0.0.1', () => {
@@ -303,6 +305,7 @@ beforeAll(async () => {
 afterAll(() => void proxyServer.close());
 
 beforeEach(async () => {
+  proxyList = PROXY_LIST;
   db = openDb(fresh);
   sockets = [];
   cookie = adminCookie;
@@ -2640,6 +2643,7 @@ test("the model picker offers Claude's models and then the proxy's, and only Cla
     bigContext: false,
     fast: false,
     efforts: ['high', 'max'],
+    window: 1_000_000,
   });
   // Each model has the levels the proxy names for it, in order, and only ones Claude Code can ask for: MiniMax M3's
   // "none" is not one of them, and the MiMo models cannot be told how hard to think at all.
@@ -2648,9 +2652,17 @@ test("the model picker offers Claude's models and then the proxy's, and only Cla
     'claude-opus-5-5': ['low', 'medium', 'high', 'xhigh', 'max'],
     'kimi-k3': ['max'],
     'qwen3.8-max': ['low', 'medium', 'xhigh'],
-    'glm-5.1': ['low', 'medium', 'high'],
+    hy3: ['low', 'high'],
     'minimax-m3': [],
     'mimo-v2.6-pro': [],
+  });
+  // And the window the proxy gives it. Claude's own models have none: the thread's context setting picks theirs.
+  const windows = Object.fromEntries(list.map((model) => [model.id, model.window]));
+  expect(windows).toMatchObject({
+    'claude-opus-5-5': null,
+    hy3: 256_000,
+    'kimi-k2.7-code': 262_144,
+    'kimi-k3': 1_048_576,
   });
 
   // Port 1 has nothing listening on it.
@@ -2677,6 +2689,8 @@ test('a thread on a proxy model runs Claude pointed at the proxy, signed in with
       ANTHROPIC_DEFAULT_OPUS_MODEL: 'deepseek-v4-pro',
       ANTHROPIC_DEFAULT_SONNET_MODEL: 'deepseek-v4-pro',
       ANTHROPIC_DEFAULT_HAIKU_MODEL: SIDE,
+      // Its real window, so Claude Code does not summarize the conversation at the 200K it would assume.
+      CLAUDE_CODE_MAX_CONTEXT_TOKENS: '1000000',
     },
   });
   // The key is in the environment Claude gets, next to the server's own, and nowhere in its settings.
@@ -2755,4 +2769,32 @@ test('the next message on an idle proxy thread with nothing changed goes to the 
   await tab.status(thread.id, 'done');
   expect(claude.closed()).toBe(0);
   expect(claude.calls).toHaveLength(1);
+});
+
+test('a proxy model whose size the proxy config does not give is not given a made-up one', async () => {
+  // What a real CLIProxyAPI listed for a model without `max-context-length`, next to one with it.
+  const level = (effort: string) => ({ description: '', effort });
+  const listed = (slug: string, context_window: number, max_context_window: number) => ({
+    slug,
+    display_name: slug,
+    context_window,
+    max_context_window,
+    default_reasoning_level: 'high',
+    supported_reasoning_levels: [level('high')],
+  });
+  proxyList = JSON.stringify({ models: [listed('no-size', 500_000, 872_000), listed('has-size', 256_000, 256_000)] });
+  // Saving the set-up makes the server ask the proxy again.
+  await post(PROXY_PATH, { url: proxyUrl, background: SIDE, key: '' });
+  const list = (await (await ask(MODELS_PATH)).json()) as Model[];
+  expect(Object.fromEntries(list.map((model) => [model.id, model.window]))).toMatchObject({
+    'no-size': null,
+    'has-size': 256_000,
+  });
+
+  // So Claude Code is left to assume its standard size for it.
+  const tab = await connect();
+  const thread = await startThread('make notes', { ...HAIKU, model: 'no-size', effort: 'high' });
+  await tab.status(thread.id, 'done');
+  expect(claude.calls[0].settings).toMatchObject({ env: { ANTHROPIC_DEFAULT_OPUS_MODEL: 'no-size' } });
+  expect(claude.calls[0].settings).not.toMatchObject({ env: { CLAUDE_CODE_MAX_CONTEXT_TOKENS: expect.anything() } });
 });

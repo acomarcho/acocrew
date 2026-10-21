@@ -1,5 +1,6 @@
 import {
   contextWindow,
+  MODELS,
   type Automation,
   type Channel,
   type Chat,
@@ -79,6 +80,16 @@ test('the size of the context window follows the model and what was picked for i
   expect(contextWindow({ model: 'claude-opus-5-5', context: '200k' })).toBe(200_000);
   // A model without the 1M window has the standard one, whatever was picked.
   expect(contextWindow({ model: 'claude-haiku-4-5-20251001', context: '1m' })).toBe(200_000);
+});
+
+test('a proxy model has the size the proxy gives it, whatever was picked', () => {
+  // Hy3 keeps 256K in view, as OpenCode Go lists it.
+  const hy3 = { id: 'hy3', name: 'hy3', hint: '', bigContext: false, fast: false, efforts: [], window: 256_000 };
+  const models = [...MODELS, hy3];
+  expect(contextWindow({ model: 'hy3', context: '1m' }, models)).toBe(256_000);
+  expect(contextWindow({ model: 'claude-opus-5-5', context: '1m' }, models)).toBe(1_000_000);
+  // While the proxy is away its models are not known, and Claude Code assumes the standard size for them.
+  expect(contextWindow({ model: 'hy3', context: '1m' })).toBe(200_000);
 });
 
 test('what was seen comes with the first message, and is added to as threads are looked at', () => {
