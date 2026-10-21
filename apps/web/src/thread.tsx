@@ -44,7 +44,18 @@ import { useCommands } from './commands';
 import { draftOf, editDraft, useDraft } from './drafts';
 import { answer, closeThread, markChatSeen, markSeen, openThread, sendMessage, stopThread, useApp } from './store';
 import { ShareButton } from './sharing';
-import { Avatar, Composer, Elapsed, Picture, PinButton, Segments, StatusBadge, UnreadBadge, type Settings } from './ui';
+import {
+  Avatar,
+  Composer,
+  Elapsed,
+  FileChip,
+  Picture,
+  PinButton,
+  Segments,
+  StatusBadge,
+  UnreadBadge,
+  type Settings,
+} from './ui';
 
 type Tool = Extract<Item, { kind: 'tool' }>;
 
@@ -196,6 +207,11 @@ function ItemView({ item, lead, nested }: { item: Item; lead: boolean; nested?: 
           {item.images?.map((id) => (
             <span key={id} className="mr-2 mb-1 inline-block">
               <Picture id={id} className="h-40 bg-card object-contain" />
+            </span>
+          ))}
+          {item.files?.map((id) => (
+            <span key={id} className="mr-2 mb-1 inline-block">
+              <FileChip id={id} />
             </span>
           ))}
           <p className="break-words whitespace-pre-wrap">{item.text}</p>
@@ -503,11 +519,11 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
               commands={commands}
               canSendEmpty={questions?.canSend}
               textOnly={Boolean(questions)}
-              onSend={async (text, images) => {
+              onSend={async (message) => {
                 stick.current = true;
                 // While Claude has a question open, the message box answers it.
-                if (questions) return questions.send(text);
-                await sendMessage(thread.id, { text, images, ...settings });
+                if (questions) return questions.send(message.text);
+                await sendMessage(thread.id, { ...message, ...settings });
                 editDraft(thread.id, { settings: {} });
               }}
               onStop={active ? () => void stopThread(thread.id).catch(() => {}) : undefined}
