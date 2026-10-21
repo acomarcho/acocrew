@@ -103,12 +103,9 @@ function readName(value: unknown) {
 // Says no to a request, with the reason as words a person can read.
 const refuse = (c: Context, err: unknown) => c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
 
-// The parts of a message, or null if any of them is not usable. `offers` says whether a thread can run on a model.
-async function readMessage(
-  body: Partial<NewMessage>,
-  store: Images,
-  offers: (model: string) => Promise<boolean>,
-): Promise<NewMessage | null> {
+// The parts of a message, or null if any of them is not usable. Whether the model is one a thread can run on
+// right now is for the caller to ask (see `unoffered`).
+function readMessage(body: Partial<NewMessage>, store: Images): NewMessage | null {
   const text = typeof body.text === 'string' ? body.text.trim() : '';
   const { images = [], model, effort, context, fast, access } = body;
   const known = (list: { id: string }[], id?: string) => list.some((option) => option.id === id);
@@ -120,8 +117,7 @@ async function readMessage(
     known(CONTEXTS, context) &&
     typeof fast === 'boolean' &&
     known(ACCESS, access) &&
-    typeof model === 'string' &&
-    (await offers(model));
+    typeof model === 'string';
   if (!usable) return null;
   return { text, images, model: model!, effort: effort!, context: context!, fast, access: access! };
 }
@@ -137,6 +133,10 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
   const store = openImages(images);
   const proxy = createProxy(db);
   const runner = createRunner(db, hub, query, store, proxy.read);
+  // Why a thread cannot run on this model right now, or nothing when it can. A proxy model is off the list while
+  // the proxy is away, which is worth saying in so many words.
+  const unoffered = async (model: string) =>
+    !(await proxy.offers(model)) && `${model} is not offered right now. Is the model proxy running?`;
   // `user` is whoever is logged in on the browser that sent the request, and `login` is the id of that login.
   // `thread` is the thread a request is about (see the routes under `/api/threads/:id`).
   const app = new Hono<{ Variables: { user: Me; login: string; thread: StoredThread } }>();
@@ -426,11 +426,13 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
 
   app.post('/api/threads', async (c) => {
     const body = await c.req.json().catch(() => ({}));
-    const message = await readMessage(body, store, proxy.offers);
+    const message = readMessage(body, store);
     const channel = findChannel(body.channelId);
     const visibility = readVisibility(body.visibility);
     if (!message || !channel || !visibility)
       return c.json({ error: 'Needs a channel, a message and a full set of settings.' }, 400);
+    const why = await unoffered(message.model);
+    if (why) return refuse(c, why);
     const thread = await startThread(channel, message, body, { userId: c.get('user').id, visibility });
     return 'error' in thread ? c.json({ error: thread.error }, thread.status) : c.json(thread);
   });
@@ -467,17 +469,17 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
   }, CHECK_MS).unref();
 
   // What an automation is made of, or null if any part cannot be used. A newly picked branch has to be one
-  // git lists. The branch it had (`kept.from`) is taken as it is, so that an automation whose branch is gone
-  // can still be paused.
+  // git lists, and a newly picked model one a thread can run on. The branch and model it had (`kept`) are taken
+  // as they are, so that an automation whose branch is gone, or whose proxy model is away, can still be paused.
   async function readAutomation(body: Partial<NewAutomation>, kept?: Stored) {
-    const message = await readMessage({ ...body, images: [] }, store, proxy.offers);
+    const message = readMessage({ ...body, images: [] }, store);
     const schedule = readSchedule(body);
     const channel = findChannel(body.channelId);
     const visibility = readVisibility(body.visibility);
     if (!message?.text || !schedule || !channel || !visibility || typeof body.from !== 'string') return null;
     const listed =
       body.from === kept?.from || (await listPlaces(channel.path)).branches.some((b) => b.name === body.from);
-    if (!listed) return null;
+    if (!listed || (message.model !== kept?.model && (await unoffered(message.model)))) return null;
     const { images: _, ...settings } = message;
     return { ...settings, ...schedule, channelId: channel.id, from: body.from, visibility };
   }
@@ -554,8 +556,10 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
   });
 
   app.post('/api/threads/:id/messages', async (c) => {
-    const message = await readMessage(await c.req.json().catch(() => ({})), store, proxy.offers);
+    const message = readMessage(await c.req.json().catch(() => ({})), store);
     if (!message) return c.json({ error: 'Needs a message and a full set of settings.' }, 400);
+    const why = await unoffered(message.model);
+    if (why) return refuse(c, why);
     runner.send(c.get('thread').id, message, c.get('user').id);
     return c.json({ ok: true });
   });

@@ -2716,3 +2716,20 @@ test('a new proxy set-up reaches an idle proxy thread with its next message', as
   expect(claude.calls[1]).toMatchObject({ model: 'deepseek-v4-pro', resume: SESSION });
   expect(claude.calls[1].settings).toMatchObject({ env: { ANTHROPIC_DEFAULT_HAIKU_MODEL: 'glm-5.3-flash' } });
 });
+
+test('while the proxy is away, a proxy thread is told so, and a proxy automation can still be paused', async () => {
+  const tab = await connect();
+  const thread = await startThread('make notes', DEEPSEEK);
+  await tab.status(thread.id, 'done');
+  const made = await automate(DEEPSEEK);
+  expect(made.model).toBe('deepseek-v4-pro');
+
+  // Port 1 has nothing listening on it.
+  await post(PROXY_PATH, { url: 'http://127.0.0.1:1', background: SIDE, key: '' });
+  const res = await say(thread, 'what is in them?', DEEPSEEK);
+  expect(res.status).toBe(400);
+  expect(await error(res)).toBe('deepseek-v4-pro is not offered right now. Is the model proxy running?');
+  expect((await change(made, { on: false })).status).toBe(200);
+  // Picking it anew is another matter.
+  expect((await change(made, { model: 'kimi-k3' })).status).toBe(400);
+});

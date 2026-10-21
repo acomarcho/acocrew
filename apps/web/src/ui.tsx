@@ -293,7 +293,8 @@ export function Picker({
 }: PickerProps) {
   const [open, setOpen] = useState(false);
   const [typed, setTyped] = useState('');
-  const picked = options.find((o) => o.id === value)?.name;
+  // A value that is not among the options (a proxy model while the proxy is away) still shows as itself.
+  const picked = options.find((o) => o.id === value)?.name ?? value;
   const words = typed.trim().toLowerCase();
   const shown = options.filter((o) => `${o.name} ${o.hint}`.toLowerCase().includes(words));
   const pick = (id: string) => {
