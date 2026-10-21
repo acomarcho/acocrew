@@ -1490,6 +1490,69 @@ test('only png, jpeg, gif and webp up to 10MB are taken, and a message can only 
   expect((await say(thread, '', HAIKU)).status).toBe(400);
 });
 
+// A real zip, made with `zip -X` from two small files (notes.txt and stock.csv).
+const ZIP = readFileSync(new URL('./fixtures/notes.zip', import.meta.url));
+const sendFile = (body: Uint8Array, name: string) =>
+  ask(`/api/files?name=${encodeURIComponent(name)}`, { method: 'POST', body });
+const sent = async (name = 'notes.zip') => ((await (await sendFile(ZIP, name)).json()) as { id: string }).id;
+
+test('a file is copied into the folder Claude works in, kept out of git, and Claude is told where it is', async () => {
+  const id = await sent();
+  expect(id).toMatch(/-notes\.zip$/);
+  const tab = await connect();
+  const thread = await startThread('what is in here?', { ...HAIKU, files: [id] });
+  await tab.open(thread.id);
+  await tab.status(thread.id, 'done');
+  expect(tab.items(thread.id)[0]).toMatchObject({ kind: 'message', text: 'what is in here?', files: [id] });
+  expect(readFileSync(join(shop, '.attachments', id))).toEqual(ZIP);
+  expect(git(shop, 'status', '--porcelain')).not.toContain('.attachments');
+  expect(claude.said).toEqual([`what is in here?\n\nAttached files:\n- .attachments/${id}`]);
+
+  // With an image too, the image still goes first, and the words carry the list of files.
+  const image = await uploaded();
+  await say(thread, 'and this?', { ...HAIKU, images: [image], files: [id] });
+  await tab.status(thread.id, 'done');
+  expect(claude.said[1]).toEqual([
+    { type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG.toString('base64') } },
+    { type: 'text', text: `and this?\n\nAttached files:\n- .attachments/${id}` },
+  ]);
+
+  const late = await connect();
+  await late.open(thread.id);
+  expect(late.items(thread.id)[0]).toMatchObject({ files: [id] });
+});
+
+test('a file can be sent with no words, and the thread is named after it', async () => {
+  const id = await sent('stock report.zip');
+  const tab = await connect();
+  const thread = await startThread('', { ...HAIKU, files: [id] });
+  expect(thread.title).toBe('stock report.zip');
+  await tab.status(thread.id, 'done');
+  expect(claude.named).toEqual([]);
+  expect(claude.said).toEqual([`Attached files:\n- .attachments/${id}`]);
+});
+
+test('any kind of file up to 100MB is taken, its name stays in the folder, and a message can only point at one', async () => {
+  // A long name in Japanese or emoji is many more bytes than letters, and a file name can only be 255 bytes.
+  for (const name of ['../../.bashrc', 'a/b\\c.txt', '', `${'議事録'.repeat(40)}.zip`, `${'🦀'.repeat(80)}.zip`]) {
+    const res = await sendFile(ZIP, name);
+    expect(res.status, name).toBe(200);
+    const { id } = (await res.json()) as { id: string };
+    expect(id, name).not.toMatch(/[/\\]/);
+    expect(Buffer.byteLength(id), name).toBeLessThanOrEqual(255);
+  }
+  expect((await sendFile(new Uint8Array(0), 'empty.txt')).status).toBe(400);
+  expect((await sendFile(new Uint8Array(100 * 1024 * 1024), 'big.bin')).status).toBe(200);
+  expect((await sendFile(new Uint8Array(100 * 1024 * 1024 + 1), 'big.bin')).status).toBe(413);
+
+  const image = await uploaded();
+  const thread = await startThread('make notes');
+  for (const id of ['nope.zip', '..', '.', '', 'a\0', 7, image, `../${image}`]) {
+    expect((await say(thread, 'hi', { ...HAIKU, files: [id] })).status, String(id)).toBe(400);
+  }
+  expect((await say(thread, 'hi', { ...HAIKU, files: 'nope' })).status).toBe(400);
+});
+
 test('requests from another website are refused, our own pages are not', async () => {
   const channel = await addChannel();
   const body = JSON.stringify({ channelId: channel.id, text: 'hi', path: channel.path, ...HAIKU });
@@ -1573,6 +1636,7 @@ test('nothing is given out without a login', async () => {
       ask('/api/folders'),
       ask(`${COMMANDS_PATH}?thread=${thread.id}`),
       ask('/api/images/some-image.png'),
+      ask('/api/files?name=a.zip', { method: 'POST', body: ZIP }),
       post('/api/channels', { path: shop }),
       post('/api/threads', { channelId: thread.channelId, text: 'hi', path: shop, ...HAIKU }),
       post(`/api/threads/${thread.id}/messages`, { text: 'hi', ...HAIKU }),

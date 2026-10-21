@@ -178,7 +178,16 @@ Most people use acocrew from a different machine than the one Claude runs on, so
 4. The message carries only the ids. They are saved with the message, so every device shows the image by asking the server for it (`GET /api/images/<id>`). A click on an image, in the message box or in a sent message, opens it big over the page.
 5. When the message is handed to Claude, the server reads the files and puts the images in front of the words.
 
-Left out for now: other file types, cleaning up images that were uploaded but never sent, and telling Claude where the file is on disk so it can copy it into the repository.
+## How any other file travels
+
+A file that is not an image (a zip, a PDF, a spreadsheet) cannot go inside the message the way an image does: Claude only takes pictures, PDFs and words like that. So it is put where Claude works, and Claude opens it with its own tools (it can unzip a zip, or read a spreadsheet with a script).
+
+1. The same three ways add it to the message box. A file can also be dropped anywhere on the page; the message box shows "Drop files to attach" while one is dragged over.
+2. The browser sends it as it is (`POST /api/files?name=<its name>`), up to 100MB.
+3. The server saves it in `attachments/files`. Its id is a random UUID, a dash, and its name, with slashes and control characters swapped for `_`. So the name is part of the id, and every device shows it from the id alone.
+4. When the message is handed to Claude, the server copies each file into `.attachments/` in the folder the thread works in, and ends the words with "Attached files:" and a line per path. That folder has a `.gitignore` of `*`, so the files are never committed by accident.
+
+Left out for now: images and files that were uploaded but never sent are never cleaned up, and a file cannot be downloaded again from a sent message.
 
 ## How the message box knows what Claude can run
 
@@ -311,7 +320,7 @@ Why not something else:
 - **One timer per automation** has to be set again on every change, and is more to get wrong.
 - **The machine's own cron** would need a second place to keep schedules, and a way for cron to log in.
 
-Not built: images in an automation's message, raw cron text, and telling someone in the app when a scheduled run could not start.
+Not built: images and files in an automation's message, raw cron text, and telling someone in the app when a scheduled run could not start.
 
 ## Decision 11: A thread is private unless its owner says otherwise
 
@@ -341,7 +350,7 @@ What this does not do:
 
 - It hides threads in the app only. Claude in any thread runs on the same machine with full access, and can read other threads' files. That is the sandboxing question below.
 - The "Existing worktree" list comes from git, so it still shows the branch of a private thread's worktree (not its title).
-- An attached image is not tied to a thread. Whoever is logged in and has its id (a long random one) can load it.
+- An attached image is not tied to a thread. Whoever is logged in and has its id (a long random one) can load it. The same goes for sending an attached file along in a message.
 
 Not built: read-only sharing, sharing an automation with named people, and handing a deleted account's threads to someone else. A private thread of a deleted account in which Claude is still busy is not stopped either: it runs until Claude is done.
 
@@ -416,16 +425,16 @@ Rules of the UI:
 - The server only takes a branch or a folder that git itself lists for that repository (`GET /api/channels/<id>/places` is the same list the dropdowns show). The folder is saved on the thread (`threads.path`; empty means the repository folder), and every Claude process of that thread starts there.
 - The thread list shows the branch each thread was last on, under its title. Claude can switch branches while it works, so the server reads the branch again every time Claude finishes a turn and saves it on the thread (`threads.branch`). Nothing shows when the folder is on no branch.
 - Not built yet for worktrees: removing a worktree, and installing dependencies in the new copy (`node_modules` is not there).
-- The title "Start a thread" is a dropdown with a second choice, "Schedule an automation". That turns the screen into the one for making an automation: the same message box (without images, with `/` suggestions), a time, a button per day of the week, and the branch to start from. The send button says "Schedule".
+- The title "Start a thread" is a dropdown with a second choice, "Schedule an automation". That turns the screen into the one for making an automation: the same message box (without attachments, with `/` suggestions), a time, a button per day of the week, and the branch to start from. The send button says "Schedule".
 - The thread list of a repository has three parts, each under a header of the same look that says how many are in it and folds it away: "Automations (2)", "Pinned (4)" and "Threads (12)". When you have threads you did not send yet, a fourth part, "Drafts (1)", sits between Automations and Pinned. Automations start folded, the others open. What is folded is not kept: a reload, or going to another repository, brings the starting state back. Automations, Drafts and Pinned show three rows at most and scroll on their own past that, so that they never push the threads far down. The box is cut off where its fourth row starts, measured from the rows themselves and not from a set height.
 - A repository's automations sit on top of its thread list. Each row shows the first line of the message and the schedule in words ("Weekdays at 9:00 AM"). The plus in the header makes a new one.
 - Opening an automation shows a page about it: a switch to pause it, its schedule and next run, its message, the buttons Edit, Run now and Delete, and the threads it started. Edit turns the page into the same screen it was made with. Delete asks first.
 - A thread that an automation started has a small "Auto" badge in the thread list.
 - A thread can be pinned with the pin button in its header (the same button unpins it). A pin is for everyone who sees the thread, not per person, and there is no limit on how many. It is one timestamp on the thread (`threads.pinned_at`), set through `POST /api/threads/<id>/pin`. Pinning is not news: it leaves `updatedAt` alone, so the thread does not show as new to anyone.
 - Pinned threads sit in a "Pinned" section between the automations and the rest of the list, the one pinned last first, and are not repeated below. The section is not there when nothing is pinned. The two filters narrow it like the rest of the list. A pinned row has a pin icon on its right that unpins it right there.
-- What you type is kept until you send it, in this browser only (it is not sent to the server, so not on your other devices). That goes for a new thread (the words, the images and everything picked) and for a reply in a thread. It is still there after you look at something else, and after a reload.
+- What you type is kept until you send it, in this browser only (it is not sent to the server, so not on your other devices). That goes for a new thread (the words, the attached images and files, and everything picked) and for a reply in a thread. It is still there after you look at something else, and after a reload.
 - A thread you began and did not send is a row in a "Drafts" part of the thread list, between Automations and Pinned: a pen, its first line and "Not sent yet". The part is not there when there are no drafts, and shows three rows at most like the other two. There can be several drafts per repository, the newest first, and the two filters leave them alone. The row opens it again, and its X throws it away. The plus button always begins a fresh one. A thread with a reply you did not send has the same pen in its row.
-- A draft counts while it has words or images. What was picked alone does not make one. Sending takes it away, and a send that failed leaves it. Drafts belong to whoever logged in last on that browser: when someone else logs in there, they are cleared.
+- A draft counts while it has words or something attached. What was picked alone does not make one. Sending takes it away, and a send that failed leaves it. Drafts belong to whoever logged in last on that browser: when someone else logs in there, they are cleared.
 - A new thread and a new automation pick who sees them, with a dropdown next to the branch: Private (the default) or Public. On an automation only whoever made it gets that dropdown.
 - The header of a thread has a Share button for its owner. It opens a small panel: Private or Public, the people it is shared with (each with a remove button), and a box to find and add people. Every click is saved right away. Everyone else sees a lock or a globe there instead. On phones the panel is as wide as the screen.
 - A private thread or automation has a small lock in the list.
@@ -434,7 +443,7 @@ Rules of the UI:
 - Typing `/` in the message box opens a list of commands and skills right above it. It narrows as you type (later in a message only to names that start with what was typed, so a path like `/docs` is left alone). Arrow keys move, Enter or Tab picks, Escape closes, and a row can be clicked or tapped. Picking puts `/name ` into the box as plain text. While the box is answering a question from Claude, nothing is suggested.
 - A thread shows one timeline: what was said to and done by Claude, and between it, by time, what people wrote to each other (Decision 13). A chat message has a blue tint and says "People only". A row of three choices under the header shows Everything, only Claude, or only People.
 - Where the day changes in a thread, a line with a pill says which day it is: Today, Yesterday, or the date (with the year when it is not this year), on the reader's own clock. While you scroll, the pill of the day you are reading stays at the top, and the next day's pill pushes it away, like Slack. It is plain CSS (`position: sticky` inside one section per day), with no scroll code.
-- Above the message box a switch says who the next message is for: "To Claude" (the box as it was) or "To people" (a plainer box: words and tags, no model pickers, no images, no `/` commands, with a blue send button). What is typed there is kept until it is sent, like a reply to Claude.
+- Above the message box a switch says who the next message is for: "To Claude" (the box as it was) or "To people" (a plainer box: words and tags, no model pickers, no attachments, no `/` commands, with a blue send button). What is typed there is kept until it is sent, like a reply to Claude.
 - Typing `@` in the "To people" box, or pressing its @ button, opens a list of the people who can see the thread. It is the same list as the one for `/`, with the same keys. Picking puts `@username ` into the box. The message then shows the person's display name, in orange when it is you.
 - Chat that is new to you shows as a count next to the thread's title in the list, and makes the title bold. When one of the messages tags you, the count is orange with an @ and the row is tinted like one that needs you. In the sidebar a tag counts toward the repository's number, and other new chat shows as a small blue dot.
 - In the thread, a "New" line sits above the first chat message you had not seen when you opened it. While the timeline is set to only Claude, the chat is not read, and the People choice carries the count.

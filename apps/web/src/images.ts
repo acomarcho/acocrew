@@ -1,5 +1,5 @@
-// Getting an image from this device to the server, where Claude runs.
-import { IMAGE_MAX_BYTES, IMAGE_TYPES, IMAGES_PATH } from '@acocrew/shared';
+// Getting an image or another file from this device to the server, where Claude runs.
+import { FILES_PATH, IMAGE_MAX_BYTES, IMAGE_TYPES, IMAGES_PATH } from '@acocrew/shared';
 
 // Claude gains nothing from more pixels than this, and big phone photos would be slow to send.
 const MAX_EDGE = 2048;
@@ -28,7 +28,14 @@ export async function uploadImage(file: File): Promise<string> {
   const image = await fit(file).catch(() => {
     throw new Error(`Could not read ${file.name}.`);
   });
-  const res = await fetch(IMAGES_PATH, { method: 'POST', body: image, headers: { 'content-type': image.type } });
+  return sent(await fetch(IMAGES_PATH, { method: 'POST', body: image, headers: { 'content-type': image.type } }));
+}
+
+// Sends any other file as it is, with its name, and gives back its id.
+export const uploadFile = async (file: File) =>
+  sent(await fetch(`${FILES_PATH}?name=${encodeURIComponent(file.name)}`, { method: 'POST', body: file }));
+
+async function sent(res: Response): Promise<string> {
   const data = await res.json();
   if (!res.ok) throw new Error(data.error);
   return data.id;

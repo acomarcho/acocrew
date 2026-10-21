@@ -8,6 +8,7 @@ import type { Settings } from './ui';
 export type Draft = {
   text: string;
   images: string[];
+  files: string[];
   // Only what the person picked. The rest follows the thread, or what a new thread starts with.
   settings: Partial<Settings>;
   // The rest is only there for a thread not started yet: its repository, and what was picked for where it
@@ -19,10 +20,11 @@ export type Draft = {
   visibility?: Visibility;
 };
 
-const EMPTY: Draft = { text: '', images: [], settings: {} };
+const EMPTY: Draft = { text: '', images: [], files: [], settings: {} };
 
-// A draft counts while it has words or images. What was picked does not make one on its own.
-export const hasContent = (draft: Draft) => Boolean(draft.text.trim() || draft.images.length);
+// A draft counts while it has words or something attached. What was picked does not make one on its own.
+export const attachedTo = (draft: Draft) => draft.images.length + draft.files.length;
+export const hasContent = (draft: Draft) => Boolean(draft.text.trim() || attachedTo(draft));
 
 const withContent = (drafts: Record<string, Draft>) => Object.entries(drafts).filter(([, draft]) => hasContent(draft));
 
@@ -41,7 +43,9 @@ export const useDrafts = create<Drafts>()(
       const picked = Object.entries(current.drafts).filter(([, draft]) => !hasContent(draft));
       // Nothing is saved the first time the app is opened in a browser.
       const kept = { ...current, ...(saved as Drafts | undefined) };
-      return { ...kept, drafts: { ...Object.fromEntries(picked), ...kept.drafts } };
+      // A draft saved before a part was added to drafts gets that part empty.
+      const filled = Object.entries(kept.drafts).map(([id, draft]) => [id, { ...EMPTY, ...draft }]);
+      return { ...kept, drafts: { ...Object.fromEntries(picked), ...Object.fromEntries(filled) } };
     },
   }),
 );

@@ -211,7 +211,7 @@ export function AutomationEditor({ channel, automation, title, onDone, onCancel 
   };
   const [schedule, setSchedule] = useState<Schedule>({ time, days });
   const [settings, setSettings] = useState<Settings>({ model, effort, context, fast, access });
-  const [box, setBox] = useState<Box>({ text: automation?.text ?? '', images: [] });
+  const [box, setBox] = useState<Box>({ text: automation?.text ?? '', images: [], files: [] });
   // Until one is picked, a new automation starts from the first branch.
   const [picked, setPicked] = useState(automation?.from);
   const from = picked ?? branches[0]?.id;
@@ -252,7 +252,7 @@ export function AutomationEditor({ channel, automation, title, onDone, onCancel 
       </div>
       <Composer
         autoFocus
-        noImages
+        noAttachments
         placeholder="What should Claude do each time?"
         value={box}
         onChange={setBox}
@@ -260,7 +260,7 @@ export function AutomationEditor({ channel, automation, title, onDone, onCancel 
         settings={settings}
         onSettings={setSettings}
         commands={commands}
-        onSend={async (text) => {
+        onSend={async ({ text }) => {
           if (!schedule.days.length) throw new Error('Pick at least one day.');
           if (!from) throw new Error('Pick a branch to start from.');
           const body = { channelId: channel.id, text, from, visibility, ...schedule, ...settings, on: automation?.on };

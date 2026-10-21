@@ -15,6 +15,7 @@ import { readFileSync } from 'node:fs';
 import { loadItems, saveItem, threadCols, type Db, type StoredThread } from './db.ts';
 import { branchOf } from './git.ts';
 import type { Hub } from './hub.ts';
+import type { Files } from './files.ts';
 import type { Images } from './images.ts';
 import { throughProxy, type Proxy } from './proxy.ts';
 
@@ -42,6 +43,8 @@ type Session = {
   input: ReturnType<typeof queue<SDKUserMessage>>;
   running: ReturnType<QueryFn>;
   translator: ReturnType<typeof createTranslator>;
+  // The folder Claude works in.
+  folder: string;
   // What the process was started with, as one string, to tell when a message asks for something else.
   launch: string;
   // Fast mode was asked for, and we have not yet heard from Claude whether it really runs.
@@ -126,7 +129,7 @@ function queue<T>() {
 }
 
 // Runs Claude for threads: one process per thread, listened to for as long as it lives.
-export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images, proxy: ProxyNow) {
+export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images, files: Files, proxy: ProxyNow) {
   const sessions = new Map<string, Session>();
 
   function addItem(threadId: string, item: Item) {
@@ -210,6 +213,7 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images, p
       .innerJoin(channels, eq(channels.id, threads.channelId))
       .where(eq(threads.id, threadId))
       .get()!;
+    const folder = path ?? repo;
     const before = loadItems(db, threadId).find((item) => item.kind === 'todos');
     const input = queue<SDKUserMessage>();
     let session!: Session;
@@ -252,7 +256,7 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images, p
     const running = query({
       prompt: input,
       options: {
-        cwd: path ?? repo,
+        cwd: folder,
         ...launch,
         resume: sessionId ?? undefined,
         // The SDK hands Claude this environment instead of the server's own, so it is the server's plus the login.
@@ -267,6 +271,7 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images, p
       input,
       running,
       translator: createTranslator(before?.todos),
+      folder,
       launch: JSON.stringify(options),
       fastUnconfirmed: launch.settings.fastMode,
       access: message.access,
@@ -417,8 +422,16 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images, p
 
     // Saves the user's message and hands it to Claude. If Claude is busy, it picks the message up when it can.
     send(threadId: string, message: NewMessage, userId: string) {
-      const { text, model, effort, context, fast, access } = message;
-      const item = { id: randomUUID(), kind: 'message', by: 'user', userId, text, images: message.images } as const;
+      const { text, images: imageIds, files: fileIds, model, effort, context, fast, access } = message;
+      const item = {
+        id: randomUUID(),
+        kind: 'message',
+        by: 'user',
+        userId,
+        text,
+        images: imageIds,
+        files: fileIds,
+      } as const;
       addItem(threadId, { ...item, at: nextAt() });
       const { people } = db.select({ people: threads.people }).from(threads).where(eq(threads.id, threadId)).get()!;
       if (!people.includes(userId)) people.push(userId);
@@ -435,7 +448,7 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images, p
         session.busy = true;
         session.failed = false;
         // Claude gets the images themselves, ahead of the words about them.
-        const pictures = message.images.map((id) => {
+        const pictures = imageIds.map((id) => {
           const { type, file } = images.find(id)!;
           const source = {
             type: 'base64' as const,
@@ -444,10 +457,14 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images, p
           };
           return { type: 'image' as const, source };
         });
-        const words = text ? [{ type: 'text' as const, text }] : [];
+        // Other files are put in the folder Claude works in, and the words end with where they are.
+        const paths = fileIds.length ? files.copyTo(session.folder, fileIds) : [];
+        const listed = paths.length ? ['Attached files:', ...paths.map((path) => `- ${path}`)].join('\n') : '';
+        const said = [text, listed].filter(Boolean).join('\n\n');
+        const words = said ? [{ type: 'text' as const, text: said }] : [];
         session.input.push({
           type: 'user',
-          message: { role: 'user', content: pictures.length ? [...pictures, ...words] : text },
+          message: { role: 'user', content: pictures.length ? [...pictures, ...words] : said },
           parent_tool_use_id: null,
         });
         // Always tell everyone, even if the status did not change: the model or access may have.

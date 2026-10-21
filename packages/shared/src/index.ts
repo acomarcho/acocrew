@@ -97,9 +97,10 @@ export type Todo = { id: string; subject: string; status: string };
 // One thing shown in a thread. `at` is a timestamp in milliseconds.
 // `parent` is set on things a subagent did: it is the id of the tool card that started that subagent.
 // `images` on a message are ids of uploaded images, each one served at `IMAGES_PATH/<id>`.
+// `files` on a message are ids of other uploaded files (see `fileName`).
 // `userId` on a message says which person wrote it. Claude's own messages have none.
 export type Item = { id: string; at: number; parent?: string } & (
-  | { kind: 'message'; by: 'user' | 'claude'; userId?: string; text: string; images?: string[] }
+  | { kind: 'message'; by: 'user' | 'claude'; userId?: string; text: string; images?: string[]; files?: string[] }
   | {
       kind: 'tool';
       name: string;
@@ -229,7 +230,7 @@ export type Schedule = { time: string; days: number[] };
 
 // What an automation sends, when, and how Claude runs. Every run is a fresh thread in a new worktree that
 // starts from the branch `from`. `visibility` says who sees the automation, and each thread it starts from then on.
-export type NewAutomation = Omit<NewMessage, 'images'> &
+export type NewAutomation = Omit<NewMessage, 'images' | 'files'> &
   Schedule & { channelId: string; from: string; visibility: Visibility };
 
 // A message that is sent in a fresh thread of a repository, again and again. `on` is false while it is paused.
@@ -290,11 +291,17 @@ export const IMAGE_TYPES: Record<string, string> = {
 };
 export const IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 
+// Any other kind of file (a zip, a PDF, a spreadsheet) is handed to Claude as a file in the folder it works in.
+// Its id is a random UUID, a dash, and the name it had, so the name is what follows the first 37 characters.
+export const FILE_MAX_BYTES = 100 * 1024 * 1024;
+export const fileName = (id: string) => id.slice(37);
+
 // `fast` turns on fast mode: quicker answers at a higher price.
-// `images` are ids of images uploaded before. A message needs words, images or both.
+// `images` and `files` are ids of what was uploaded before. A message needs words, something attached, or both.
 export type NewMessage = {
   text: string;
   images: string[];
+  files: string[];
   model: string;
   effort: string;
   context: string;
@@ -336,6 +343,7 @@ export const SERVER_PORT = 5274;
 export const HEALTH_PATH = '/api/health';
 export const WS_PATH = '/ws';
 export const IMAGES_PATH = '/api/images';
+export const FILES_PATH = '/api/files';
 export const COMMANDS_PATH = '/api/commands';
 export const ME_PATH = '/api/me';
 export const USERS_PATH = '/api/users';

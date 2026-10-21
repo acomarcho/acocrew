@@ -5,6 +5,8 @@ import {
   CONTEXTS,
   DECISIONS,
   EFFORTS,
+  FILE_MAX_BYTES,
+  FILES_PATH,
   GITHUB_PATH,
   HEALTH_PATH,
   IMAGE_MAX_BYTES,
@@ -18,6 +20,7 @@ import {
   USERS_PATH,
   VISIBILITY,
   WS_PATH,
+  fileName,
   tagsIn,
   type Answer,
   type ClientEvent,
@@ -69,6 +72,7 @@ import { folderInside, isRepo, listFolders } from './folders.ts';
 import { addWorktree, listPlaces } from './git.ts';
 import { listAccounts, switchAccount } from './github.ts';
 import { createHub } from './hub.ts';
+import { openFiles, type Files } from './files.ts';
 import { openImages, type Images } from './images.ts';
 import { createProxy } from './proxy.ts';
 import { createRunner, type QueryFn } from './runner.ts';
@@ -76,7 +80,7 @@ import { automations, channels, chats, seen, session as sessions, shares, thread
 import { firstLine } from './title.ts';
 
 // `home` is the only folder tree that repositories can be picked from.
-// `images` is the folder where images attached to messages are kept.
+// `images` is the folder where images and other files attached to messages are kept.
 // `worktrees` is the folder where threads get their own working copy of a repository.
 // `web` is the folder with the built web app. Without it the server only answers `/api` and `/ws`.
 // `secret` signs the login cookies. `https` marks them as for https only.
@@ -105,21 +109,23 @@ const refuse = (c: Context, err: unknown) => c.json({ error: err instanceof Erro
 
 // The parts of a message, or null if any of them is not usable. Whether the model is one a thread can run on
 // right now is for the caller to ask (see `unoffered`).
-function readMessage(body: Partial<NewMessage>, store: Images): NewMessage | null {
+function readMessage(body: Partial<NewMessage>, store: Images, attached: Files): NewMessage | null {
   const text = typeof body.text === 'string' ? body.text.trim() : '';
-  const { images = [], model, effort, context, fast, access } = body;
+  const { images = [], files = [], model, effort, context, fast, access } = body;
   const known = (list: { id: string }[], id?: string) => list.some((option) => option.id === id);
   const usable =
     Array.isArray(images) &&
     images.every(store.find) &&
-    (text || images.length) &&
+    Array.isArray(files) &&
+    files.every(attached.has) &&
+    (text || images.length || files.length) &&
     known(EFFORTS, effort) &&
     known(CONTEXTS, context) &&
     typeof fast === 'boolean' &&
     known(ACCESS, access) &&
     typeof model === 'string';
   if (!usable) return null;
-  return { text, images, model: model!, effort: effort!, context: context!, fast, access: access! };
+  return { text, images, files, model: model!, effort: effort!, context: context!, fast, access: access! };
 }
 
 // Who sees a thread or an automation, or null if the value is not one of the choices.
@@ -131,8 +137,9 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
   await seedAdmin(auth, db);
   const hub = createHub();
   const store = openImages(images);
+  const attached = openFiles(join(images, 'files'));
   const proxy = createProxy(db);
-  const runner = createRunner(db, hub, query, store, proxy);
+  const runner = createRunner(db, hub, query, store, attached, proxy);
   // Why a thread cannot run on this model right now, or nothing when it can. A proxy model is off the list while
   // the proxy is away, which is worth saying in so many words.
   const unoffered = async (model: string) =>
@@ -397,7 +404,7 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
       channelId: channel.id,
       path: place.path === channel.path ? null : place.path,
       branch: place.branch,
-      title: firstLine(message.text) || 'Image',
+      title: firstLine(message.text) || (message.files[0] ? fileName(message.files[0]) : 'Image'),
       model: message.model,
       effort: message.effort,
       context: message.context,
@@ -426,7 +433,7 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
 
   app.post('/api/threads', async (c) => {
     const body = await c.req.json().catch(() => ({}));
-    const message = readMessage(body, store);
+    const message = readMessage(body, store, attached);
     const channel = findChannel(body.channelId);
     const visibility = readVisibility(body.visibility);
     if (!message || !channel || !visibility)
@@ -441,7 +448,7 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
   // The thread is seen by whoever sees the automation at that moment.
   const runAutomation = ({ id, channelId, from, createdBy, visibility, ...message }: Stored) => {
     const starter = { userId: createdBy, visibility, automationId: id };
-    return startThread(findChannel(channelId)!, { ...message, images: [] }, { from }, starter);
+    return startThread(findChannel(channelId)!, { ...message, images: [], files: [] }, { from }, starter);
   };
   // How an automation is now, to everyone who sees it.
   const announce = (row: Stored) =>
@@ -472,7 +479,7 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
   // git lists, and a newly picked model one a thread can run on. The branch and model it had (`kept`) are taken
   // as they are, so that an automation whose branch is gone, or whose proxy model is away, can still be paused.
   async function readAutomation(body: Partial<NewAutomation>, kept?: Stored) {
-    const message = readMessage({ ...body, images: [] }, store);
+    const message = readMessage({ ...body, images: [], files: [] }, store, attached);
     const schedule = readSchedule(body);
     const channel = findChannel(body.channelId);
     const visibility = readVisibility(body.visibility);
@@ -480,7 +487,7 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
     const listed =
       body.from === kept?.from || (await listPlaces(channel.path)).branches.some((b) => b.name === body.from);
     if (!listed || (message.model !== kept?.model && (await unoffered(message.model)))) return null;
-    const { images: _, ...settings } = message;
+    const { images: _, files: __, ...settings } = message;
     return { ...settings, ...schedule, channelId: channel.id, from: body.from, visibility };
   }
   const NOT_AN_AUTOMATION =
@@ -556,7 +563,7 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
   });
 
   app.post('/api/threads/:id/messages', async (c) => {
-    const message = readMessage(await c.req.json().catch(() => ({})), store);
+    const message = readMessage(await c.req.json().catch(() => ({})), store, attached);
     if (!message) return c.json({ error: 'Needs a message and a full set of settings.' }, 400);
     const why = await unoffered(message.model);
     if (why) return refuse(c, why);
@@ -753,6 +760,17 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
     if (!Object.hasOwn(IMAGE_TYPES, type) || !bytes.length)
       return c.json({ error: 'Only PNG, JPEG, GIF and WebP images can be attached.' }, 400);
     return c.json({ id: store.save(IMAGE_TYPES[type], bytes) });
+  });
+
+  // Any other file is sent the same way, with its name in the address.
+  const fileTooBig = bodyLimit({
+    maxSize: FILE_MAX_BYTES,
+    onError: (c) => c.json({ error: 'A file can be 100MB at most.' }, 413),
+  });
+  app.post(FILES_PATH, fileTooBig, async (c) => {
+    const bytes = new Uint8Array(await c.req.arrayBuffer());
+    if (!bytes.length) return c.json({ error: 'The file is empty.' }, 400);
+    return c.json({ id: attached.save(c.req.query('name') ?? '', bytes) });
   });
 
   // An image never changes, so browsers may keep it. `nosniff` makes them treat it as an image and nothing else.

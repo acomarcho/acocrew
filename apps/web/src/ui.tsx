@@ -5,6 +5,7 @@ import {
   EFFORTS,
   MODELS,
   VISIBILITY,
+  fileName,
   type Access,
   type Channel,
   type Command,
@@ -17,7 +18,7 @@ import {
   type Visibility,
 } from '@acocrew/shared';
 import { Link, useNavigate } from '@tanstack/react-router';
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useEffectEvent, useId, useRef, useState, type ReactNode } from 'react';
 import {
   ArrowUp,
   Brain,
@@ -25,16 +26,17 @@ import {
   ChevronDown,
   ChevronRight,
   Clock,
+  FileText,
   FolderGit2,
   GitBranch,
   Globe,
-  ImagePlus,
   Layers,
   LoaderCircle,
   Lock,
   LogOut,
   Menu,
   MessagesSquare,
+  Paperclip,
   Pin,
   Plus,
   Search,
@@ -47,8 +49,18 @@ import {
   Zap,
 } from 'lucide-react';
 import { CommandMenu, suggest, useCommands, useSuggestions } from './commands';
-import { draftOf, draftsIn, dropDraft, editDraft, hasContent, useDraft, useDrafts, type Draft } from './drafts';
-import { imageUrl, uploadImage } from './images';
+import {
+  attachedTo,
+  draftOf,
+  draftsIn,
+  dropDraft,
+  editDraft,
+  hasContent,
+  useDraft,
+  useDrafts,
+  type Draft,
+} from './drafts';
+import { imageUrl, uploadFile, uploadImage } from './images';
 import {
   createThread,
   githubChoices,
@@ -260,6 +272,43 @@ export function Picture({ id, className }: { id: string; className: string }) {
   );
 }
 
+// An attached file that is not an image, shown by its name.
+export function FileChip({ id }: { id: string }) {
+  return (
+    <span
+      title={fileName(id)}
+      className="flex h-full min-h-10 max-w-56 items-center gap-2 rounded-md border border-border bg-card px-3 text-sm"
+    >
+      <FileText size={16} className="shrink-0 text-muted-foreground" />
+      <span className="truncate">{fileName(id)}</span>
+    </span>
+  );
+}
+
+// An image goes as an image, so Claude sees it. Any other file, and an image the browser cannot read (HEIC,
+// SVG), is put in the folder Claude works in. Gives back which list its id goes in, and the id.
+async function upload(file: File): Promise<['images' | 'files', string]> {
+  const image = file.type.startsWith('image/') && (await uploadImage(file).catch(() => ''));
+  return image ? ['images', image] : ['files', await uploadFile(file)];
+}
+
+// Something attached in the message box, with a button in its corner to take it out again.
+function Removable({ onRemove, children }: { onRemove: () => void; children: ReactNode }) {
+  return (
+    <div className="relative">
+      {children}
+      <button
+        type="button"
+        onClick={onRemove}
+        aria-label="Remove"
+        className="absolute -top-1.5 -right-1.5 grid size-5 place-items-center rounded-full border border-border bg-card text-muted-foreground hover:text-foreground"
+      >
+        <X size={12} />
+      </button>
+    </div>
+  );
+}
+
 type Option = { id: string; name: string; hint: string };
 
 type PickerProps = {
@@ -427,7 +476,7 @@ function GithubPicker() {
 
 // What the user picked for the next message: which model, how hard it thinks, how much it keeps in view,
 // whether it runs in fast mode, and whether it asks first.
-export type Settings = Omit<NewMessage, 'text' | 'images'>;
+export type Settings = Omit<NewMessage, 'text' | 'images' | 'files'>;
 
 export const NEW_THREAD: Settings = {
   model: MODELS[0].id,
@@ -450,8 +499,8 @@ const SPEEDS = [
   { id: 'on', name: 'Fast', hint: 'Quicker answers, costs more' },
 ];
 
-// What a message box holds: the words, and the ids of the images added to them.
-export type Box = { text: string; images: string[] };
+// What a message box holds: the words, and the ids of the images and other files added to them.
+export type Box = { text: string; images: string[]; files: string[] };
 
 type ComposerProps = {
   placeholder: string;
@@ -460,15 +509,15 @@ type ComposerProps = {
   onChange: (change: (value: Box) => Box) => void;
   settings: Settings;
   onSettings: (settings: Settings) => void;
-  onSend: (text: string, images: string[]) => Promise<unknown>;
+  onSend: (message: Box) => Promise<unknown>;
   // What Claude can run, suggested while a `/name` is being typed.
   commands: Command[];
   // Send works with an empty box too (a picked answer to a question needs no typing).
   canSendEmpty?: boolean;
-  // The box takes words only (an answer to Claude's question cannot carry images or run a command).
+  // The box takes words only (an answer to Claude's question cannot carry files or run a command).
   textOnly?: boolean;
-  // The box takes words and commands but no images.
-  noImages?: boolean;
+  // The box takes words and commands but nothing attached.
+  noAttachments?: boolean;
   // Given while Claude is doing something that can be stopped.
   onStop?: () => void;
   autoFocus?: boolean;
@@ -497,7 +546,7 @@ export function Composer({
   commands,
   canSendEmpty,
   textOnly,
-  noImages = textOnly,
+  noAttachments = textOnly,
   onStop,
   autoFocus,
   sendLabel,
@@ -505,10 +554,13 @@ export function Composer({
   const { text } = value;
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
-  // Images are uploaded as soon as they are added. These are the ids the server gave back.
-  // While the box takes words only, images added before are set aside until it takes them again.
-  const images = noImages ? [] : value.images;
+  // Files are uploaded as soon as they are added. These are the ids the server gave back.
+  // While the box takes words only, files added before are set aside until it takes them again.
+  const images = noAttachments ? [] : value.images;
+  const files = noAttachments ? [] : value.files;
   const [uploading, setUploading] = useState(0);
+  // A file is being dragged over the page.
+  const [dragging, setDragging] = useState(false);
   const picker = useRef<HTMLInputElement>(null);
   const box = useRef<HTMLTextAreaElement>(null);
   // Nothing is suggested while the box takes words only.
@@ -518,22 +570,46 @@ export function Composer({
     (command: Command) => `/${command.name}`,
   );
   const clean = text.trim();
-  const ready = Boolean(clean || images.length || canSendEmpty) && !sending && !uploading;
+  const ready = Boolean(clean || images.length || files.length || canSendEmpty) && !sending && !uploading;
   // Pasting, dropping and the attach button all end up here. Whether this did anything with the files.
-  const addImages = (files: Iterable<File>) => {
-    const picked = noImages ? [] : [...files].filter((file) => file.type.startsWith('image/'));
+  const attach = (list: Iterable<File>) => {
+    const picked = noAttachments ? [] : [...list];
     if (!picked.length) return false;
     setError('');
-    setUploading((count) => count + 1);
-    void Promise.allSettled(picked.map(uploadImage)).then((results) => {
-      const ids = results.flatMap((result) => (result.status === 'fulfilled' ? [result.value] : []));
-      const failed = results.find((result) => result.status === 'rejected');
-      onChange((value) => ({ ...value, images: [...value.images, ...ids] }));
-      if (failed) setError(failed.reason.message);
-      setUploading((count) => count - 1);
-    });
+    setUploading((count) => count + picked.length);
+    for (const file of picked) {
+      upload(file)
+        .then(([kind, id]) => onChange((value) => ({ ...value, [kind]: [...value[kind], id] })))
+        .catch((err: Error) => setError(err.message))
+        .finally(() => setUploading((count) => count - 1));
+    }
     return true;
   };
+  // A file can be dropped anywhere on the page. Dropped elsewhere, the browser would leave the app to show it,
+  // so a drop is stopped even while the box takes nothing.
+  const over = useEffectEvent((e: DragEvent) => {
+    if (!e.dataTransfer?.types.includes('Files')) return;
+    e.preventDefault();
+    setDragging(true);
+  });
+  const dropped = useEffectEvent((e: DragEvent) => {
+    setDragging(false);
+    if (!e.dataTransfer?.types.includes('Files') || e.defaultPrevented) return;
+    e.preventDefault();
+    attach(e.dataTransfer.files);
+  });
+  useEffect(() => {
+    // A drag that leaves the window has no element it goes to.
+    const left = (e: DragEvent) => !e.relatedTarget && setDragging(false);
+    window.addEventListener('dragover', over);
+    window.addEventListener('dragleave', left);
+    window.addEventListener('drop', dropped);
+    return () => {
+      window.removeEventListener('dragover', over);
+      window.removeEventListener('dragleave', left);
+      window.removeEventListener('drop', dropped);
+    };
+  }, []);
   const models = useApp((state) => state.models);
   const model = models.find((option) => option.id === settings.model);
   // A model the list does not have (a proxy model while the proxy is away) keeps every level on offer.
@@ -544,41 +620,42 @@ export function Composer({
     setSending(true);
     setError('');
     try {
-      await onSend(clean, images);
-      onChange((value) => ({ text: '', images: value.images.filter((id) => !images.includes(id)) }));
+      await onSend({ text: clean, images, files });
+      onChange((value) => ({
+        text: '',
+        images: value.images.filter((id) => !images.includes(id)),
+        files: value.files.filter((id) => !files.includes(id)),
+      }));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not send.');
     }
     setSending(false);
   };
   return (
-    <div
-      className="relative rounded-xl border border-border bg-card shadow-sm focus-within:border-primary"
-      onDragOver={(e) => e.dataTransfer.types.includes('Files') && e.preventDefault()}
-      onDrop={(e) => {
-        if (!e.dataTransfer.types.includes('Files')) return;
-        // Always stopped, or the browser would leave the app to show the dropped file.
-        e.preventDefault();
-        addImages(e.dataTransfer.files);
-      }}
-    >
+    <div className="relative rounded-xl border border-border bg-card shadow-sm focus-within:border-primary">
+      {dragging && !noAttachments && (
+        <div className="pointer-events-none absolute inset-0 z-10 grid place-items-center rounded-xl border-2 border-dashed border-primary bg-card/90 text-sm font-medium text-primary">
+          Drop files to attach
+        </div>
+      )}
       <CommandMenu list={list} />
-      {(images.length > 0 || uploading > 0) && (
+      {(images.length > 0 || files.length > 0 || uploading > 0) && (
         <div className="flex flex-wrap gap-2 px-3.5 pt-3">
           {images.map((id) => (
-            <div key={id} className="relative">
+            <Removable
+              key={id}
+              onRemove={() => onChange((value) => ({ ...value, images: value.images.filter((other) => other !== id) }))}
+            >
               <Picture id={id} className="size-16 object-cover" />
-              <button
-                type="button"
-                onClick={() =>
-                  onChange((value) => ({ ...value, images: value.images.filter((other) => other !== id) }))
-                }
-                aria-label="Remove image"
-                className="absolute -top-1.5 -right-1.5 grid size-5 place-items-center rounded-full border border-border bg-card text-muted-foreground hover:text-foreground"
-              >
-                <X size={12} />
-              </button>
-            </div>
+            </Removable>
+          ))}
+          {files.map((id) => (
+            <Removable
+              key={id}
+              onRemove={() => onChange((value) => ({ ...value, files: value.files.filter((other) => other !== id) }))}
+            >
+              <FileChip id={id} />
+            </Removable>
           ))}
           {uploading > 0 && (
             <div className="grid size-16 place-items-center rounded-md border border-border text-muted-foreground">
@@ -603,7 +680,7 @@ export function Composer({
           // Spreadsheets and documents put a picture of the copied cells next to the formatted words. The
           // words win. A copied image file comes with its name as plain words only, and is still an image.
           if (e.clipboardData.getData('text/html') && e.clipboardData.getData('text/plain')) return;
-          if (addImages(e.clipboardData.files)) e.preventDefault();
+          if (attach(e.clipboardData.files)) e.preventDefault();
         }}
         onKeyDown={(e) => {
           // A key pressed while a word is being put together (Chinese, Japanese, Korean) belongs to that.
@@ -615,16 +692,15 @@ export function Composer({
       />
       {error && <p className="px-3.5 pb-1 text-xs text-rose-500">{error}</p>}
       <div className="flex items-center gap-0.5 px-1.5 pb-1.5">
-        {!noImages && (
+        {!noAttachments && (
           <>
             <input
               ref={picker}
               type="file"
-              accept="image/*"
               multiple
               hidden
               onChange={(e) => {
-                addImages(e.target.files ?? []);
+                attach(e.target.files ?? []);
                 // Cleared so that picking the same file again counts as a change.
                 e.target.value = '';
               }}
@@ -632,11 +708,11 @@ export function Composer({
             <button
               type="button"
               onClick={() => picker.current?.click()}
-              aria-label="Attach images"
-              title="Attach images"
+              aria-label="Attach files"
+              title="Attach files"
               className="grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
             >
-              <ImagePlus size={15} />
+              <Paperclip size={15} />
             </button>
           </>
         )}
@@ -838,9 +914,9 @@ export function NewThread({ channel, draftId, title }: NewThreadProps) {
         settings={settings}
         onSettings={(settings) => edit({ settings })}
         commands={commands}
-        onSend={async (text, images) => {
+        onSend={async (message) => {
           const where = fresh ? { from } : { path };
-          const thread = await createThread({ channelId, text, images, visibility, ...where, ...settings });
+          const thread = await createThread({ channelId, ...message, visibility, ...where, ...settings });
           void navigate({ to: '/c/$channelId/t/$threadId', params: { channelId, threadId: thread.id }, replace: true });
         }}
       />
@@ -1058,7 +1134,7 @@ export function DraftRows({ channelId }: { channelId: string }) {
         </span>
         <span className="mt-1.5 block text-xs text-muted-foreground">
           Not sent yet
-          {draft.images.length > 0 && ` · ${draft.images.length} ${draft.images.length === 1 ? 'image' : 'images'}`}
+          {attachedTo(draft) > 0 && ` · ${attachedTo(draft)} attached`}
         </span>
       </Link>
       <button

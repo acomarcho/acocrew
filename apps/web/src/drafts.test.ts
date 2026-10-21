@@ -25,25 +25,32 @@ test('what was typed is still there after looking elsewhere and after a reload, 
   page.editDraft('thread-a', { text: 'half a reply' });
   page.editDraft('thread-b', { text: 'another one', settings: { effort: 'high' } });
   page.editDraft('thread-a', { images: ['cat.png'] });
-  expect(page.draftOf('thread-a')).toEqual({ text: 'half a reply', images: ['cat.png'], settings: {} });
+  expect(page.draftOf('thread-a')).toEqual({ text: 'half a reply', images: ['cat.png'], files: [], settings: {} });
 
   page = await load();
-  expect(page.draftOf('thread-a')).toEqual({ text: 'half a reply', images: ['cat.png'], settings: {} });
-  expect(page.draftOf('thread-b')).toEqual({ text: 'another one', images: [], settings: { effort: 'high' } });
+  expect(page.draftOf('thread-a')).toEqual({ text: 'half a reply', images: ['cat.png'], files: [], settings: {} });
+  expect(page.draftOf('thread-b')).toEqual({
+    text: 'another one',
+    images: [],
+    files: [],
+    settings: { effort: 'high' },
+  });
   // A thread nothing was typed in has an empty box.
-  expect(page.draftOf('thread-c')).toEqual({ text: '', images: [], settings: {} });
+  expect(page.draftOf('thread-c')).toEqual({ text: '', images: [], files: [], settings: {} });
 });
 
-test('a draft counts while it has words or images, and only those are saved', async () => {
+test('a draft counts while it has words or something attached, and only those are saved', async () => {
   let page = await load();
   page.editDraft('only-settings', { settings: { model: 'other' } });
   page.editDraft('only-spaces', { text: '  \n ' });
   page.editDraft('words', { text: 'hi' });
   page.editDraft('picture', { images: ['cat.png'] });
+  page.editDraft('zip', { files: ['1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed-notes.zip'] });
   const counts = (id: string) => page.hasContent(page.draftOf(id));
-  expect(['only-settings', 'only-spaces', 'words', 'picture', 'never'].map(counts)).toEqual([
+  expect(['only-settings', 'only-spaces', 'words', 'picture', 'zip', 'never'].map(counts)).toEqual([
     false,
     false,
+    true,
     true,
     true,
     false,
@@ -52,7 +59,16 @@ test('a draft counts while it has words or images, and only those are saved', as
   expect(page.draftOf('only-settings').settings).toEqual({ model: 'other' });
 
   page = await load();
-  expect(Object.keys(page.useDrafts.getState().drafts)).toEqual(['words', 'picture']);
+  expect(Object.keys(page.useDrafts.getState().drafts)).toEqual(['words', 'picture', 'zip']);
+});
+
+test('a draft saved before files could be attached loads with none', async () => {
+  const page = await load();
+  const { name } = page.useDrafts.persist.getOptions();
+  const old = { text: 'from last week', images: ['cat.png'], settings: {} };
+  kept.set(name!, JSON.stringify({ state: { owner: '', drafts: { old } }, version: 0 }));
+  await page.useDrafts.persist.rehydrate();
+  expect(page.draftOf('old')).toEqual({ ...old, files: [] });
 });
 
 test('a repository can have several threads not sent yet, the newest first, until each is sent or thrown away', async () => {
@@ -70,7 +86,7 @@ test('a repository can have several threads not sent yet, the newest first, unti
   expect(inShop()).toEqual(['second']);
   page.dropDraft('second');
   expect(inShop()).toEqual([]);
-  expect(page.draftOf('second')).toEqual({ text: '', images: [], settings: {} });
+  expect(page.draftOf('second')).toEqual({ text: '', images: [], files: [], settings: {} });
   expect(page.hasContent(page.draftOf('elsewhere'))).toBe(true);
 });
 
@@ -98,7 +114,7 @@ test('what another tab saved is taken over, so this tab does not undo it with it
   tab.editDraft('picking', { visibility: 'public' });
   const { name } = tab.useDrafts.persist.getOptions();
   const saved = JSON.parse(kept.get(name!)!);
-  saved.state.drafts.there = { text: 'typed in the other tab', images: [], settings: {} };
+  saved.state.drafts.there = { text: 'typed in the other tab', images: [], files: [], settings: {} };
   delete saved.state.drafts['sent there'];
   kept.set(name!, JSON.stringify(saved));
   // The browser tells a tab when another one saved. The app answers by reading again.
