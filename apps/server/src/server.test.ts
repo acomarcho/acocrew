@@ -2640,6 +2640,7 @@ test("the model picker offers Claude's models and then the proxy's, and only Cla
     bigContext: false,
     fast: false,
     efforts: ['high', 'max'],
+    window: 1_000_000,
   });
   // Each model has the levels the proxy names for it, in order, and only ones Claude Code can ask for: MiniMax M3's
   // "none" is not one of them, and the MiMo models cannot be told how hard to think at all.
@@ -2648,9 +2649,17 @@ test("the model picker offers Claude's models and then the proxy's, and only Cla
     'claude-opus-5-5': ['low', 'medium', 'high', 'xhigh', 'max'],
     'kimi-k3': ['max'],
     'qwen3.8-max': ['low', 'medium', 'xhigh'],
-    'glm-5.1': ['low', 'medium', 'high'],
+    hy3: ['low', 'high'],
     'minimax-m3': [],
     'mimo-v2.6-pro': [],
+  });
+  // And the window the proxy gives it. Claude's own models have none: the thread's context setting picks theirs.
+  const windows = Object.fromEntries(list.map((model) => [model.id, model.window]));
+  expect(windows).toMatchObject({
+    'claude-opus-5-5': null,
+    hy3: 256_000,
+    'kimi-k2.7-code': 262_144,
+    'kimi-k3': 1_048_576,
   });
 
   // Port 1 has nothing listening on it.
@@ -2677,6 +2686,8 @@ test('a thread on a proxy model runs Claude pointed at the proxy, signed in with
       ANTHROPIC_DEFAULT_OPUS_MODEL: 'deepseek-v4-pro',
       ANTHROPIC_DEFAULT_SONNET_MODEL: 'deepseek-v4-pro',
       ANTHROPIC_DEFAULT_HAIKU_MODEL: SIDE,
+      // Its real window, so Claude Code does not summarize the conversation at the 200K it would assume.
+      CLAUDE_CODE_MAX_CONTEXT_TOKENS: '1000000',
     },
   });
   // The key is in the environment Claude gets, next to the server's own, and nowhere in its settings.

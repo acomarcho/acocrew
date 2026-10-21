@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # Brings the OpenCode Go models of the model proxy (CLIProxyAPI, see Decision 14) up to date: which models it
-# offers, and how hard each one can think. Run it when Go adds or retires models.
+# offers, how hard each one can think, and how much each one can keep in view (its context window). Run it when Go adds or retires models.
 #
 # It asks OpenCode for Go's catalog (`opencode models opencode-go --refresh --verbose`, which first fetches the
 # latest one from models.dev). A model the catalog marks as `@ai-sdk/openai-compatible` goes in. Any other model is
 # sent a one-token message on the proxy's OpenAI-style endpoint, and goes in only when it answers there. Each model's
-# levels are the `variants` the catalog names. A model Go no longer has is taken out.
+# levels are the `variants` the catalog names, and its window the catalog's `limit.context`. A model Go no longer
+# has is taken out.
 #
 # It changes only the `models` of the proxy's `opencode-go` entry, which has to be there already (with Go's address
 # and key). The file is written in place, so the running proxy notices and reloads it by itself.
@@ -82,10 +83,15 @@ def main():
             skipped.append(f'{name} ({why})')
             continue
         levels = list(details.get('variants') or {})
-        models.append({'name': name, 'alias': name, 'thinking': {'levels': levels}})
+        window = details['limit']['context']
+        models.append({'name': name, 'alias': name, 'max-context-length': window, 'thinking': {'levels': levels}})
 
-    before = {model['name']: (model.get('thinking') or {}).get('levels') for model in entry.get('models') or []}
-    after = {model['name']: model['thinking']['levels'] for model in models}
+    # What each model is set up with, to say what changed.
+    def shown(model):
+        return {'window': model.get('max-context-length'), 'levels': (model.get('thinking') or {}).get('levels')}
+
+    before = {model['name']: shown(model) for model in entry.get('models') or []}
+    after = {model['name']: shown(model) for model in models}
     for name in sorted(after.keys() - before.keys()):
         print(f'+ {name} {after[name]}')
     for name in sorted(before.keys() - after.keys()):

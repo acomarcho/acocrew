@@ -128,9 +128,19 @@ export const EFFORTS = [
 ];
 
 // `bigContext`: the model can run with the 1M context window. `fast`: it has fast mode. `efforts`: the ids of the
-// `EFFORTS` it has, none when how hard it thinks cannot be set.
+// `EFFORTS` it has, none when how hard it thinks cannot be set. `window`: how many tokens it keeps in view, for a
+// model that has one size only (a proxy model whose size the proxy knows). Null for Claude's own models, where the
+// thread's `context` picks the size.
 // A setting the picked model does not have is not offered, and is ignored when Claude starts.
-export type Model = { id: string; name: string; hint: string; bigContext: boolean; fast: boolean; efforts: string[] };
+export type Model = {
+  id: string;
+  name: string;
+  hint: string;
+  bigContext: boolean;
+  fast: boolean;
+  efforts: string[];
+  window: number | null;
+};
 
 const ALL_EFFORTS = EFFORTS.map((effort) => effort.id);
 
@@ -144,6 +154,7 @@ export const MODELS: Model[] = [
     bigContext: true,
     fast: true,
     efforts: ALL_EFFORTS,
+    window: null,
   },
   {
     id: 'claude-sonnet-5-5',
@@ -152,6 +163,7 @@ export const MODELS: Model[] = [
     bigContext: true,
     fast: false,
     efforts: ALL_EFFORTS,
+    window: null,
   },
   {
     id: 'claude-haiku-4-5-20251001',
@@ -160,6 +172,7 @@ export const MODELS: Model[] = [
     bigContext: false,
     fast: false,
     efforts: ALL_EFFORTS,
+    window: null,
   },
 ];
 
@@ -171,10 +184,12 @@ export const CONTEXTS = [
 // A token count the way it is shown: 182000 is "182K".
 const short = new Intl.NumberFormat('en', { notation: 'compact' });
 export const tokens = (count: number) => short.format(count);
-// The size these settings give. A model without the 1M window has the standard one, whatever was picked.
-export function contextWindow({ model, context }: { model: string; context: string }) {
-  const big = MODELS.find((option) => option.id === model)?.bigContext;
-  const picked = CONTEXTS.find((option) => big && option.id === context);
+// The size these settings give. A model with a size of its own has that one. A model without the 1M window has the
+// standard one, whatever was picked. `models` are the ones known: Claude's, and the proxy's once it has said.
+export function contextWindow({ model, context }: { model: string; context: string }, models: Model[] = MODELS) {
+  const spec = models.find((option) => option.id === model);
+  if (spec?.window) return spec.window;
+  const picked = CONTEXTS.find((option) => spec?.bigContext && option.id === context);
   return (picked ?? CONTEXTS[0]).tokens;
 }
 

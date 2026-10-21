@@ -17,16 +17,19 @@ const ASK_MS = 5000;
 
 const isClaude = (id: string) => MODELS.some((model) => model.id === id);
 
-// What Claude is started with to run `model` through the proxy: where its calls go, and which model fills each
-// of Claude Code's slots (its side jobs use the Haiku one). `login` is the key. It goes into the environment of
-// the process rather than its settings, so it never shows in the machine's list of running programs.
-export function throughProxy(model: string, { url, key, background }: Proxy) {
+// What Claude is started with to run `model` through the proxy: where its calls go, which model fills each of
+// Claude Code's slots (its side jobs use the Haiku one), and how many tokens the model keeps in view. Claude Code
+// does not know the models of other providers, so without `window` it takes them for 200K and summarizes the
+// conversation well before most of them would need it. `login` is the key. It goes into the environment of the
+// process rather than its settings, so it never shows in the machine's list of running programs.
+export function throughProxy(model: string, { url, key, background }: Proxy, window: number | null) {
   return {
     env: {
       ANTHROPIC_BASE_URL: url,
       ANTHROPIC_DEFAULT_OPUS_MODEL: model,
       ANTHROPIC_DEFAULT_SONNET_MODEL: model,
       ANTHROPIC_DEFAULT_HAIKU_MODEL: background,
+      ...(window && { CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(window) }),
     },
     login: { ANTHROPIC_AUTH_TOKEN: key },
   };
@@ -34,15 +37,18 @@ export function throughProxy(model: string, { url, key, background }: Proxy) {
 
 export function createProxy(db: Db) {
   let asked: { at: number; list: Promise<Model[]> } | undefined;
+  // What the proxy said last time it answered, for what has to be known right away (see `windowOf`).
+  let last: Model[] = [];
 
   const read = (): Proxy => {
     const row = db.select().from(settings).where(eq(settings.key, 'proxy')).get();
     return { ...PROXY_DEFAULTS, ...(row?.value as Partial<Proxy> | undefined) };
   };
 
-  // Which models the proxy offers, and how hard each one can think. CLIProxyAPI tells that only when asked the
-  // way Codex asks (with a `client_version`); its plain list has the names alone. A model's levels are the ones
-  // its `thinking.levels` in the proxy's config names. Of those, only the ones Claude Code can ask for are kept.
+  // Which models the proxy offers, how hard each one can think and how many tokens it keeps in view. CLIProxyAPI
+  // tells that only when asked the way Codex asks (with a `client_version`); its plain list has the names alone.
+  // A model's levels are the ones its `thinking.levels` in the proxy's config names. Of those, only the ones
+  // Claude Code can ask for are kept. Its window is the config's `max-context-length`.
   // Claude's own models are left out: those always go to Anthropic.
   async function ask({ url, key }: Proxy): Promise<Model[]> {
     const res = await fetch(`${url}/v1/models?client_version=1`, {
@@ -52,15 +58,24 @@ export function createProxy(db: Db) {
       throw new Error(`Nothing answers at ${url}.`);
     });
     if (!res.ok) throw new Error(`The model proxy said no (${res.status}): ${(await res.text()).slice(0, 200)}`);
-    type Listed = { slug: string; supported_reasoning_levels: { effort: string }[] | null };
+    type Listed = { slug: string; context_window?: number; supported_reasoning_levels: { effort: string }[] | null };
     const { models } = (await res.json()) as { models?: Listed[] };
     if (!Array.isArray(models)) throw new Error('The model proxy did not list its models the way CLIProxyAPI does.');
     return models
       .filter((model) => !isClaude(model.slug))
-      .map(({ slug, supported_reasoning_levels }) => {
+      .map(({ slug, context_window, supported_reasoning_levels }) => {
         const levels = (supported_reasoning_levels ?? []).map((level) => level.effort);
         const efforts = EFFORTS.map((effort) => effort.id).filter((id) => levels.includes(id));
-        return { id: slug, name: slug, hint: 'Through the model proxy', bigContext: false, fast: false, efforts };
+        const window = context_window || null;
+        return {
+          id: slug,
+          name: slug,
+          hint: 'Through the model proxy',
+          bigContext: false,
+          fast: false,
+          efforts,
+          window,
+        };
       })
       .sort((a, b) => a.id.localeCompare(b.id));
   }
@@ -70,13 +85,21 @@ export function createProxy(db: Db) {
     if (asked && Date.now() - asked.at < MODELS_MS) return asked.list;
     const list = ask(read());
     asked = { at: Date.now(), list };
-    list.catch(() => (asked = undefined));
+    list.then(
+      (models) => (last = models),
+      () => (asked = undefined),
+    );
     return list;
   }
   const proxyModelsOrNone = () => proxyModels().catch((): Model[] => []);
 
   return {
     read,
+
+    // How many tokens a proxy model keeps in view, as the proxy last said. Starting Claude cannot wait for the proxy.
+    // Every message has it asked first, so only an automation run right after the server started can find nothing
+    // yet, and then Claude assumes 200K for that run.
+    windowOf: (id: string) => last.find((model) => model.id === id)?.window ?? null,
 
     // Whether a thread can run on this model. Only a model that is not Claude's own makes the proxy be asked, so a
     // proxy that is away never holds up a Claude thread.
