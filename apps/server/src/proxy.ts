@@ -48,7 +48,9 @@ export function createProxy(db: Db) {
   // Which models the proxy offers, how hard each one can think and how many tokens it keeps in view. CLIProxyAPI
   // tells that only when asked the way Codex asks (with a `client_version`); its plain list has the names alone.
   // A model's levels are the ones its `thinking.levels` in the proxy's config names. Of those, only the ones
-  // Claude Code can ask for are kept. Its window is the config's `max-context-length`.
+  // Claude Code can ask for are kept. Its window is the config's `max-context-length`. For a model the config gives
+  // none, CLIProxyAPI makes up two different numbers (500K and 872K) where it otherwise says the same one twice. A
+  // made-up size is not used: too big a one would let the conversation outgrow the model before it is summarized.
   // Claude's own models are left out: those always go to Anthropic.
   async function ask({ url, key }: Proxy): Promise<Model[]> {
     const res = await fetch(`${url}/v1/models?client_version=1`, {
@@ -58,15 +60,20 @@ export function createProxy(db: Db) {
       throw new Error(`Nothing answers at ${url}.`);
     });
     if (!res.ok) throw new Error(`The model proxy said no (${res.status}): ${(await res.text()).slice(0, 200)}`);
-    type Listed = { slug: string; context_window?: number; supported_reasoning_levels: { effort: string }[] | null };
+    type Listed = {
+      slug: string;
+      context_window?: number;
+      max_context_window?: number;
+      supported_reasoning_levels: { effort: string }[] | null;
+    };
     const { models } = (await res.json()) as { models?: Listed[] };
     if (!Array.isArray(models)) throw new Error('The model proxy did not list its models the way CLIProxyAPI does.');
     return models
       .filter((model) => !isClaude(model.slug))
-      .map(({ slug, context_window, supported_reasoning_levels }) => {
+      .map(({ slug, context_window, max_context_window, supported_reasoning_levels }) => {
         const levels = (supported_reasoning_levels ?? []).map((level) => level.effort);
         const efforts = EFFORTS.map((effort) => effort.id).filter((id) => levels.includes(id));
-        const window = context_window || null;
+        const window = (context_window === max_context_window && context_window) || null;
         return {
           id: slug,
           name: slug,

@@ -82,6 +82,8 @@ const PROXY_KEY = 'test-proxy-key';
 // A stand-in for the model proxy. Like the real one it lists its models only for the right key, and turns
 // anything else down the way the real one does.
 let proxyServer: Server;
+// What the stand-in lists. A test can swap it, and it is put back before each test.
+let proxyList = PROXY_LIST;
 let proxyUrl: string;
 const proxyAsked: string[] = [];
 function startProxy() {
@@ -89,7 +91,7 @@ function startProxy() {
     proxyAsked.push(`${req.method} ${req.url}`);
     const listing = req.url === '/v1/models?client_version=1' && req.headers.authorization === `Bearer ${PROXY_KEY}`;
     res.writeHead(listing ? 200 : 401, { 'content-type': 'application/json' });
-    res.end(listing ? PROXY_LIST : '{"error":"Invalid API key"}');
+    res.end(listing ? proxyList : '{"error":"Invalid API key"}');
   });
   return new Promise<void>((resolve) =>
     proxyServer.listen(0, '127.0.0.1', () => {
@@ -303,6 +305,7 @@ beforeAll(async () => {
 afterAll(() => void proxyServer.close());
 
 beforeEach(async () => {
+  proxyList = PROXY_LIST;
   db = openDb(fresh);
   sockets = [];
   cookie = adminCookie;
@@ -2766,4 +2769,32 @@ test('the next message on an idle proxy thread with nothing changed goes to the 
   await tab.status(thread.id, 'done');
   expect(claude.closed()).toBe(0);
   expect(claude.calls).toHaveLength(1);
+});
+
+test('a proxy model whose size the proxy config does not give is not given a made-up one', async () => {
+  // What a real CLIProxyAPI listed for a model without `max-context-length`, next to one with it.
+  const level = (effort: string) => ({ description: '', effort });
+  const listed = (slug: string, context_window: number, max_context_window: number) => ({
+    slug,
+    display_name: slug,
+    context_window,
+    max_context_window,
+    default_reasoning_level: 'high',
+    supported_reasoning_levels: [level('high')],
+  });
+  proxyList = JSON.stringify({ models: [listed('no-size', 500_000, 872_000), listed('has-size', 256_000, 256_000)] });
+  // Saving the set-up makes the server ask the proxy again.
+  await post(PROXY_PATH, { url: proxyUrl, background: SIDE, key: '' });
+  const list = (await (await ask(MODELS_PATH)).json()) as Model[];
+  expect(Object.fromEntries(list.map((model) => [model.id, model.window]))).toMatchObject({
+    'no-size': null,
+    'has-size': 256_000,
+  });
+
+  // So Claude Code is left to assume its standard size for it.
+  const tab = await connect();
+  const thread = await startThread('make notes', { ...HAIKU, model: 'no-size', effort: 'high' });
+  await tab.status(thread.id, 'done');
+  expect(claude.calls[0].settings).toMatchObject({ env: { ANTHROPIC_DEFAULT_OPUS_MODEL: 'no-size' } });
+  expect(claude.calls[0].settings).not.toMatchObject({ env: { CLAUDE_CODE_MAX_CONTEXT_TOKENS: expect.anything() } });
 });
