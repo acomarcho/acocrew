@@ -199,7 +199,9 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images, p
   const lastShown = new Map<string, string>();
 
   function start(threadId: string, message: NewMessage): Session {
-    const { login, ...launch } = launchOptions(message, proxy());
+    // Kept as it is, so that `send` can tell a change by comparing it with the same function's answer.
+    const options = launchOptions(message, proxy());
+    const { login, ...launch } = options;
     const { path, repo, sessionId } = db
       .select({ path: threads.path, repo: channels.path, sessionId: threads.sessionId })
       .from(threads)
@@ -263,7 +265,7 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images, p
       input,
       running,
       translator: createTranslator(before?.todos),
-      launch: JSON.stringify({ login, ...launch }),
+      launch: JSON.stringify(options),
       fastUnconfirmed: launch.settings.fastMode,
       access: message.access,
       busy: false,

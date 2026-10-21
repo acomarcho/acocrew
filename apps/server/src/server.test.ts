@@ -2733,3 +2733,13 @@ test('while the proxy is away, a proxy thread is told so, and a proxy automation
   // Picking it anew is another matter.
   expect((await change(made, { model: 'kimi-k3' })).status).toBe(400);
 });
+
+test('the next message on an idle proxy thread with nothing changed goes to the same Claude process', async () => {
+  const tab = await connect();
+  const thread = await startThread('make notes', DEEPSEEK);
+  await tab.status(thread.id, 'done');
+  await say(thread, 'what is in them?', DEEPSEEK);
+  await tab.status(thread.id, 'done');
+  expect(claude.closed()).toBe(0);
+  expect(claude.calls).toHaveLength(1);
+});
