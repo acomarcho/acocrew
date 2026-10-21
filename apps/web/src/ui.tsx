@@ -525,7 +525,8 @@ export function Composer({
     });
     return true;
   };
-  const model = MODELS.find((option) => option.id === settings.model);
+  const models = useApp((state) => state.models);
+  const model = models.find((option) => option.id === settings.model);
   // The text stays in the box until the server has taken it, so a failed send loses nothing.
   const submit = async () => {
     if (!ready) return;
@@ -631,7 +632,7 @@ export function Composer({
         <Picker
           icon={<Sparkles size={14} className="text-primary" />}
           value={settings.model}
-          options={MODELS}
+          options={models}
           onChange={(model) => onSettings({ ...settings, model })}
         />
         {/* nudged left on phones so the menus stay on screen */}

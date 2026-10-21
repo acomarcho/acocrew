@@ -1,5 +1,6 @@
-// Settings: your own name and password, and for admins the accounts of the team and the machine's GitHub account.
-import type { Person, Temporary } from '@acocrew/shared';
+// Settings: your own name and password, and for admins the accounts of the team, the machine's GitHub account
+// and its model proxy.
+import type { Person, ProxySettings, Temporary } from '@acocrew/shared';
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { Check, ChevronLeft, Copy } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
@@ -8,9 +9,11 @@ import {
   addUser,
   deleteUser,
   loadGithub,
+  loadProxy,
   logOut,
   rename,
   resetPassword,
+  saveProxy,
   setAdmin,
   switchGithub,
   useApp,
@@ -294,6 +297,64 @@ function Github() {
   );
 }
 
+// How the machine reaches the model proxy (CLIProxyAPI, for example), which brings models other than Claude's
+// into the model picker. The key is never shown: the server only says whether there is one.
+function ModelProxy() {
+  const [shown, setShown] = useState<ProxySettings | null>(null);
+  const [form, setForm] = useState({ url: '', background: '', key: '' });
+  const [loadError, setLoadError] = useState('');
+  const show = (next: ProxySettings) => {
+    setShown(next);
+    setForm({ url: next.url, background: next.background, key: '' });
+  };
+  useEffect(() => void loadProxy().then(show, (err) => setLoadError(err.message)), []);
+  const set = (key: keyof typeof form) => (e: { target: { value: string } }) =>
+    setForm({ ...form, [key]: e.target.value });
+  if (!shown) return loadError ? <p className="text-sm text-rose-500">{loadError}</p> : null;
+  return (
+    <Section title="Model proxy">
+      <p className="mb-3 text-sm text-muted-foreground">
+        Models other than Claude's come through a proxy on this machine, such as CLIProxyAPI. Claude Code still does the
+        work, but talks to the proxy instead of Anthropic. It is the same for everyone and every thread.
+      </p>
+      <Form button="Save proxy" onSubmit={async () => show(await saveProxy(form))}>
+        <Field label="Address" required value={form.url} onChange={set('url')} />
+        <Field
+          label="Key"
+          type="password"
+          autoComplete="off"
+          placeholder={shown.keySet ? 'Saved. Type a new one to change it.' : 'One of the api-keys in its config'}
+          value={form.key}
+          onChange={set('key')}
+        />
+        <Field
+          label="Model for side jobs"
+          required
+          list="proxy-models"
+          value={form.background}
+          onChange={set('background')}
+        />
+        <datalist id="proxy-models">
+          {shown.models.map((id) => (
+            <option key={id} value={id} />
+          ))}
+        </datalist>
+        <p className="text-xs text-muted-foreground">
+          Claude Code uses this one for small jobs on the side, like naming things, while a thread runs on a proxy
+          model.
+        </p>
+      </Form>
+      {shown.error ? (
+        <p className="mt-2 text-sm text-rose-500">{shown.error}</p>
+      ) : (
+        <p className="mt-2 text-sm text-emerald-600">
+          Connected. {shown.models.length} models are in the model picker.
+        </p>
+      )}
+    </Section>
+  );
+}
+
 function Settings() {
   const me = useMe();
   return (
@@ -315,6 +376,7 @@ function Settings() {
         <Profile />
         <Password />
         {me.admin && <Github />}
+        {me.admin && <ModelProxy />}
         {me.admin && <Users />}
       </div>
     </div>

@@ -1,5 +1,5 @@
 // Automations: a message that is sent in a fresh thread of a repository at set times.
-import { MODELS, VISIBILITY, type Automation, type Channel, type Schedule, type Visibility } from '@acocrew/shared';
+import { VISIBILITY, type Automation, type Channel, type Schedule, type Visibility } from '@acocrew/shared';
 import { Link, useNavigate } from '@tanstack/react-router';
 import { ChevronDown, ChevronLeft, Clock, FolderGit2, GitBranch, Pencil, Play, Plus, Trash2 } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
@@ -326,6 +326,7 @@ const ACTION =
 // One automation: what it sends and when, what can be done with it, and the threads it started.
 export function AutomationPage({ channel, automation }: { channel: Channel; automation: Automation }) {
   const threads = useApp((state) => state.threads);
+  const models = useApp((state) => state.models);
   const utcOffset = useApp((state) => state.utcOffset);
   const navigate = useNavigate();
   const [editing, setEditing] = useState(false);
@@ -360,7 +361,7 @@ export function AutomationPage({ channel, automation }: { channel: Channel; auto
   const runs = threads
     .filter((thread) => thread.automationId === automation.id)
     .sort((a, b) => b.updatedAt - a.updatedAt);
-  const model = MODELS.find((option) => option.id === automation.model)?.name;
+  const model = models.find((option) => option.id === automation.model)?.name;
   return (
     <div className="h-full overflow-y-auto p-4 md:p-8">
       <div className="mx-auto max-w-2xl">

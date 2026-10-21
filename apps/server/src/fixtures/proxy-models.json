@@ -1,0 +1,125 @@
+{
+  "data": [
+    {
+      "created": 1792563751,
+      "id": "hy3",
+      "object": "model",
+      "owned_by": "opencode-go"
+    },
+    {
+      "created": 1792563751,
+      "id": "kimi-k3",
+      "object": "model",
+      "owned_by": "opencode-go"
+    },
+    {
+      "created": 1792563751,
+      "id": "deepseek-v4.1-flash",
+      "object": "model",
+      "owned_by": "opencode-go"
+    },
+    {
+      "created": 1792563751,
+      "id": "glm-5.1",
+      "object": "model",
+      "owned_by": "opencode-go"
+    },
+    {
+      "created": 1792563751,
+      "id": "glm-5.2",
+      "object": "model",
+      "owned_by": "opencode-go"
+    },
+    {
+      "created": 1792563751,
+      "id": "glm-5.3",
+      "object": "model",
+      "owned_by": "opencode-go"
+    },
+    {
+      "created": 1792563751,
+      "id": "kimi-k2.6",
+      "object": "model",
+      "owned_by": "opencode-go"
+    },
+    {
+      "created": 1792563751,
+      "id": "kimi-k2.7-code",
+      "object": "model",
+      "owned_by": "opencode-go"
+    },
+    {
+      "created": 1792563751,
+      "id": "mimo-v2.6-flash",
+      "object": "model",
+      "owned_by": "opencode-go"
+    },
+    {
+      "created": 1792563751,
+      "id": "qwen3.8-flash",
+      "object": "model",
+      "owned_by": "opencode-go"
+    },
+    {
+      "created": 1792563751,
+      "id": "deepseek-v4-pro",
+      "object": "model",
+      "owned_by": "opencode-go"
+    },
+    {
+      "created": 1792563751,
+      "id": "glm-5.3-flash",
+      "object": "model",
+      "owned_by": "opencode-go"
+    },
+    {
+      "created": 1792563751,
+      "id": "hy4-preview",
+      "object": "model",
+      "owned_by": "opencode-go"
+    },
+    {
+      "created": 1792563751,
+      "id": "mimo-v2.6-pro",
+      "object": "model",
+      "owned_by": "opencode-go"
+    },
+    {
+      "created": 1792563751,
+      "id": "qwen3.7-plus",
+      "object": "model",
+      "owned_by": "opencode-go"
+    },
+    {
+      "created": 1792563751,
+      "id": "qwen3.8-max",
+      "object": "model",
+      "owned_by": "opencode-go"
+    },
+    {
+      "created": 1792563751,
+      "id": "step-5-preview",
+      "object": "model",
+      "owned_by": "opencode-go"
+    },
+    {
+      "created": 1792563751,
+      "id": "longcat-2.0",
+      "object": "model",
+      "owned_by": "opencode-go"
+    },
+    {
+      "created": 1792563751,
+      "id": "minimax-m3",
+      "object": "model",
+      "owned_by": "opencode-go"
+    },
+    {
+      "created": 1792563751,
+      "id": "minimax-m3.1-flash-free",
+      "object": "model",
+      "owned_by": "opencode-go"
+    }
+  ],
+  "object": "list"
+}

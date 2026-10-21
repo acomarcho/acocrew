@@ -184,6 +184,12 @@ export const chats = sqliteTable(
   (t) => [index('chats_thread').on(t.threadId, t.id)],
 );
 
+// Settings of the whole machine, one row per kind, each kept as JSON. See proxy.ts for the `proxy` row.
+export const settings = sqliteTable('settings', {
+  key: text('key').primaryKey(),
+  value: text('value', { mode: 'json' }).notNull(),
+});
+
 // Who has looked at which thread: the thread's `updatedAt` when the person last had it on screen, and the id
 // of the last chat message they had on screen (0 when none).
 export const seen = sqliteTable(

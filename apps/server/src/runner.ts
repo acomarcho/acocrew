@@ -16,6 +16,7 @@ import { loadItems, saveItem, threadCols, type Db, type StoredThread } from './d
 import { branchOf } from './git.ts';
 import type { Hub } from './hub.ts';
 import type { Images } from './images.ts';
+import { throughProxy, type Proxy } from './proxy.ts';
 import { channels, threads } from './schema.ts';
 import { inferTitle } from './title.ts';
 import { contextUsed, createTranslator, nextAt, wasAborted, type Out } from './translate.ts';
@@ -76,10 +77,13 @@ const HIDDEN = new Set(
   agents clear rename __remote-workflow workflow-launch-exec`.split(/\s+/),
 );
 
-// What a Claude process is started with. These are fixed for as long as the process lives.
-function launchOptions({ model, effort, context, fast }: NewMessage) {
+// What a Claude process is started with. These are fixed for as long as the process lives. A model that is not
+// one of Claude's own runs through the model proxy, and `login` is how it signs in there. Claude Code puts that
+// sign-in before the machine's own Claude login, so nothing else has to be taken away.
+function launchOptions({ model, effort, context, fast }: NewMessage, proxy: Proxy) {
   const spec = MODELS.find((option) => option.id === model);
   const big = Boolean(spec?.bigContext && context === '1m');
+  const routed = spec ? undefined : throughProxy(model, proxy);
   // Newer models get the 1M window with or without the suffix, so 200k means switching 1M off.
   const env: Record<string, string> = big ? {} : { CLAUDE_CODE_DISABLE_1M_CONTEXT: '1' };
   return {
@@ -89,8 +93,9 @@ function launchOptions({ model, effort, context, fast }: NewMessage) {
     settings: {
       // Always said out loud, so the server user's own Claude settings cannot switch fast mode on.
       fastMode: Boolean(spec?.fast && fast),
-      env,
+      env: { ...env, ...routed?.env },
     },
+    login: routed?.login,
   };
 }
 
@@ -118,7 +123,8 @@ function queue<T>() {
 }
 
 // Runs Claude for threads: one process per thread, listened to for as long as it lives.
-export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images) {
+// `proxy` gives how the model proxy is set up right now.
+export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images, proxy: () => Proxy) {
   const sessions = new Map<string, Session>();
 
   function addItem(threadId: string, item: Item) {
@@ -193,7 +199,7 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images) {
   const lastShown = new Map<string, string>();
 
   function start(threadId: string, message: NewMessage): Session {
-    const launch = launchOptions(message);
+    const { login, ...launch } = launchOptions(message, proxy());
     const { path, repo, sessionId } = db
       .select({ path: threads.path, repo: channels.path, sessionId: threads.sessionId })
       .from(threads)
@@ -245,6 +251,8 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images) {
         cwd: path ?? repo,
         ...launch,
         resume: sessionId ?? undefined,
+        // The SDK hands Claude this environment instead of the server's own, so it is the server's plus the login.
+        env: login && { ...process.env, ...login },
         // Claude asks us about every action. With full access we say yes right away.
         permissionMode: 'default',
         canUseTool,
@@ -255,7 +263,7 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images) {
       input,
       running,
       translator: createTranslator(before?.todos),
-      launch: JSON.stringify(launch),
+      launch: JSON.stringify({ login, ...launch }),
       fastUnconfirmed: launch.settings.fastMode,
       access: message.access,
       busy: false,
@@ -416,7 +424,7 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images) {
         // takes a fresh process, which would kill whatever the current one is doing, so it only happens when
         // that one has nothing going on.
         const old = sessions.get(threadId);
-        const changed = old && old.launch !== JSON.stringify(launchOptions(message));
+        const changed = old && old.launch !== JSON.stringify(launchOptions(message, proxy()));
         if (changed && !old.busy && !old.tasks.length && !old.asks.size) close(threadId);
         const session = sessions.get(threadId) ?? start(threadId, message);
         session.access = access;

@@ -13,7 +13,8 @@ import {
   LOGIN_PATH,
   LOGOUT_PATH,
   ME_PATH,
-  MODELS,
+  MODELS_PATH,
+  PROXY_PATH,
   USERS_PATH,
   VISIBILITY,
   WS_PATH,
@@ -69,6 +70,7 @@ import { addWorktree, listPlaces } from './git.ts';
 import { listAccounts, switchAccount } from './github.ts';
 import { createHub } from './hub.ts';
 import { openImages, type Images } from './images.ts';
+import { createProxy } from './proxy.ts';
 import { createRunner, type QueryFn } from './runner.ts';
 import { automations, channels, chats, seen, session as sessions, shares, threads, user } from './schema.ts';
 import { firstLine } from './title.ts';
@@ -101,8 +103,12 @@ function readName(value: unknown) {
 // Says no to a request, with the reason as words a person can read.
 const refuse = (c: Context, err: unknown) => c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
 
-// The parts of a message, or null if any of them is not usable.
-function readMessage(body: Partial<NewMessage>, store: Images): NewMessage | null {
+// The parts of a message, or null if any of them is not usable. `offers` says whether a thread can run on a model.
+async function readMessage(
+  body: Partial<NewMessage>,
+  store: Images,
+  offers: (model: string) => Promise<boolean>,
+): Promise<NewMessage | null> {
   const text = typeof body.text === 'string' ? body.text.trim() : '';
   const { images = [], model, effort, context, fast, access } = body;
   const known = (list: { id: string }[], id?: string) => list.some((option) => option.id === id);
@@ -110,11 +116,12 @@ function readMessage(body: Partial<NewMessage>, store: Images): NewMessage | nul
     Array.isArray(images) &&
     images.every(store.find) &&
     (text || images.length) &&
-    known(MODELS, model) &&
     known(EFFORTS, effort) &&
     known(CONTEXTS, context) &&
     typeof fast === 'boolean' &&
-    known(ACCESS, access);
+    known(ACCESS, access) &&
+    typeof model === 'string' &&
+    (await offers(model));
   if (!usable) return null;
   return { text, images, model: model!, effort: effort!, context: context!, fast, access: access! };
 }
@@ -128,7 +135,8 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
   await seedAdmin(auth, db);
   const hub = createHub();
   const store = openImages(images);
-  const runner = createRunner(db, hub, query, store);
+  const proxy = createProxy(db);
+  const runner = createRunner(db, hub, query, store, proxy.read);
   // `user` is whoever is logged in on the browser that sent the request, and `login` is the id of that login.
   // `thread` is the thread a request is about (see the routes under `/api/threads/:id`).
   const app = new Hono<{ Variables: { user: Me; login: string; thread: StoredThread } }>();
@@ -211,8 +219,9 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
     return c.json({ ok: true });
   });
 
-  // Accounts are made and changed by admins only. So is which GitHub account the machine works as.
-  for (const path of [USERS_PATH, `${USERS_PATH}/*`, GITHUB_PATH]) {
+  // Accounts are made and changed by admins only. So are which GitHub account the machine works as, and how it
+  // reaches the model proxy.
+  for (const path of [USERS_PATH, `${USERS_PATH}/*`, GITHUB_PATH, PROXY_PATH]) {
     app.use(path, async (c, next) => {
       if (!c.get('user').admin) return c.json({ error: 'Only an admin can do this.' }, 403);
       await next();
@@ -303,6 +312,16 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
       return refuse(c, err);
     }
   });
+
+  app.get(PROXY_PATH, async (c) => c.json(await proxy.shown()));
+
+  app.post(PROXY_PATH, async (c) => {
+    const why = proxy.save(await c.req.json().catch(() => ({})));
+    return why ? refuse(c, why) : c.json(await proxy.shown());
+  });
+
+  // The models a thread can run on, for the model picker.
+  app.get(MODELS_PATH, async (c) => c.json(await proxy.models()));
 
   app.get('/api/folders', (c) => {
     const list = listFolders(home, c.req.query('path') ?? home);
@@ -407,7 +426,7 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
 
   app.post('/api/threads', async (c) => {
     const body = await c.req.json().catch(() => ({}));
-    const message = readMessage(body, store);
+    const message = await readMessage(body, store, proxy.offers);
     const channel = findChannel(body.channelId);
     const visibility = readVisibility(body.visibility);
     if (!message || !channel || !visibility)
@@ -451,7 +470,7 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
   // git lists. The branch it had (`kept.from`) is taken as it is, so that an automation whose branch is gone
   // can still be paused.
   async function readAutomation(body: Partial<NewAutomation>, kept?: Stored) {
-    const message = readMessage({ ...body, images: [] }, store);
+    const message = await readMessage({ ...body, images: [] }, store, proxy.offers);
     const schedule = readSchedule(body);
     const channel = findChannel(body.channelId);
     const visibility = readVisibility(body.visibility);
@@ -535,7 +554,7 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
   });
 
   app.post('/api/threads/:id/messages', async (c) => {
-    const message = readMessage(await c.req.json().catch(() => ({})), store);
+    const message = await readMessage(await c.req.json().catch(() => ({})), store, proxy.offers);
     if (!message) return c.json({ error: 'Needs a message and a full set of settings.' }, 400);
     runner.send(c.get('thread').id, message, c.get('user').id);
     return c.json({ ok: true });

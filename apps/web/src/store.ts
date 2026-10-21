@@ -3,6 +3,9 @@ import {
   GITHUB_PATH,
   LOGOUT_PATH,
   ME_PATH,
+  MODELS,
+  MODELS_PATH,
+  PROXY_PATH,
   USERS_PATH,
   WS_PATH,
   type Answer,
@@ -14,11 +17,14 @@ import {
   type GithubAccount,
   type Item,
   type Me,
+  type Model,
   type NewAutomation,
   type NewMessage,
+  type NewProxySettings,
   type NewThread,
   type NewUser,
   type Person,
+  type ProxySettings,
   type Seen,
   type ServerEvent,
   type Temporary,
@@ -45,6 +51,8 @@ type State = {
   // The GitHub accounts logged in on the server machine. Null until an admin's screen has asked, and on a
   // machine without the GitHub CLI.
   github: GithubAccount[] | null;
+  // The models a thread can run on: Claude's own until the server has said which ones the model proxy adds.
+  models: Model[];
   // The thread on screen. `items` is null until the server has sent what is in it.
   openId: string | null;
   items: Item[] | null;
@@ -70,6 +78,7 @@ export const START: State = {
   people: [],
   seen: {},
   github: null,
+  models: MODELS,
   openId: null,
   items: null,
   chats: [],
@@ -341,6 +350,17 @@ export function githubChoices(accounts: GithubAccount[] | null) {
   const hosts = [...new Set(all.map((account) => account.host))];
   return hosts.map((host) => all.filter((account) => account.host === host)).filter((list) => list.length > 1);
 }
+
+// Asks which models a thread can run on now, the model proxy's included.
+export const loadModels = async () => useApp.setState({ models: await request<Model[]>(MODELS_PATH) });
+// How the machine reaches the model proxy. Only an admin can look or change it. Saving also asks again which
+// models there are.
+export const loadProxy = () => request<ProxySettings>(PROXY_PATH);
+export const saveProxy = async (body: NewProxySettings) => {
+  const shown = await request<ProxySettings>(PROXY_PATH, body);
+  await loadModels();
+  return shown;
+};
 
 // Asks which GitHub accounts the machine is logged in to. Only an admin is told.
 export const loadGithub = async () => useApp.setState({ github: await request<GithubAccount[] | null>(GITHUB_PATH) });

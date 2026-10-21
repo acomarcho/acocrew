@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { TagToast } from '../chat';
 import { Login, SetPassword } from '../login';
 import { keepDraftsOf } from '../drafts';
-import { connect, LOGGED_OUT, useApp, whoAmI } from '../store';
+import { connect, loadModels, LOGGED_OUT, useApp, whoAmI } from '../store';
 
 export const Route = createRootRoute({ component: Root });
 
@@ -46,6 +46,8 @@ function App({ me, recheck }: { me: Me; recheck: () => Promise<unknown> }) {
   useEffect(() => useApp.setState({ login: me }), [me]);
   useEffect(() => keepDraftsOf(me.id), [me.id]);
   useEffect(() => connect(recheck), [recheck]);
+  // Without an answer the model picker keeps Claude's own models.
+  useEffect(() => void loadModels().catch(() => {}), []);
   return (
     <div className="h-dvh bg-background text-foreground">
       {ready ? <Outlet /> : <p className="grid h-full place-items-center text-muted-foreground">Connecting...</p>}

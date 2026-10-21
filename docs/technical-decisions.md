@@ -1,6 +1,6 @@
 # Technical decisions
 
-Last updated: 2026-10-11
+Last updated: 2026-10-21
 
 ## What we are building
 
@@ -19,7 +19,7 @@ The decisions below are based on reading their source code. We learn from their 
 
 ## Decision 1: Claude first
 
-We support Claude Code only at the start. Other agents (Codex, OpenCode, pi) come later.
+We support Claude Code only at the start. Other agents (Codex, OpenCode, pi) come later. Other models can already be used through Claude Code (Decision 14).
 
 Why:
 
@@ -377,6 +377,18 @@ A thread has a second kind of message: what the people in it write to each other
 - **A tag pops up.** When a message tags you and you are not looking at that thread, a small box says who and what for a few seconds. A click opens the thread. This is in the app only.
 
 Not built: editing or deleting a message, images, reactions, tagging in a message to Claude, notifications outside the app. Someone who loses sight of a thread and gets it back keeps an old count until they reload.
+
+## Decision 14: Other models come through a proxy, with Claude Code still doing the work
+
+Decision 1 stands: Claude Code is the only agent. But it can talk to models that are not Claude's. A model proxy is a program on the machine that answers like Anthropic's API and passes each call on to another provider. We use CLIProxyAPI, with OpenCode Go in it. Claude Code is pointed at the proxy instead of Anthropic, so nothing else in acocrew changes: same translator, same approvals, same threads.
+
+- **Which model goes where.** Claude's own models (`MODELS` in the shared package) go to Anthropic with the machine's Claude login, as before. Any other model goes to the proxy. The model picker shows Claude's models, then whatever the proxy lists at `/v1/models` (`GET /api/models`, asked again at most once a minute). The server only takes a model one of the two offers, and only asks the proxy when the model is not Claude's, so a proxy that is away never holds up a Claude thread.
+- **How Claude is started for a proxy model.** Its settings point `ANTHROPIC_BASE_URL` at the proxy and fill all three of Claude Code's model slots: Opus and Sonnet with the picked model, Haiku with the "model for side jobs" (Claude Code uses that slot for small jobs of its own). The proxy's key goes in as `ANTHROPIC_AUTH_TOKEN` in the environment of that one process, not in its settings, so it does not show in the list of running programs. Claude Code puts that token ahead of the machine's own Claude login. The 1M window and fast mode are Claude's, so they are off.
+- **Switching.** A thread can go from a proxy model to Claude and back. It is the same as any model change: once Claude is idle, a new process resumes the same conversation. Checked live with DeepSeek, Opus and Kimi in one thread. A changed proxy set-up also reaches an idle thread with its next message.
+- **Settings.** Admins set the proxy's address, key and model for side jobs in Settings. It is kept in a `settings` table (one JSON row per kind, here `proxy`). Out of the box: `http://127.0.0.1:8317` (CLIProxyAPI's own address), no key, and `deepseek-v4.1-flash`. The key is never sent to a browser: the page only says whether there is one, and an empty key on save keeps it. The page says whether the proxy answers and how many models it offers, or what it said.
+- **The machine's proxy.** CLIProxyAPI runs as the systemd service `cli-proxy-api` with its config in `~/.config/cli-proxy-api/config.yaml`. OpenCode Go is an `openai-compatibility` entry pointing at `https://opencode.ai/inference/go/openai/v1`. Go wants a session id per conversation in `x-opencode-session`, and the proxy cannot pass one through, so its config sends one fixed id for every thread.
+
+Not built: context window sizes for proxy models (the bar assumes 200k), and more than one proxy.
 
 ## UI direction: the Inbox layout
 

@@ -120,7 +120,11 @@ export type Item = { id: string; at: number; parent?: string } & (
 
 // `bigContext`: the model can run with the 1M context window. `fast`: it has fast mode.
 // A setting the picked model does not have is not offered, and is ignored when Claude starts.
-export const MODELS = [
+export type Model = { id: string; name: string; hint: string; bigContext: boolean; fast: boolean };
+
+// Claude's own models, run with the server machine's Claude login. Any other model a thread uses comes from the
+// model proxy (see `ProxySettings`): Claude Code runs as always, but talks to the proxy instead of Anthropic.
+export const MODELS: Model[] = [
   { id: 'claude-opus-5-5', name: 'Claude Opus 5.5', hint: 'Most capable', bigContext: true, fast: true },
   { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5', hint: 'Balanced', bigContext: true, fast: false },
   { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', hint: 'Fastest', bigContext: false, fast: false },
@@ -163,6 +167,21 @@ export const ACCESS = [
 // it is an account of (`github.com`, or a company's own). One account per host is the `active` one: what Claude
 // does on GitHub in any thread, and what git pushes, is done as that account.
 export type GithubAccount = { host: string; login: string; active: boolean };
+
+// The model proxy: a program such as CLIProxyAPI that answers like Anthropic's API and passes the calls on to
+// other model providers (OpenCode Go, for example). `url` is where it listens. `background` is the model Claude
+// Code uses for its small side jobs while a thread runs on a proxy model. The key is never sent to a browser:
+// `keySet` says whether there is one. `models` is what the proxy offers right now, and `error` why that could
+// not be read.
+export type ProxySettings = {
+  url: string;
+  background: string;
+  keySet: boolean;
+  models: string[];
+  error: string | null;
+};
+// What an admin saves. An empty `key` keeps the one there is.
+export type NewProxySettings = { url: string; background: string; key: string };
 
 // When an automation runs: at `time` ('HH:MM', 24 hours) on `days` of the week (0 is Monday, 6 is Sunday).
 // The time is the server machine's own clock. The first WebSocket message says which clock that is (`utcOffset`).
@@ -282,6 +301,8 @@ export const ME_PATH = '/api/me';
 export const USERS_PATH = '/api/users';
 export const AUTOMATIONS_PATH = '/api/automations';
 export const GITHUB_PATH = '/api/github';
+export const PROXY_PATH = '/api/proxy';
+export const MODELS_PATH = '/api/models';
 // These two are answered by Better Auth itself.
 export const LOGIN_PATH = '/api/auth/sign-in/username';
 export const LOGOUT_PATH = '/api/auth/sign-out';
