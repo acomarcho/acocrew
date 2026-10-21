@@ -72,10 +72,11 @@ const NAME = '📝 Create note-taking feature';
 // folder that the repository also has under the same name (`concise-mode`), one from a plugin, and built-ins.
 const COMMANDS = JSON.parse(readFileSync(new URL('./fixtures/commands.json', import.meta.url), 'utf8'));
 
-// What a real CLIProxyAPI with OpenCode Go in it answered at `/v1/models`, and the model ids in it, sorted.
+// What a real CLIProxyAPI with OpenCode Go in it answered at `/v1/models?client_version=1`, cut down to the
+// fields of each model that matter here, and the model ids in it, sorted. Its config names each model's levels.
 const PROXY_LIST = readFileSync(new URL('./fixtures/proxy-models.json', import.meta.url), 'utf8');
 const PROXY_MODELS: string[] = JSON.parse(PROXY_LIST)
-  .data.map((model: { id: string }) => model.id)
+  .models.map((model: { slug: string }) => model.slug)
   .sort();
 const PROXY_KEY = 'test-proxy-key';
 // A stand-in for the model proxy. Like the real one it lists its models only for the right key, and turns
@@ -86,7 +87,7 @@ const proxyAsked: string[] = [];
 function startProxy() {
   proxyServer = createServer((req, res) => {
     proxyAsked.push(`${req.method} ${req.url}`);
-    const listing = req.url === '/v1/models' && req.headers.authorization === `Bearer ${PROXY_KEY}`;
+    const listing = req.url === '/v1/models?client_version=1' && req.headers.authorization === `Bearer ${PROXY_KEY}`;
     res.writeHead(listing ? 200 : 401, { 'content-type': 'application/json' });
     res.end(listing ? PROXY_LIST : '{"error":"Invalid API key"}');
   });
@@ -2632,12 +2633,24 @@ test("the model picker offers Claude's models and then the proxy's, and only Cla
   const jordan = await teammate('jordan', 'Jordan');
   const list = await as(jordan.cookie, async () => (await (await ask(MODELS_PATH)).json()) as Model[]);
   expect(list.map((model) => model.id)).toEqual([...MODELS.map((model) => model.id), ...PROXY_MODELS]);
-  expect(list.at(-1)).toEqual({
-    id: PROXY_MODELS.at(-1),
-    name: PROXY_MODELS.at(-1),
+  expect(list.find((model) => model.id === 'deepseek-v4-pro')).toEqual({
+    id: 'deepseek-v4-pro',
+    name: 'deepseek-v4-pro',
     hint: 'Through the model proxy',
     bigContext: false,
     fast: false,
+    efforts: ['high', 'max'],
+  });
+  // Each model has the levels the proxy names for it, in order, and only ones Claude Code can ask for: MiniMax M3's
+  // "none" is not one of them, and the MiMo models cannot be told how hard to think at all.
+  const efforts = Object.fromEntries(list.map((model) => [model.id, model.efforts]));
+  expect(efforts).toMatchObject({
+    'claude-opus-5-5': ['low', 'medium', 'high', 'xhigh', 'max'],
+    'kimi-k3': ['max'],
+    'qwen3.8-max': ['low', 'medium', 'xhigh'],
+    'glm-5.1': ['low', 'medium', 'high'],
+    'minimax-m3': [],
+    'mimo-v2.6-pro': [],
   });
 
   // Port 1 has nothing listening on it.

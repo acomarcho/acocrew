@@ -1,6 +1,6 @@
 // The model proxy: a program such as CLIProxyAPI that answers like Anthropic's API and passes calls on to other
 // model providers. A thread on one of its models still runs Claude Code, pointed at the proxy instead of Anthropic.
-import { MODELS, type Model, type NewProxySettings, type ProxySettings } from '@acocrew/shared';
+import { EFFORTS, MODELS, type Model, type NewProxySettings, type ProxySettings } from '@acocrew/shared';
 import { eq } from 'drizzle-orm';
 import type { Db } from './db.ts';
 import { settings } from './schema.ts';
@@ -33,27 +33,35 @@ export function throughProxy(model: string, { url, key, background }: Proxy) {
 }
 
 export function createProxy(db: Db) {
-  let asked: { at: number; list: Promise<string[]> } | undefined;
+  let asked: { at: number; list: Promise<Model[]> } | undefined;
 
   const read = (): Proxy => {
     const row = db.select().from(settings).where(eq(settings.key, 'proxy')).get();
     return { ...PROXY_DEFAULTS, ...(row?.value as Partial<Proxy> | undefined) };
   };
 
-  // Which models the proxy offers. Claude's own are left out: those always go to Anthropic.
-  async function ask({ url, key }: Proxy) {
-    const res = await fetch(`${url}/v1/models`, {
+  // Which models the proxy offers, and how hard each one can think. CLIProxyAPI tells that only when asked the
+  // way Codex asks (with a `client_version`); its plain list has the names alone. A model's levels are the ones
+  // its `thinking.levels` in the proxy's config names. Of those, only the ones Claude Code can ask for are kept.
+  // Claude's own models are left out: those always go to Anthropic.
+  async function ask({ url, key }: Proxy): Promise<Model[]> {
+    const res = await fetch(`${url}/v1/models?client_version=1`, {
       headers: { authorization: `Bearer ${key}` },
       signal: AbortSignal.timeout(ASK_MS),
     }).catch(() => {
       throw new Error(`Nothing answers at ${url}.`);
     });
     if (!res.ok) throw new Error(`The model proxy said no (${res.status}): ${(await res.text()).slice(0, 200)}`);
-    const { data } = (await res.json()) as { data: { id: string }[] };
-    return data
-      .map((model) => model.id)
-      .filter((id) => !isClaude(id))
-      .sort();
+    type Listed = { slug: string; supported_reasoning_levels: { effort: string }[] | null };
+    const { models } = (await res.json()) as { models: Listed[] };
+    return models
+      .filter((model) => !isClaude(model.slug))
+      .map(({ slug, supported_reasoning_levels }) => {
+        const levels = (supported_reasoning_levels ?? []).map((level) => level.effort);
+        const efforts = EFFORTS.map((effort) => effort.id).filter((id) => levels.includes(id));
+        return { id: slug, name: slug, hint: 'Through the model proxy', bigContext: false, fast: false, efforts };
+      })
+      .sort((a, b) => a.id.localeCompare(b.id));
   }
 
   // A failed try is not kept, so the next request asks again.
@@ -64,34 +72,25 @@ export function createProxy(db: Db) {
     list.catch(() => (asked = undefined));
     return list;
   }
+  const proxyModelsOrNone = () => proxyModels().catch((): Model[] => []);
 
   return {
     read,
 
     // Whether a thread can run on this model. Only a model that is not Claude's own makes the proxy be asked, so a
     // proxy that is away never holds up a Claude thread.
-    offers: async (id: string) => isClaude(id) || (await proxyModels().catch((): string[] => [])).includes(id),
+    offers: async (id: string) => isClaude(id) || (await proxyModelsOrNone()).some((model) => model.id === id),
 
     // Every model a thread can run on: Claude's own, then what the proxy offers. Just Claude's while the proxy
     // does not answer.
-    async models(): Promise<Model[]> {
-      const ids = await proxyModels().catch(() => []);
-      const through = ids.map((id) => ({
-        id,
-        name: id,
-        hint: 'Through the model proxy',
-        bigContext: false,
-        fast: false,
-      }));
-      return [...MODELS, ...through];
-    },
+    models: async (): Promise<Model[]> => [...MODELS, ...(await proxyModelsOrNone())],
 
     // How it is set up, for an admin to see. Never the key itself.
     async shown(): Promise<ProxySettings> {
       const { url, key, background } = read();
       const known = { url, background, keySet: Boolean(key) };
       return proxyModels().then(
-        (models) => ({ ...known, models, error: null }),
+        (models) => ({ ...known, models: models.map((model) => model.id), error: null }),
         (err: Error) => ({ ...known, models: [], error: err.message }),
       );
     },

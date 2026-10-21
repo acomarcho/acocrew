@@ -437,6 +437,14 @@ export const NEW_THREAD: Settings = {
   access: 'full',
 };
 
+// The level of `efforts` closest to `effort`, the higher one on a tie. The model proxy does the same with a level a
+// model does not have, so the picker shows what will really be asked for.
+export function nearestEffort(efforts: string[], effort: string) {
+  const at = (id: string) => EFFORTS.findIndex((option) => option.id === id);
+  const away = (id: string) => Math.abs(at(id) - at(effort));
+  return efforts.toSorted((a, b) => away(a) - away(b) || at(b) - at(a))[0] ?? effort;
+}
+
 const SPEEDS = [
   { id: 'off', name: 'Standard', hint: 'Normal speed and price' },
   { id: 'on', name: 'Fast', hint: 'Quicker answers, costs more' },
@@ -528,6 +536,8 @@ export function Composer({
   };
   const models = useApp((state) => state.models);
   const model = models.find((option) => option.id === settings.model);
+  // A model the list does not have (a proxy model while the proxy is away) keeps every level on offer.
+  const efforts = EFFORTS.filter((option) => model?.efforts.includes(option.id) ?? true);
   // The text stays in the box until the server has taken it, so a failed send loses nothing.
   const submit = async () => {
     if (!ready) return;
@@ -634,17 +644,23 @@ export function Composer({
           icon={<Sparkles size={14} className="text-primary" />}
           value={settings.model}
           options={models}
-          onChange={(model) => onSettings({ ...settings, model })}
+          onChange={(id) => {
+            const picked = models.find((option) => option.id === id)!;
+            onSettings({ ...settings, model: id, effort: nearestEffort(picked.efforts, settings.effort) });
+          }}
         />
-        {/* nudged left on phones so the menus stay on screen */}
-        <Picker
-          icon={<Brain size={14} />}
-          value={settings.effort}
-          options={EFFORTS}
-          onChange={(effort) => onSettings({ ...settings, effort })}
-          menuClass="-left-20 sm:left-0"
-          labelClass={ICON_ON_PHONE}
-        />
+        {/* Only the levels the model has. Not there for a model whose thinking cannot be set.
+            Nudged left on phones so the menus stay on screen. */}
+        {efforts.length > 0 && (
+          <Picker
+            icon={<Brain size={14} />}
+            value={settings.effort}
+            options={efforts}
+            onChange={(effort) => onSettings({ ...settings, effort })}
+            menuClass="-left-20 sm:left-0"
+            labelClass={ICON_ON_PHONE}
+          />
+        )}
         {model?.bigContext && (
           <Picker
             icon={<Layers size={14} />}

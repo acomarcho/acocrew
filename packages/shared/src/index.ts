@@ -118,24 +118,49 @@ export type Item = { id: string; at: number; parent?: string } & (
   | { kind: 'todos'; todos: Todo[] }
 );
 
-// `bigContext`: the model can run with the 1M context window. `fast`: it has fast mode.
-// A setting the picked model does not have is not offered, and is ignored when Claude starts.
-export type Model = { id: string; name: string; hint: string; bigContext: boolean; fast: boolean };
-
-// Claude's own models, run with the server machine's Claude login. Any other model a thread uses comes from the
-// model proxy (see `ProxySettings`): Claude Code runs as always, but talks to the proxy instead of Anthropic.
-export const MODELS: Model[] = [
-  { id: 'claude-opus-5-5', name: 'Claude Opus 5.5', hint: 'Most capable', bigContext: true, fast: true },
-  { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5', hint: 'Balanced', bigContext: true, fast: false },
-  { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', hint: 'Fastest', bigContext: false, fast: false },
-];
-
+// How hard a model thinks, from least to most. These are the levels Claude Code can ask for.
 export const EFFORTS = [
   { id: 'low', name: 'Low', hint: 'Quick answers' },
   { id: 'medium', name: 'Medium', hint: 'Everyday work' },
   { id: 'high', name: 'High', hint: 'Thinks harder' },
   { id: 'xhigh', name: 'Extra high', hint: 'Thinks a lot harder' },
   { id: 'max', name: 'Max', hint: 'Slowest, most careful' },
+];
+
+// `bigContext`: the model can run with the 1M context window. `fast`: it has fast mode. `efforts`: the ids of the
+// `EFFORTS` it has, none when how hard it thinks cannot be set.
+// A setting the picked model does not have is not offered, and is ignored when Claude starts.
+export type Model = { id: string; name: string; hint: string; bigContext: boolean; fast: boolean; efforts: string[] };
+
+const ALL_EFFORTS = EFFORTS.map((effort) => effort.id);
+
+// Claude's own models, run with the server machine's Claude login. Any other model a thread uses comes from the
+// model proxy (see `ProxySettings`): Claude Code runs as always, but talks to the proxy instead of Anthropic.
+export const MODELS: Model[] = [
+  {
+    id: 'claude-opus-5-5',
+    name: 'Claude Opus 5.5',
+    hint: 'Most capable',
+    bigContext: true,
+    fast: true,
+    efforts: ALL_EFFORTS,
+  },
+  {
+    id: 'claude-sonnet-5-5',
+    name: 'Claude Sonnet 5.5',
+    hint: 'Balanced',
+    bigContext: true,
+    fast: false,
+    efforts: ALL_EFFORTS,
+  },
+  {
+    id: 'claude-haiku-4-5-20251001',
+    name: 'Claude Haiku 4.5',
+    hint: 'Fastest',
+    bigContext: false,
+    fast: false,
+    efforts: ALL_EFFORTS,
+  },
 ];
 
 // How much of the conversation Claude can keep in view at once. `tokens` is that size as a number.
