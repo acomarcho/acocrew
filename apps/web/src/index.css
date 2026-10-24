@@ -35,6 +35,12 @@ body,
   overscroll-behavior: none;
 }
 
+/* Paint the whole document, so anything the browser shows outside the app (e.g. next to the
+   phone keyboard) gets the theme color instead of default white. */
+html {
+  background: var(--background);
+}
+
 body {
   font-family:
     ui-sans-serif,
