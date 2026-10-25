@@ -33,6 +33,16 @@ export function byDay<T extends { at: number }>(rows: T[]): T[][] {
   return days;
 }
 
+// Whether the thread keeps following what Claude writes after the reader's view moved from `lastTop` to `top`.
+// Any move up stops it, however small (a trackpad moves a few pixels at a time). The bottom keeps moving while
+// Claude writes, so coming down near it is enough to start again. Moving up at the very bottom is the page
+// getting shorter, not the reader.
+export function follows(was: boolean, top: number, lastTop: number, fromBottom: number) {
+  if (top > lastTop && fromBottom < 80) return true;
+  if (top < lastTop && fromBottom >= 2) return false;
+  return was;
+}
+
 // What a day divider says: Today, Yesterday, or the date, with the year only when it is not this year.
 export function dayLabel(at: number, now = Date.now()) {
   const yesterday = new Date(now);
