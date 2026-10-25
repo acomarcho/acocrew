@@ -820,10 +820,15 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
   );
 
   // The built web app. A path that is not a file gets the app itself, which then shows the right screen.
+  // Files in assets/ get a new name each build. All others (index.html, the manifest, icons) keep theirs, so
+  // the browser must ask before reusing its copy. Otherwise a phone can keep running the old app after an update.
   if (web) {
+    const onFound = (path: string, c: Context) => {
+      if (!path.includes('/assets/')) c.header('Cache-Control', 'no-cache');
+    };
     app.all('/api/*', (c) => c.json({ error: 'Not found.' }, 404));
-    app.use(serveStatic({ root: web }));
-    app.get('*', serveStatic({ root: web, path: 'index.html' }));
+    app.use(serveStatic({ root: web, onFound }));
+    app.get('*', serveStatic({ root: web, path: 'index.html', onFound }));
   }
 
   return { app, close: () => clearInterval(check) };
