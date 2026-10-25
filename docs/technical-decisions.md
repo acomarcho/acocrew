@@ -400,6 +400,18 @@ Decision 1 stands: Claude Code is the only agent. But it can talk to models that
 
 Not built: more than one proxy.
 
+## Decision 15: Claude in a thread can start, read and write in other threads
+
+So one thread can hand work to others that people can watch and reply to, instead of subagents hidden inside it. Claude gets four tools: `start_thread`, `list_threads`, `read_thread` and `send_message` (`apps/server/src/tools.ts`).
+
+- **Tools inside the server, not a command line program.** The Claude Agent SDK can run tools in our own process (an "MCP server" made with `createSdkMcpServer`). Each Claude process gets its own set, made for its thread, so the tools know who is asking without any login or token. A command line program would have needed its own way to log in, since every route wants a browser's login cookie. t3code does the same thing over HTTP with a token per session, because it runs several kinds of agents. We only run Claude through the SDK.
+- **Whose eyes.** The tools act as the person who owns the calling thread. They only list and reach threads that person sees (Decision 11), in the same repository. A started thread belongs to that person and is seen by the same people as the calling thread, unless Claude picks otherwise. What Claude sends shows as that person's message.
+- **Defaults.** A new worktree from the remote's main branch (fetched first, so it has the newest commits), Opus 5.5, medium reasoning, 1M, fast mode off, full access. Claude can change each one. `worktree: "this"` starts the thread in the calling thread's own folder, for when someone asks for a new session "in this worktree".
+- **Same checks as a person.** Starting and sending go through the same code as the routes (`startThread`, `runner.send`), with the same check that the model is offered. In a thread on Ask first, every tool call waits for a yes like any other action.
+- **How Claude knows.** A few lines of instructions come with the tools (the MCP server's `instructions`), and the tools are always loaded rather than hidden behind tool search. In a live run, Haiku told "start a new acocrew session from this worktree" picked `worktree: "this"` on its own.
+
+Not built: telling a thread when one it started finishes, threads in other repositories, marking a message as written by another thread, and showing which thread started which.
+
 ## UI direction: the Inbox layout
 
 We mocked five layouts (Slack, Topics, Inbox, Board, Focus). Marcho likes the Inbox one, so `apps/web` now holds only that. The other four are still in git history, in commit `d98b9b7`.

@@ -78,6 +78,7 @@ import { createProxy } from './proxy.ts';
 import { createRunner, type QueryFn } from './runner.ts';
 import { automations, channels, chats, seen, session as sessions, shares, threads, user } from './schema.ts';
 import { firstLine } from './title.ts';
+import { threadTools } from './tools.ts';
 
 // `home` is the only folder tree that repositories can be picked from.
 // `images` is the folder where images and other files attached to messages are kept.
@@ -139,7 +140,7 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
   const store = openImages(images);
   const attached = openFiles(join(images, 'files'));
   const proxy = createProxy(db);
-  const runner = createRunner(db, hub, query, store, attached, proxy);
+  const runner = createRunner(db, hub, query, store, attached, proxy, tools);
   // Why a thread cannot run on this model right now, or nothing when it can. A proxy model is off the list while
   // the proxy is away, which is worth saying in so many words.
   const unoffered = async (model: string) =>
@@ -423,6 +424,21 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
     runner.send(thread.id, message, userId);
     if (message.text) runner.name(thread.id, message.text);
     return thread;
+  }
+  // What Claude in a thread can do on acocrew itself, checked like what a person sends.
+  function tools(threadId: string) {
+    return threadTools(threadId, {
+      db,
+      async start(channelId, message, pick, starter) {
+        const why = await unoffered(message.model);
+        return why ? { error: why } : startThread(findChannel(channelId)!, message, pick, starter);
+      },
+      async send(id, message, userId) {
+        const why = await unoffered(message.model);
+        if (!why) runner.send(id, message, userId);
+        return why || undefined;
+      },
+    });
   }
   const findChannel = (id: unknown) =>
     db
