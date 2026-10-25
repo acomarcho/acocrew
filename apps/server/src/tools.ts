@@ -1,7 +1,7 @@
 // Tools that Claude in a thread can use on acocrew itself: start a thread, list threads, read one, write in one.
 // They run inside the server. Each Claude process gets its own set, made for the thread it runs in, so the tools
 // know who is asking without any login: they act as the person who owns that thread.
-import { ACCESS, CONTEXTS, EFFORTS, VISIBILITY, type Access, type NewMessage, type Visibility } from '@acocrew/shared';
+import { ACCESS, CONTEXTS, EFFORTS, type Access, type NewMessage, type Visibility } from '@acocrew/shared';
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { desc, eq } from 'drizzle-orm';
 import { z } from 'zod';
@@ -87,9 +87,8 @@ export function threadTools(threadId: string, { db, start, send }: ThreadOps) {
             .enum(ids(ACCESS))
             .optional()
             .describe('"full": acts without asking. "ask": asks first. Default: the same as this thread.'),
-          visibility: z.enum(ids(VISIBILITY)).optional().describe('Default: the same as this thread.'),
         },
-        async ({ text, worktree, from, access, visibility, ...settings }) => {
+        async ({ text, worktree, from, access, ...settings }) => {
           const thread = caller();
           const repo = db.select().from(channels).where(eq(channels.id, thread.channelId)).get()!.path;
           // The start screen offers the remote's main branch first (see listPlaces). Starting from it fetches it.
@@ -105,12 +104,10 @@ export function threadTools(threadId: string, { db, start, send }: ThreadOps) {
             ...settings,
             access: (access as Access) ?? thread.access,
           };
-          // Seen by the same people as this thread, so that it stays within reach (see `reachable`).
-          const starter = {
-            userId: thread.createdBy ?? '',
-            visibility: (visibility as Visibility) ?? thread.visibility,
-            shared: thread.shared,
-          };
+          // Seen by the same people as this thread, never fewer or more: it reaches what they all see (see
+          // `reachable`), and who sees a thread is for its owner to decide.
+          const { createdBy, visibility, shared } = thread;
+          const starter = { userId: createdBy ?? '', visibility, shared };
           const made = await start(thread.channelId, message, pick, starter);
           return 'error' in made ? refuse(made.error) : answer(shown(made));
         },

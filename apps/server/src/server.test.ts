@@ -2952,7 +2952,6 @@ test('asked for a thread in this worktree, Claude starts it in its own folder, a
     context: '200k',
     fast: true,
     access: 'ask',
-    visibility: 'public',
   };
   const here = await tools.call('start_thread', { text: 'carry on here', worktree: 'this', ...settings });
   expect(here).toMatchObject({ path: caller.path, branch: caller.branch });
@@ -3015,9 +3014,12 @@ test('Claude can list the threads in its repository that its owner sees, read on
   await post(`/api/threads/${other.id}/shares`, { userId: jordan.id, shared: true });
   expect(await tools.call('read_thread', { id: other.id })).toMatchObject({ id: other.id });
   await post(`/api/threads/${caller.id}/visibility`, { visibility: 'public' });
+  // A thread it starts from there is public too: Claude cannot pick who sees it.
+  const open = await tools.call('start_thread', { text: 'in the open', worktree: 'this', visibility: 'private' });
+  expect((await connect()).hello.threads.find((thread) => thread.id === open.id)?.visibility).toBe('public');
   expect(await tools.call('read_thread', { id: other.id })).toEqual({ error: 'Thread not found.' });
   expect(await tools.call('send_message', { id: other.id, text: 'hi' })).toEqual({ error: 'Thread not found.' });
-  expect((await tools.call('list_threads')).map((thread: Thread) => thread.id)).toEqual([caller.id]);
+  expect((await tools.call('list_threads')).map((thread: Thread) => thread.id)).toEqual([open.id, caller.id]);
   await post(`/api/threads/${other.id}/visibility`, { visibility: 'public' });
   expect(await tools.call('read_thread', { id: other.id })).toMatchObject({ id: other.id });
 });
