@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Placeholder icon. Fills the whole square: phones cut it to their own shape. The bubble stays inside
+       the middle 60%, so no phone's shape cuts it off. -->
+  <rect width="512" height="512" fill="#d9622b"/>
+  <path fill="#fff" d="M176 168h160a40 40 0 0 1 40 40v80a40 40 0 0 1-40 40h-88l-56 44v-44h-16a40 40 0 0 1-40-40v-80a40 40 0 0 1 40-40z"/>
+</svg>
