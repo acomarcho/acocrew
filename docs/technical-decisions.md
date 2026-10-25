@@ -400,6 +400,18 @@ Decision 1 stands: Claude Code is the only agent. But it can talk to models that
 
 Not built: more than one proxy.
 
+## Decision 15: Claude in a thread can start, read and write in other threads
+
+So one thread can hand work to others that people can watch and reply to, instead of subagents hidden inside it. Claude gets four tools: `start_thread`, `list_threads`, `read_thread` and `send_message` (`apps/server/src/tools.ts`).
+
+- **Tools inside the server, not a command line program.** The Claude Agent SDK can run tools in our own process (an "MCP server" made with `createSdkMcpServer`). Each Claude process gets its own set, made for its thread, so the tools know who is asking without any login or token. A command line program would have needed its own way to log in, since every route wants a browser's login cookie. t3code does the same thing over HTTP with a token per session, because it runs several kinds of agents. We only run Claude through the SDK.
+- **Whose eyes.** The tools act as the person who owns the calling thread. `start_thread` and `list_threads` stay in its repository, while `read_thread` and `send_message` take any thread id within reach. What a tool gives back shows in the calling thread, so the tools only reach a thread that everyone who sees the calling thread also sees (Decision 11): from a public thread only public threads, from a private one what its owner and the people it is shared with all see. Otherwise anyone who can write in a public thread could have Claude read its owner's private threads into it. A started thread belongs to the owner and is seen by exactly the same people as the calling thread (same visibility, shared with the same people). Claude cannot pick otherwise: fewer viewers would let the new thread reach threads the calling thread's viewers cannot see, and who sees a thread is for its owner to decide. What Claude sends shows as the owner's message.
+- **Defaults.** A new worktree from the branch the start screen offers first: the remote's main branch, fetched first so it has the newest commits. Opus 5.5, medium reasoning, 1M, fast mode off, and the calling thread's access: full access, or Ask first from a thread on Ask first. Claude can change each one, and a change shows in the approval card of a thread on Ask first. `worktree: "this"` starts the thread in the calling thread's own folder, for when someone asks for a new session "in this worktree".
+- **Same checks as a person.** Starting and sending go through the same code as the routes (`startThread`, `runner.send`), with the same check that the model is offered. In a thread on Ask first, every tool call waits for a yes like any other action.
+- **How Claude knows.** A few lines of instructions come with the tools (the MCP server's `instructions`), and the tools are always loaded rather than hidden behind tool search. In a live run, Haiku told "start a new acocrew session from this worktree" picked `worktree: "this"` on its own.
+
+Not built: telling a thread when one it started finishes, threads in other repositories, marking a message as written by another thread, showing which thread started which, and a limit on how many threads a thread can start.
+
 ## UI direction: the Inbox layout
 
 We mocked five layouts (Slack, Topics, Inbox, Board, Focus). Marcho likes the Inbox one, so `apps/web` now holds only that. The other four are still in git history, in commit `d98b9b7`.

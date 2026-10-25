@@ -29,7 +29,14 @@ import {
   type Temporary,
   type Thread,
 } from '@acocrew/shared';
-import type { PermissionResult, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import type {
+  McpSdkServerConfigWithInstance,
+  PermissionResult,
+  SDKMessage,
+  SDKUserMessage,
+} from '@anthropic-ai/claude-agent-sdk';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { eq } from 'drizzle-orm';
 import { execFileSync } from 'node:child_process';
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -2869,4 +2876,176 @@ test('a proxy model whose size the proxy config does not give is not given a mad
   await tab.status(thread.id, 'done');
   expect(claude.calls[0].settings).toMatchObject({ env: { ANTHROPIC_DEFAULT_OPUS_MODEL: 'no-size' } });
   expect(claude.calls[0].settings).not.toMatchObject({ env: { CLAUDE_CODE_MAX_CONTEXT_TOKENS: expect.anything() } });
+});
+
+// What Claude in a thread can do in acocrew itself: the tools the server handed the Claude process it started
+// `nth`, reached the way Claude reaches them (over MCP). Each call gives back what the tool answered, or
+// `{ error }` with the words Claude is told when the tool says no.
+async function acocrewTools(nth = 0) {
+  const tools = claude.calls[nth].mcpServers?.acocrew as McpSdkServerConfigWithInstance;
+  const [ours, theirs] = InMemoryTransport.createLinkedPair();
+  await tools.instance.connect(theirs);
+  const client = new Client({ name: 'claude', version: '1' });
+  await client.connect(ours);
+  onTestFinished(() => client.close());
+  return {
+    instructions: client.getInstructions(),
+    async call(name: string, args: Record<string, unknown> = {}) {
+      const res = await client.callTool({ name, arguments: args });
+      const text = (res.content as { text: string }[])[0].text;
+      return res.isError ? { error: text } : JSON.parse(text);
+    },
+  };
+}
+
+// A thread in its own new worktree of `blog`, from `main`, that Claude has answered.
+async function workingIn(tab: Awaited<ReturnType<typeof connect>>) {
+  const channel = await addChannel(blog);
+  const res = await post('/api/threads', { channelId: channel.id, text: 'research the docs', from: 'main', ...HAIKU });
+  const thread = (await res.json()) as Thread;
+  await tab.status(thread.id, 'done');
+  return thread;
+}
+
+test('Claude in a thread can start another thread, by default in a new worktree from the newest remote main, on Opus 5.5 at medium with 1M and full access', async () => {
+  const tab = await connect();
+  const caller = await workingIn(tab);
+  const tools = await acocrewTools();
+  expect(tools.instructions).toMatch(/start_thread/);
+
+  // Someone pushes after the repository was cloned. The new thread still starts from their commit.
+  const pushed = commit(hub, 'todo.md', 'newer\n');
+  const made = await tools.call('start_thread', { text: 'look into the login page' });
+  const short = made.id.slice(0, 8);
+  expect(made).toMatchObject({ path: join(worktrees, 'blog', short), branch: `acocrew/${short}`, status: 'working' });
+  expect(git(made.path, 'rev-parse', 'HEAD')).toBe(pushed);
+
+  // It is a thread like any other: in the same repository, owned by whoever owns the thread that started it, and
+  // seen by the same people.
+  const child = (await connect()).hello.threads.find((thread) => thread.id === made.id);
+  expect(child).toMatchObject({
+    channelId: caller.channelId,
+    title: 'look into the login page',
+    model: 'claude-opus-5-5',
+    effort: 'medium',
+    context: '1m',
+    fast: false,
+    access: 'full',
+    visibility: 'private',
+    createdBy: caller.createdBy,
+  });
+  await tab.status(made.id, 'done');
+  expect(claude.calls[1]).toMatchObject({ cwd: made.path, model: 'claude-opus-5-5[1m]', effort: 'medium' });
+  expect(claude.said.at(-1)).toBe('look into the login page');
+});
+
+test('asked for a thread in this worktree, Claude starts it in its own folder, and every setting can be picked', async () => {
+  const tab = await connect();
+  const caller = await workingIn(tab);
+  const tools = await acocrewTools();
+  expect(tools.instructions).toMatch(/this worktree/);
+  const copies = git(blog, 'worktree', 'list');
+
+  const settings = {
+    model: HAIKU.model,
+    effort: 'low',
+    context: '200k',
+    fast: true,
+    access: 'ask',
+  };
+  const here = await tools.call('start_thread', { text: 'carry on here', worktree: 'this', ...settings });
+  expect(here).toMatchObject({ path: caller.path, branch: caller.branch });
+  expect(git(blog, 'worktree', 'list')).toBe(copies);
+  const threads = (await connect()).hello.threads;
+  expect(threads.find((thread) => thread.id === here.id)).toMatchObject(settings);
+
+  // A new worktree can start from another branch.
+  const fromLocal = await tools.call('start_thread', { text: 'try it', from: 'main' });
+  expect(git(fromLocal.path, 'rev-parse', 'HEAD')).toBe(git(blog, 'rev-parse', 'main'));
+
+  // A thread that works in the repository folder itself starts the new one there too.
+  await startThread('make notes');
+  const inRepo = await acocrewTools(claude.calls.length - 1);
+  expect(await inRepo.call('start_thread', { text: 'more', worktree: 'this' })).toMatchObject({ path: null });
+});
+
+test('Claude can list the threads in its repository that its owner sees, read one, and write in it', async () => {
+  const jordan = await teammate('jordan', 'Jordan');
+  const tab = await connect();
+  const caller = await startThread('make notes');
+  await tab.status(caller.id, 'done');
+  const other = await startThread('what is in them?');
+  await tab.status(other.id, 'done');
+  // Someone else's private thread, and a thread in another repository.
+  const theirs = await as(jordan.cookie, () => startThread('secret plans'));
+  await post('/api/threads', { channelId: (await addChannel(blog)).id, text: 'hi', path: blog, ...HAIKU });
+  const tools = await acocrewTools();
+
+  const listed = (await tools.call('list_threads')) as { id: string; this?: boolean }[];
+  // Not someone else's private thread, nor one in another repository.
+  expect(listed.map((thread) => thread.id)).toEqual([other.id, caller.id]);
+  expect(listed.find((thread) => thread.id === caller.id)).toMatchObject({ this: true, status: 'done' });
+
+  const read = await tools.call('read_thread', { id: other.id });
+  expect(read).toMatchObject({ title: 'what is in them?', status: 'done', path: null });
+  expect(read.messages[0]).toEqual({ by: 'user', text: 'what is in them?' });
+  expect(read.messages.at(-1)).toMatchObject({ by: 'claude' });
+  expect((await tools.call('read_thread', { id: other.id, last: 1 })).messages).toEqual([read.messages.at(-1)]);
+  expect(await tools.call('read_thread', { id: theirs.id })).toEqual({ error: 'Thread not found.' });
+
+  // A message goes in with the settings the thread has, as its owner.
+  await tab.open(other.id);
+  expect(await tools.call('send_message', { id: other.id, text: 'and now the tests' })).toEqual({ ok: true });
+  await tab.shows(other.id, (screen) => screen.includes('message: and now the tests'));
+  expect(tab.items(other.id).at(-1)).toMatchObject({ kind: 'message', by: 'user', userId: caller.createdBy });
+  expect((await connect()).hello.threads.find((thread) => thread.id === other.id)).toMatchObject(HAIKU);
+  expect(await tools.call('send_message', { id: theirs.id, text: 'hi' })).toEqual({ error: 'Thread not found.' });
+
+  // What a tool gives back shows in the calling thread. So once Jordan can see that thread, it no longer reaches
+  // threads Jordan cannot see: shared with Jordan, or public, it reaches only what is public or shared with Jordan.
+  await post(`/api/threads/${caller.id}/shares`, { userId: jordan.id, shared: true });
+  expect(await tools.call('read_thread', { id: other.id })).toEqual({ error: 'Thread not found.' });
+  // A thread it starts is shared with the same people, so it can still check on it, and Jordan gets it too.
+  const jordanTab = await as(jordan.cookie, connect);
+  const child = await tools.call('start_thread', { text: 'split off', worktree: 'this' });
+  const heardOf = await jordanTab.until('thread', (e) => e.thread.id === child.id);
+  expect(heardOf.thread).toMatchObject({ visibility: 'private', shared: [jordan.id] });
+  expect(await tools.call('read_thread', { id: child.id })).toMatchObject({ id: child.id });
+  await post(`/api/threads/${other.id}/shares`, { userId: jordan.id, shared: true });
+  expect(await tools.call('read_thread', { id: other.id })).toMatchObject({ id: other.id });
+  await post(`/api/threads/${caller.id}/visibility`, { visibility: 'public' });
+  // A thread it starts from there is public too: Claude cannot pick who sees it.
+  const open = await tools.call('start_thread', { text: 'in the open', worktree: 'this', visibility: 'private' });
+  expect((await connect()).hello.threads.find((thread) => thread.id === open.id)?.visibility).toBe('public');
+  expect(await tools.call('read_thread', { id: other.id })).toEqual({ error: 'Thread not found.' });
+  expect(await tools.call('send_message', { id: other.id, text: 'hi' })).toEqual({ error: 'Thread not found.' });
+  expect((await tools.call('list_threads')).map((thread: Thread) => thread.id)).toEqual([open.id, caller.id]);
+  await post(`/api/threads/${other.id}/visibility`, { visibility: 'public' });
+  expect(await tools.call('read_thread', { id: other.id })).toMatchObject({ id: other.id });
+});
+
+test('a thread on Ask first starts threads on Ask first, unless Claude asks for full access', async () => {
+  const caller = await startThread('make notes', { ...HAIKU, access: 'ask' });
+  const tools = await acocrewTools();
+  const access = async (args: object) => {
+    const { id } = await tools.call('start_thread', { text: 'go', worktree: 'this', ...args });
+    return (await connect()).hello.threads.find((thread) => thread.id === id)?.access;
+  };
+  expect(await access({})).toBe('ask');
+  expect(await access({ access: 'full' })).toBe('full');
+  expect(caller.access).toBe('ask');
+});
+
+test('Claude is told why a thread cannot be started', async () => {
+  const tab = await connect();
+  await workingIn(tab);
+  const tools = await acocrewTools();
+  expect(await tools.call('start_thread', { text: 'go', from: 'nope' })).toEqual({
+    error: 'Pick a branch to start from, or a worktree that exists.',
+  });
+  expect(await tools.call('start_thread', { text: 'go', model: 'gpt-9' })).toEqual({
+    error: 'gpt-9 is not offered right now. Is the model proxy running?',
+  });
+  expect(await tools.call('start_thread', { text: '  ' })).toMatchObject({ error: expect.any(String) });
+  expect(await tools.call('start_thread', { text: 'go', effort: 'huge' })).toMatchObject({ error: expect.any(String) });
 });

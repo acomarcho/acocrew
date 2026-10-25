@@ -8,7 +8,13 @@ import {
   type Status,
   type Thread,
 } from '@acocrew/shared';
-import type { Options, PermissionResult, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import type {
+  McpServerConfig,
+  Options,
+  PermissionResult,
+  SDKMessage,
+  SDKUserMessage,
+} from '@anthropic-ai/claude-agent-sdk';
 import { eq, isNull, ne } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -128,8 +134,17 @@ function queue<T>() {
   };
 }
 
-// Runs Claude for threads: one process per thread, listened to for as long as it lives.
-export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images, files: Files, proxy: ProxyNow) {
+// Runs Claude for threads: one process per thread, listened to for as long as it lives. `tools` makes what Claude in
+// a thread can use on acocrew itself (see tools.ts), a new set for each process.
+export function createRunner(
+  db: Db,
+  hub: Hub,
+  query: QueryFn,
+  images: Images,
+  files: Files,
+  proxy: ProxyNow,
+  tools: (threadId: string) => McpServerConfig,
+) {
   const sessions = new Map<string, Session>();
 
   function addItem(threadId: string, item: Item) {
@@ -265,6 +280,7 @@ export function createRunner(db: Db, hub: Hub, query: QueryFn, images: Images, f
         permissionMode: 'default',
         canUseTool,
         includePartialMessages: true,
+        mcpServers: { acocrew: tools(threadId) },
       },
     });
     session = {
