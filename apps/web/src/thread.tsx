@@ -106,8 +106,9 @@ function Row({ agent, by, note, lead, at, children }: Speaker & { lead: boolean;
   );
 }
 
-// A message, with a button under it to copy its text that shows while the mouse is over it.
-function Copyable({ text, children }: { text: string; children: ReactNode }) {
+// A message, with a button under it to copy its text that shows while the mouse is over it. `at` puts the time
+// next to that button, where it can be seen without a mouse (on a phone that row is otherwise empty).
+function Copyable({ text, at, children }: { text: string; at?: number; children: ReactNode }) {
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     if (!copied) return;
@@ -120,15 +121,18 @@ function Copyable({ text, children }: { text: string; children: ReactNode }) {
       {children}
       {/* Sits in its own row under the text, so it never covers it. The row is always there, so nothing jumps on hover. */}
       {text && (
-        <button
-          type="button"
-          onClick={() => void navigator.clipboard.writeText(text).then(() => setCopied(true))}
-          className="mt-0.5 -ml-1.5 block rounded-md p-1.5 text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-muted hover:text-foreground focus-visible:opacity-100"
-          aria-label={label}
-          title={label}
-        >
-          {copied ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
-        </button>
+        <div className="mt-0.5 flex items-center gap-2.5 text-muted-foreground">
+          {at && <span className="text-xs">{clock(at)}</span>}
+          <button
+            type="button"
+            onClick={() => void navigator.clipboard.writeText(text).then(() => setCopied(true))}
+            className="-ml-1.5 rounded-md p-1.5 opacity-0 group-hover:opacity-100 hover:bg-muted hover:text-foreground focus-visible:opacity-100"
+            aria-label={label}
+            title={label}
+          >
+            {copied ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
+          </button>
+        </div>
       )}
     </div>
   );
@@ -242,7 +246,7 @@ function ItemView({ item, lead, nested }: { item: Item; lead: boolean; nested?: 
         </Copyable>
       )}
       {item.kind === 'message' && (
-        <Copyable text={item.text}>
+        <Copyable text={item.text} at={item.at}>
           <Streamdown className="space-y-2 break-words" plugins={plugins} rehypePlugins={rehypePlugins}>
             {item.text}
           </Streamdown>
