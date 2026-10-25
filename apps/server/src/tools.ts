@@ -1,7 +1,7 @@
 // Tools that Claude in a thread can use on acocrew itself: start a thread, list threads, read one, write in one.
 // They run inside the server. Each Claude process gets its own set, made for the thread it runs in, so the tools
-// know who is asking without any login: they act as the person who owns that thread, and see what they see.
-import { ACCESS, CONTEXTS, EFFORTS, VISIBILITY, type NewMessage, type Visibility } from '@acocrew/shared';
+// know who is asking without any login: they act as the person who owns that thread.
+import { ACCESS, CONTEXTS, EFFORTS, VISIBILITY, type Access, type NewMessage, type Visibility } from '@acocrew/shared';
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { desc, eq } from 'drizzle-orm';
 import { z } from 'zod';
@@ -45,14 +45,19 @@ const INSTRUCTIONS = `These tools work on acocrew, the team chat app this conver
 
 export function threadTools(threadId: string, { db, start, send }: ThreadOps) {
   const row = (id: string) => db.select(threadCols).from(threads).where(eq(threads.id, id)).get();
-  // The calling thread as it is right now, and whose eyes the tools use: who owns it can change while Claude runs.
-  const caller = () => {
-    const thread = row(threadId)!;
-    return { thread, owner: thread.createdBy ?? '' };
+  // The calling thread as it is right now: who sees it can change while Claude runs.
+  const caller = () => row(threadId)!;
+  // What a tool gives back shows in the calling thread. So the tools only reach a thread that everyone who sees the
+  // calling thread also sees: from a public thread that is public threads, from a private one what its owner and
+  // the people it is shared with all see.
+  const reachable = (target: StoredThread) => {
+    const { visibility, createdBy, shared } = caller();
+    const viewers = [createdBy ?? '', ...shared];
+    return visibility === 'public' ? target.visibility === 'public' : viewers.every((id) => canSee(target, id));
   };
-  const visible = (id: string) => {
+  const find = (id: string) => {
     const thread = row(id);
-    return thread && canSee(thread, caller().owner) ? thread : undefined;
+    return thread && reachable(thread) ? thread : undefined;
   };
   const notFound = refuse('Thread not found.');
 
@@ -70,37 +75,52 @@ export function threadTools(threadId: string, { db, start, send }: ThreadOps) {
             .enum(['new', 'this'])
             .default('new')
             .describe('"new": a fresh worktree on its own branch. "this": the folder this thread works in.'),
-          from: z.string().optional().describe('Branch a new worktree starts from. Default: the remote main branch.'),
+          from: z
+            .string()
+            .optional()
+            .describe('Branch a new worktree starts from. Default: the remote main branch. Not used with "this".'),
           model: z.string().default('claude-opus-5-5'),
           effort: z.enum(ids(EFFORTS)).default('medium'),
           context: z.enum(ids(CONTEXTS)).default('1m'),
           fast: z.boolean().default(false),
-          access: z.enum(ids(ACCESS)).default('full').describe('"full": acts without asking. "ask": asks first.'),
+          access: z
+            .enum(ids(ACCESS))
+            .optional()
+            .describe('"full": acts without asking. "ask": asks first. Default: the same as this thread.'),
           visibility: z.enum(ids(VISIBILITY)).optional().describe('Default: the same as this thread.'),
         },
-        async ({ text, worktree, from, visibility, ...settings }) => {
-          const { thread, owner } = caller();
+        async ({ text, worktree, from, access, visibility, ...settings }) => {
+          const thread = caller();
           const repo = db.select().from(channels).where(eq(channels.id, thread.channelId)).get()!.path;
-          // The start screen offers the remote's main branch first. Starting from it fetches it first.
+          // The start screen offers the remote's main branch first (see listPlaces). Starting from it fetches it.
           const pick =
             worktree === 'this'
               ? { path: thread.path ?? repo }
               : { from: from ?? (await listPlaces(repo)).branches[0]?.name };
-          const message = { text, images: [], files: [], ...settings } as NewMessage;
-          const starter = { userId: owner, visibility: (visibility as Visibility | undefined) ?? thread.visibility };
+          // A thread on Ask first starts threads on Ask first, unless Claude asks for more where the person sees it.
+          const message: NewMessage = {
+            text,
+            images: [],
+            files: [],
+            ...settings,
+            access: (access as Access) ?? thread.access,
+          };
+          const starter = {
+            userId: thread.createdBy ?? '',
+            visibility: (visibility as Visibility) ?? thread.visibility,
+          };
           const made = await start(thread.channelId, message, pick, starter);
           return 'error' in made ? refuse(made.error) : answer(shown(made));
         },
       ),
       tool('list_threads', 'List the acocrew threads in this repository, newest first.', {}, async () => {
-        const { thread, owner } = caller();
         const list = db
           .select(threadCols)
           .from(threads)
-          .where(eq(threads.channelId, thread.channelId))
+          .where(eq(threads.channelId, caller().channelId))
           .orderBy(desc(threads.updatedAt))
           .all()
-          .filter((one) => canSee(one, owner));
+          .filter(reachable);
         return answer(list.map((one) => ({ ...shown(one), ...(one.id === threadId && { this: true }) })));
       }),
       tool(
@@ -108,7 +128,7 @@ export function threadTools(threadId: string, { db, start, send }: ThreadOps) {
         'Read an acocrew thread: how it is doing and its last messages.',
         { id: z.string(), last: z.number().int().positive().default(20).describe('How many messages, from the end.') },
         async ({ id, last }) => {
-          const found = visible(id);
+          const found = find(id);
           if (!found) return notFound;
           const messages = loadItems(db, found.id).flatMap((item) =>
             item.kind === 'message' ? [{ by: item.by, text: item.text }] : [],
@@ -121,11 +141,11 @@ export function threadTools(threadId: string, { db, start, send }: ThreadOps) {
         'Write in an acocrew thread. Claude there gets it as a message from the user, with its current settings.',
         { id: z.string(), text: z.string().trim().min(1) },
         async ({ id, text }) => {
-          const found = visible(id);
+          const found = find(id);
           if (!found) return notFound;
           const { model, effort, context, fast, access } = found;
           const message = { text, images: [], files: [], model, effort, context, fast, access };
-          const why = await send(found.id, message, caller().owner);
+          const why = await send(found.id, message, caller().createdBy ?? '');
           return why ? refuse(why) : answer({ ok: true });
         },
       ),

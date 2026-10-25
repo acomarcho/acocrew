@@ -3001,6 +3001,31 @@ test('Claude can list the threads in its repository that its owner sees, read on
   expect(tab.items(other.id).at(-1)).toMatchObject({ kind: 'message', by: 'user', userId: caller.createdBy });
   expect((await connect()).hello.threads.find((thread) => thread.id === other.id)).toMatchObject(HAIKU);
   expect(await tools.call('send_message', { id: theirs.id, text: 'hi' })).toEqual({ error: 'Thread not found.' });
+
+  // What a tool gives back shows in the calling thread. So once Jordan can see that thread, it no longer reaches
+  // threads Jordan cannot see: shared with Jordan, or public, it reaches only what is public or shared with Jordan.
+  await post(`/api/threads/${caller.id}/shares`, { userId: jordan.id, shared: true });
+  expect(await tools.call('read_thread', { id: other.id })).toEqual({ error: 'Thread not found.' });
+  await post(`/api/threads/${other.id}/shares`, { userId: jordan.id, shared: true });
+  expect(await tools.call('read_thread', { id: other.id })).toMatchObject({ id: other.id });
+  await post(`/api/threads/${caller.id}/visibility`, { visibility: 'public' });
+  expect(await tools.call('read_thread', { id: other.id })).toEqual({ error: 'Thread not found.' });
+  expect(await tools.call('send_message', { id: other.id, text: 'hi' })).toEqual({ error: 'Thread not found.' });
+  expect(await tools.call('list_threads')).toMatchObject([{ id: caller.id }]);
+  await post(`/api/threads/${other.id}/visibility`, { visibility: 'public' });
+  expect(await tools.call('read_thread', { id: other.id })).toMatchObject({ id: other.id });
+});
+
+test('a thread on Ask first starts threads on Ask first, unless Claude asks for full access', async () => {
+  const caller = await startThread('make notes', { ...HAIKU, access: 'ask' });
+  const tools = await acocrewTools();
+  const access = async (args: object) => {
+    const { id } = await tools.call('start_thread', { text: 'go', worktree: 'this', ...args });
+    return (await connect()).hello.threads.find((thread) => thread.id === id)?.access;
+  };
+  expect(await access({})).toBe('ask');
+  expect(await access({ access: 'full' })).toBe('full');
+  expect(caller.access).toBe('ask');
 });
 
 test('Claude is told why a thread cannot be started', async () => {
