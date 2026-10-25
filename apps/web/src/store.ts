@@ -326,6 +326,11 @@ export const answer = (threadId: string, body: Answer) => request(`/api/threads/
 export const stopThread = (threadId: string) => request(`/api/threads/${threadId}/stop`, {});
 // Pins the thread for everyone, or unpins it. The list changes when the server tells everyone.
 export const pinThread = (threadId: string, pinned: boolean) => request(`/api/threads/${threadId}/pin`, { pinned });
+// What only whoever started a thread can do: name it, have Claude name it again from how it starts, and delete
+// it for everyone (with its worktree, once no other thread works there). The list changes when the server says so.
+export const renameThread = (threadId: string, title: string) => request(`/api/threads/${threadId}/title`, { title });
+export const retitleThread = (threadId: string) => request(`/api/threads/${threadId}/retitle`, {});
+export const deleteThread = (threadId: string) => request(`/api/threads/${threadId}/delete`, {});
 
 // Who sees the thread: private or public, and one person it is shared with or no longer. Only whoever
 // started it can. The thread changes when the server says so.

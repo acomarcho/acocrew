@@ -36,6 +36,7 @@ import {
   LogOut,
   Menu,
   MessagesSquare,
+  MoreHorizontal,
   Paperclip,
   Pin,
   Plus,
@@ -45,6 +46,7 @@ import {
   Sparkles,
   Square,
   SquarePen,
+  Trash2,
   X,
   Zap,
 } from 'lucide-react';
@@ -63,12 +65,15 @@ import {
 import { imageUrl, uploadFile, uploadImage } from './images';
 import {
   createThread,
+  deleteThread,
   githubChoices,
   loadGithub,
   logOut,
   needsYou,
   pinThread,
+  renameThread,
   request,
+  retitleThread,
   setNavOpen,
   switchGithub,
   useApp,
@@ -960,12 +965,19 @@ export function ThreadRow({ thread: t }: { thread: Thread }) {
   const stopped = t.status === 'done' || t.status === 'failed';
   const pinned = t.pinnedAt !== null;
   const unsent = hasContent(useDraft(t.id));
+  // Only whoever started it can delete it.
+  const mine = t.createdBy === me.id;
+  const [deleting, setDeleting] = useState(false);
   return (
-    <div className="relative">
+    // On a touch screen, swiping the row left shows Delete: the row scrolls sideways and snaps open or shut, so the
+    // browser does the dragging. With a mouse, a trash button shows on hover instead.
+    <div
+      className={`group relative ${mine ? 'flex snap-x snap-mandatory overflow-x-hidden overscroll-x-contain [scrollbar-width:none] pointer-coarse:overflow-x-auto' : ''}`}
+    >
       <Link
         to="/c/$channelId/t/$threadId"
         params={{ channelId: t.channelId, threadId: t.id }}
-        className="block border-b border-border px-3.5 py-3 hover:bg-muted"
+        className="block w-full shrink-0 snap-start border-b border-border px-3.5 py-3 hover:bg-muted"
         activeProps={{ className: 'bg-muted' }}
         inactiveProps={{ className: loud ? 'bg-primary/[0.07]' : '' }}
       >
@@ -1018,8 +1030,173 @@ export function ThreadRow({ thread: t }: { thread: Thread }) {
           </span>
         </span>
       </Link>
-      {/* A pinned thread can be unpinned right in the list. The button lies on the row: a link cannot hold one. */}
-      {pinned && <PinButton thread={t} className="absolute top-1 right-1.5" />}
+      {/* A pinned thread can be unpinned right in the list. The buttons lie on the row: a link cannot hold one. */}
+      <div className="absolute top-1 right-1.5 flex">
+        {mine && (
+          <button
+            type="button"
+            aria-label="Delete thread"
+            title="Delete thread"
+            onClick={() => setDeleting(true)}
+            className="grid size-9 place-items-center rounded-md bg-muted text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-rose-600 focus-visible:opacity-100 pointer-coarse:hidden"
+          >
+            <Trash2 size={16} />
+          </button>
+        )}
+        {pinned && <PinButton thread={t} />}
+      </div>
+      {mine && (
+        <button
+          type="button"
+          // Shuts the row again, so it is closed whether the thread is deleted or not.
+          onClick={(e) => {
+            e.currentTarget.parentElement!.scrollTo({ left: 0, behavior: 'smooth' });
+            setDeleting(true);
+          }}
+          className="hidden w-20 shrink-0 snap-end bg-rose-600 text-sm font-medium text-white pointer-coarse:block"
+        >
+          Delete
+        </button>
+      )}
+      {deleting && <DeleteThread thread={t} onClose={() => setDeleting(false)} />}
+    </div>
+  );
+}
+
+const BUTTON = 'rounded-md border border-border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:opacity-50';
+const DANGER =
+  'rounded-md bg-rose-600 px-3 py-1.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50';
+
+// Asks before a thread is deleted for good. `onClose` runs when it is kept. Once it is deleted, the server tells
+// every screen and the thread is gone from them, this box with it.
+function DeleteThread({ thread, onClose }: { thread: Thread; onClose: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const confirm = () => {
+    setBusy(true);
+    deleteThread(thread.id).catch((err: Error) => {
+      setBusy(false);
+      setError(err.message);
+    });
+  };
+  return (
+    <Popup title="Delete this thread?">
+      <p className="text-sm break-words text-muted-foreground">
+        “{thread.title}” and everything in it will be deleted for good, for everyone.
+        {thread.path &&
+          ' Its worktree and branch go too, with any changes in them, unless another thread still works there.'}
+      </p>
+      {error && <p className="text-sm text-rose-500">{error}</p>}
+      <div className="flex justify-end gap-2">
+        <button type="button" autoFocus className={BUTTON} onClick={onClose}>
+          Keep it
+        </button>
+        <button type="button" disabled={busy} className={DANGER} onClick={confirm}>
+          {busy ? 'Deleting…' : 'Delete'}
+        </button>
+      </div>
+    </Popup>
+  );
+}
+
+// A new name, typed by hand.
+function RenameThread({ thread, onClose }: { thread: Thread; onClose: () => void }) {
+  const [title, setTitle] = useState(thread.title);
+  const [error, setError] = useState('');
+  return (
+    <Popup title="Rename this thread">
+      <form
+        className="space-y-3"
+        onSubmit={(e) => {
+          e.preventDefault();
+          renameThread(thread.id, title).then(onClose, (err: Error) => setError(err.message));
+        }}
+      >
+        <input
+          autoFocus
+          aria-label="Name"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          className="w-full rounded-md border border-border bg-card px-2.5 py-1.5 text-base outline-none focus:border-primary md:text-sm"
+        />
+        {error && <p className="text-sm text-rose-500">{error}</p>}
+        <div className="flex justify-end gap-2">
+          <button type="button" className={BUTTON} onClick={onClose}>
+            Cancel
+          </button>
+          <button type="submit" disabled={!title.trim()} className={`${BUTTON} bg-primary text-primary-foreground`}>
+            Save
+          </button>
+        </div>
+      </form>
+    </Popup>
+  );
+}
+
+// What whoever started a thread can do with it, besides who sees it: rename it, have Claude name it again, and
+// delete it. Everyone else does not get the menu.
+export function ThreadMenu({ thread }: { thread: Thread }) {
+  const me = useMe();
+  const [open, setOpen] = useState(false);
+  const [asking, setAsking] = useState<'rename' | 'delete' | null>(null);
+  const [naming, setNaming] = useState(false);
+  const [error, setError] = useState('');
+  if (thread.createdBy !== me.id) return null;
+  const ask = (what: 'rename' | 'delete') => {
+    setOpen(false);
+    setAsking(what);
+  };
+  // The menu stays open while Claude thinks of a name, and closes once the new name shows.
+  const rename = () => {
+    setNaming(true);
+    setError('');
+    retitleThread(thread.id)
+      .then(
+        () => setOpen(false),
+        (err: Error) => setError(err.message),
+      )
+      .finally(() => setNaming(false));
+  };
+  const row =
+    'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted disabled:opacity-50';
+  return (
+    <div className="relative shrink-0">
+      <button
+        type="button"
+        aria-label="More"
+        title="More"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+        className="grid size-9 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+      >
+        <MoreHorizontal size={16} />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute top-full right-0 z-50 mt-1 w-56 rounded-lg border border-border bg-card p-1 text-foreground shadow-xl">
+            <button type="button" className={row} onClick={() => ask('rename')}>
+              <SquarePen size={15} className="text-muted-foreground" />
+              Rename
+            </button>
+            <button type="button" className={row} disabled={naming} onClick={rename}>
+              {naming ? (
+                <LoaderCircle size={15} className="animate-spin text-muted-foreground" />
+              ) : (
+                <Sparkles size={15} className="text-muted-foreground" />
+              )}
+              {naming ? 'Thinking of a name…' : 'New name from Claude'}
+            </button>
+            <button type="button" className={`${row} text-rose-600`} onClick={() => ask('delete')}>
+              <Trash2 size={15} />
+              Delete
+            </button>
+            {error && <p className="px-2 py-1 text-xs text-rose-500">{error}</p>}
+          </div>
+        </>
+      )}
+      {asking === 'rename' && <RenameThread thread={thread} onClose={() => setAsking(null)} />}
+      {asking === 'delete' && <DeleteThread thread={thread} onClose={() => setAsking(null)} />}
     </div>
   );
 }

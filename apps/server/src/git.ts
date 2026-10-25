@@ -59,3 +59,30 @@ export async function addWorktree(repo: string, path: string, branch: string, fr
   // Without `--no-track`, a push from the new branch would aim at the branch it started from.
   await git(repo, 'worktree', 'add', '--no-track', '-b', branch, path, from.name);
 }
+
+// When a branch was made, in seconds, from git's own log of it (its last line is the oldest). 0 when git does not
+// know.
+const madeAt = (repo: string, name: string) =>
+  git(repo, 'reflog', '--date=unix', '--format=%gd', `refs/heads/${name}`).then(
+    (log) => Number(/@\{(\d+)\}$/.exec(log)?.[1] ?? 0),
+    () => 0,
+  );
+
+// Deletes a worktree with whatever is in it, committed or not, and its branches: `made`, the one it was made on,
+// and the one its folder is on now if that one was made after `made`. Claude often moves a worktree to a branch of
+// its own. A branch that was there before (main, or someone's own) was only checked out there, and stays, and so
+// does one whose age git cannot tell.
+export async function removeWorktree(repo: string, path: string, made: string) {
+  const on = await branchOf(path);
+  const [since, born] = await Promise.all([madeAt(repo, made), on && on !== made ? madeAt(repo, on) : 0]);
+  await git(repo, 'worktree', 'remove', '--force', path);
+  const ours = since && born >= since ? [made, on!] : [made];
+  // Asked for by their full names, so a branch that is gone already is simply not listed.
+  const left = await git(
+    repo,
+    'for-each-ref',
+    '--format=%(refname:short)',
+    ...ours.map((name) => `refs/heads/${name}`),
+  );
+  if (left) await git(repo, 'branch', '-D', ...left.split('\n'));
+}

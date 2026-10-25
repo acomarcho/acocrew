@@ -51,6 +51,7 @@ import {
   FileChip,
   Picture,
   PinButton,
+  ThreadMenu,
   Segments,
   StatusBadge,
   UnreadBadge,
@@ -453,6 +454,7 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
           </div>
           <ShareButton thread={thread} />
           <PinButton thread={thread} />
+          <ThreadMenu thread={thread} />
           <StatusBadge status={thread.status} />
         </header>
         <div className="border-b border-border px-3 py-1.5">
