@@ -4,6 +4,10 @@
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
+# Git points hooks at this repository through variables like GIT_DIR. Tests that
+# make scratch repositories would inherit them and commit into this one instead,
+# so they are cleared. Git still finds this repository from here.
+unset $(git rev-parse --local-env-vars)
 
 pnpm typecheck
 
