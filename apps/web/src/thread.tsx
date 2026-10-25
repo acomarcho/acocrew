@@ -38,7 +38,7 @@ import {
   type ReactNode,
 } from 'react';
 import { defaultRehypePlugins, Streamdown, type StreamdownProps } from 'streamdown';
-import { byDay, ChatBox, ChatWords, dayLabel, dayOf, timeline, type Entry, type Show } from './chat';
+import { byDay, ChatBox, ChatWords, dayLabel, dayOf, follows, timeline, type Entry, type Show } from './chat';
 import { ApprovalPanel, isAsking, QuestionPanel, useQuestions } from './pending';
 import { useCommands } from './commands';
 import { draftOf, editDraft, useDraft } from './drafts';
@@ -84,8 +84,12 @@ type Speaker = { agent?: boolean; by?: string; note?: string };
 function Row({ agent, by, note, lead, at, children }: Speaker & { lead: boolean; at?: number; children: ReactNode }) {
   const people = useApp((state) => state.people);
   const person: Person | undefined = people.find((known) => known.id === by);
+  // Rows off screen are not laid out or painted (content-visibility), so a long thread stays quick while
+  // Claude writes. Each keeps the height it last had, so the scroll bar does not jump.
   return (
-    <div className={`flex gap-3 px-4 ${lead ? 'pt-2 pb-1' : 'py-1'}`}>
+    <div
+      className={`flex gap-3 px-4 [contain-intrinsic-size:auto_120px] [content-visibility:auto] ${lead ? 'pt-2 pb-1' : 'py-1'}`}
+    >
       {lead ? <Avatar agent={agent} person={person} /> : <div className="w-9 shrink-0" />}
       <div className="min-w-0 flex-1">
         {lead && (
@@ -381,8 +385,11 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
   const draft = useDraft(thread.id);
   const { model, effort, context, fast, access } = thread;
   const settings: Settings = { model, effort, context, fast, access, ...draft.settings };
-  // Follow new content only while the reader is at the bottom, so reading further up is not interrupted.
+  // Follow new content only while the reader is at the bottom, so reading further up is not interrupted (see
+  // `follows`). `lastTop` also records where our own jumps land, so a jump's scroll event (which can arrive
+  // after the reader already turned the wheel up) does not count as the reader moving down.
   const stick = useRef(true);
+  const lastTop = useRef(0);
   const scroller = useRef<HTMLDivElement>(null);
   const all = items ?? [];
   // What a subagent did is shown inside its card, not in the main flow.
@@ -419,7 +426,9 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
 
   useEffect(() => {
     const el = scroller.current;
-    if (el && stick.current) el.scrollTop = el.scrollHeight;
+    if (!el || !stick.current) return;
+    el.scrollTop = el.scrollHeight;
+    lastTop.current = el.scrollTop;
   }, [items, chats, show, thread.status]);
 
   return (
@@ -456,9 +465,15 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
         </div>
         <div
           ref={scroller}
+          // A wheel says "up" before the page moves, so a new chunk arriving mid-scroll cannot cancel it.
+          onWheel={(e) => {
+            if (e.deltaY < 0 && e.currentTarget.scrollTop > 0) stick.current = false;
+          }}
           onScroll={(e) => {
             const el = e.currentTarget;
-            stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+            const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+            stick.current = follows(stick.current, el.scrollTop, lastTop.current, fromBottom);
+            lastTop.current = el.scrollTop;
           }}
           className="min-h-0 flex-1 overflow-y-auto py-3"
         >
