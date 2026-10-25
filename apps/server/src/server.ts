@@ -377,12 +377,13 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
   // both start threads through here. Gives back the thread, or why there is none.
   type Where = { from?: unknown; path?: unknown };
   type Refusal = { error: string; status: 400 | 500 };
-  type Starter = { userId: string; visibility: Visibility; automationId?: string };
+  // `shared`: the people it is shared with from the start.
+  type Starter = { userId: string; visibility: Visibility; automationId?: string; shared?: string[] };
   async function startThread(
     channel: typeof channels.$inferSelect,
     message: NewMessage,
     pick: Where,
-    { userId, visibility, automationId }: Starter,
+    { userId, visibility, automationId, shared = [] }: Starter,
   ): Promise<Thread | Refusal> {
     const id = randomUUID();
     const short = id.slice(0, 8);
@@ -419,7 +420,12 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
       createdAt: now,
       updatedAt: now,
     };
-    const thread = runner.withLive(db.insert(threads).values(row).returning(threadCols).get());
+    const saved = db.transaction((tx) => {
+      tx.insert(threads).values(row).run();
+      for (const person of shared) tx.insert(shares).values({ threadId: id, userId: person, createdAt: now }).run();
+      return tx.select(threadCols).from(threads).where(eq(threads.id, id)).get()!;
+    });
+    const thread = runner.withLive(saved);
     hub.thread(thread);
     runner.send(thread.id, message, userId);
     if (message.text) runner.name(thread.id, message.text);

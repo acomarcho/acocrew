@@ -17,7 +17,7 @@ export type ThreadOps = {
     channelId: string,
     message: NewMessage,
     pick: { from?: string; path?: string },
-    starter: { userId: string; visibility: Visibility },
+    starter: { userId: string; visibility: Visibility; shared: string[] },
   ): Promise<StoredThread | { error: string }>;
   // Hands a message to a thread. Gives back why not, or nothing when it went.
   send(threadId: string, message: NewMessage, userId: string): Promise<string | undefined>;
@@ -105,9 +105,11 @@ export function threadTools(threadId: string, { db, start, send }: ThreadOps) {
             ...settings,
             access: (access as Access) ?? thread.access,
           };
+          // Seen by the same people as this thread, so that it stays within reach (see `reachable`).
           const starter = {
             userId: thread.createdBy ?? '',
             visibility: (visibility as Visibility) ?? thread.visibility,
+            shared: thread.shared,
           };
           const made = await start(thread.channelId, message, pick, starter);
           return 'error' in made ? refuse(made.error) : answer(shown(made));

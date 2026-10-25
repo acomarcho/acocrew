@@ -3006,12 +3006,18 @@ test('Claude can list the threads in its repository that its owner sees, read on
   // threads Jordan cannot see: shared with Jordan, or public, it reaches only what is public or shared with Jordan.
   await post(`/api/threads/${caller.id}/shares`, { userId: jordan.id, shared: true });
   expect(await tools.call('read_thread', { id: other.id })).toEqual({ error: 'Thread not found.' });
+  // A thread it starts is shared with the same people, so it can still check on it, and Jordan gets it too.
+  const jordanTab = await as(jordan.cookie, connect);
+  const child = await tools.call('start_thread', { text: 'split off', worktree: 'this' });
+  const heardOf = await jordanTab.until('thread', (e) => e.thread.id === child.id);
+  expect(heardOf.thread).toMatchObject({ visibility: 'private', shared: [jordan.id] });
+  expect(await tools.call('read_thread', { id: child.id })).toMatchObject({ id: child.id });
   await post(`/api/threads/${other.id}/shares`, { userId: jordan.id, shared: true });
   expect(await tools.call('read_thread', { id: other.id })).toMatchObject({ id: other.id });
   await post(`/api/threads/${caller.id}/visibility`, { visibility: 'public' });
   expect(await tools.call('read_thread', { id: other.id })).toEqual({ error: 'Thread not found.' });
   expect(await tools.call('send_message', { id: other.id, text: 'hi' })).toEqual({ error: 'Thread not found.' });
-  expect(await tools.call('list_threads')).toMatchObject([{ id: caller.id }]);
+  expect((await tools.call('list_threads')).map((thread: Thread) => thread.id)).toEqual([caller.id]);
   await post(`/api/threads/${other.id}/visibility`, { visibility: 'public' });
   expect(await tools.call('read_thread', { id: other.id })).toMatchObject({ id: other.id });
 });
