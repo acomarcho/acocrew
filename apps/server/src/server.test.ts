@@ -39,7 +39,16 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { eq } from 'drizzle-orm';
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { homedir } from 'node:os';
@@ -52,7 +61,7 @@ import { CHECK_MS } from './automations.ts';
 import { openDb, type Db } from './db.ts';
 import { createProxy, PROXY_DEFAULTS } from './proxy.ts';
 import type { QueryFn } from './runner.ts';
-import { automations, channels, events, session as sessions, threads } from './schema.ts';
+import { automations, channels, chats, events, seen, session as sessions, shares, threads } from './schema.ts';
 import { startServer } from './server.ts';
 
 // A line of a recording (see fixtures/record.ts): a real message from Claude, or a marker for what the
@@ -2187,6 +2196,9 @@ const reach = (thread: Thread) =>
     read(thread, 1),
     show(thread, 'public'),
     share(thread, 'nobody'),
+    post(`/api/threads/${thread.id}/title`, { title: 'mine' }),
+    post(`/api/threads/${thread.id}/retitle`),
+    post(`/api/threads/${thread.id}/delete`),
     ask(`${COMMANDS_PATH}?thread=${thread.id}`),
   ]);
 // What this tab was told about threads and what is in them.
@@ -3048,4 +3060,204 @@ test('Claude is told why a thread cannot be started', async () => {
   });
   expect(await tools.call('start_thread', { text: '  ' })).toMatchObject({ error: expect.any(String) });
   expect(await tools.call('start_thread', { text: 'go', effort: 'huge' })).toMatchObject({ error: expect.any(String) });
+});
+
+// Deleting a thread, and naming it again.
+const deleteThread = (thread: Thread) => post(`/api/threads/${thread.id}/delete`);
+const rename = (thread: Thread, title: unknown) => post(`/api/threads/${thread.id}/title`, { title });
+const retitle = (thread: Thread) => post(`/api/threads/${thread.id}/retitle`);
+// Everything that is kept about a thread, in every table.
+const keptOf = (id: string) =>
+  [events, chats, seen, shares].flatMap((table) => db.select().from(table).where(eq(table.threadId, id)).all());
+const branches = (repo: string) => git(repo, 'branch', '--format=%(refname:short)').split('\n');
+
+test('whoever started a thread deletes it: it leaves every screen at once, and nothing of it is kept', async () => {
+  const jordan = await teammate('jordan', 'Jordan');
+  const tab = await connect();
+  const theirs = await as(jordan.cookie, connect);
+  const thread = await startThread('make notes', PUBLIC);
+  await theirs.open(thread.id);
+  await tab.status(thread.id, 'done');
+  await as(jordan.cookie, () => write(thread, 'nice'));
+  await post(`/api/threads/${thread.id}/seen`, { at: Date.now() });
+  await share(thread, jordan.id);
+  expect(keptOf(thread.id).length).toBeGreaterThan(3);
+
+  // Someone else who sees it cannot.
+  const refused = await as(jordan.cookie, () => deleteThread(thread));
+  expect([refused.status, await error(refused)]).toEqual([403, 'Only the person who started a thread can delete it.']);
+
+  const worktreesBefore = git(shop, 'worktree', 'list');
+  expect((await deleteThread(thread)).status).toBe(200);
+  expect(await tab.until('thread-gone')).toEqual({ type: 'thread-gone', id: thread.id });
+  expect(await theirs.until('thread-gone')).toEqual({ type: 'thread-gone', id: thread.id });
+  expect(db.select().from(threads).all()).toEqual([]);
+  expect(keptOf(thread.id)).toEqual([]);
+  expect((await connect()).hello.threads).toEqual([]);
+  expect((await as(jordan.cookie, connect)).hello.threads).toEqual([]);
+  for (const res of await reach(thread)) expect(res.status, res.url).toBe(404);
+  expect((await deleteThread(thread)).status).toBe(404);
+  // It worked right in the repository folder, which stays as it was.
+  expect(git(shop, 'worktree', 'list')).toBe(worktreesBefore);
+  expect(readFileSync(join(shop, 'post.md'), 'utf8')).toBe('hello\n');
+});
+
+test('a deleted thread takes its worktree and branches with it, changes and all, once no other thread works there', async () => {
+  const tab = await connect();
+  const channel = await addChannel(blog);
+  const first = (await (
+    await post('/api/threads', { channelId: channel.id, text: 'make notes', from: 'main', ...HAIKU })
+  ).json()) as Thread;
+  const folder = first.path!;
+  const made = `acocrew/${first.id.slice(0, 8)}`;
+  await tab.status(first.id, 'done');
+  // What Claude would leave behind: a branch of its own with a commit on it, and a change it never committed.
+  git(folder, 'checkout', '--quiet', '-b', 'fix/notes');
+  commit(folder, 'notes.md', 'notes\n');
+  writeFileSync(join(folder, 'draft.md'), 'not committed\n');
+  // A follow up thread in the same worktree.
+  const res = await post('/api/threads', { channelId: channel.id, text: 'more notes', path: folder, ...HAIKU });
+  const second = (await res.json()) as Thread;
+  await tab.status(second.id, 'done');
+  expect(branches(blog)).toEqual(expect.arrayContaining([made, 'fix/notes']));
+
+  // The other thread still works there, so the worktree stays.
+  expect((await deleteThread(first)).status).toBe(200);
+  expect(readFileSync(join(folder, 'draft.md'), 'utf8')).toBe('not committed\n');
+  expect(git(blog, 'worktree', 'list')).toContain(folder);
+
+  // The last thread out takes it, with both branches. The repository and its main branch stay.
+  expect((await deleteThread(second)).status).toBe(200);
+  expect(existsSync(folder)).toBe(false);
+  expect(git(blog, 'worktree', 'list')).not.toContain(folder);
+  expect(branches(blog)).not.toContain(made);
+  expect(branches(blog)).not.toContain('fix/notes');
+  expect(git(blog, 'branch', '--show-current')).toBe('main');
+  expect((await places(channel)).worktrees.map((worktree) => worktree.path)).not.toContain(folder);
+});
+
+test('a branch that was there before the thread, and that Claude only checked out in its worktree, stays', async () => {
+  const channel = await addChannel();
+  // Someone's own branch, from yesterday, with a commit of its own that is nowhere else.
+  const yesterday = { ...process.env, GIT_COMMITTER_DATE: new Date(Date.now() - DAY).toISOString() };
+  execFileSync('git', ['-C', shop, 'branch', 'older'], { env: yesterday });
+  onTestFinished(() => void git(shop, 'branch', '-D', 'older'));
+  const tab = await connect();
+  const res = await post('/api/threads', { channelId: channel.id, text: 'make notes', from: 'main', ...HAIKU });
+  const thread = (await res.json()) as Thread;
+  await tab.status(thread.id, 'done');
+  git(thread.path!, 'checkout', '--quiet', 'older');
+  const work = commit(thread.path!, 'older.md', 'mine\n');
+
+  expect((await deleteThread(thread)).status).toBe(200);
+  expect(existsSync(thread.path!)).toBe(false);
+  expect(branches(shop)).not.toContain(`acocrew/${thread.id.slice(0, 8)}`);
+  expect(git(shop, 'rev-parse', 'older')).toBe(work);
+});
+
+test('a worktree someone made by hand stays when the thread in it is deleted', async () => {
+  const channel = await addChannel();
+  const mine = join(home, '.copies', 'mine');
+  git(shop, 'worktree', 'add', '--quiet', '-b', 'mine', mine);
+  onTestFinished(() => {
+    git(shop, 'worktree', 'remove', '--force', mine);
+    git(shop, 'branch', '-D', 'mine');
+  });
+  const tab = await connect();
+  const res = await post('/api/threads', { channelId: channel.id, text: 'make notes', path: mine, ...HAIKU });
+  const thread = (await res.json()) as Thread;
+  await tab.status(thread.id, 'done');
+  expect((await deleteThread(thread)).status).toBe(200);
+  expect(git(mine, 'branch', '--show-current')).toBe('mine');
+});
+
+test('a thread deleted while Claude is busy ends Claude at once, and nothing more is heard of it', async () => {
+  await serve(TWO_TURNS);
+  const release = claude.pause(bubbleEnd);
+  const tab = await connect();
+  const thread = await startThread('make notes');
+  await tab.open(thread.id);
+  await tab.status(thread.id, 'working');
+  expect((await deleteThread(thread)).status).toBe(200);
+  await tab.until('thread-gone');
+  expect(claude.closed()).toBe(1);
+  const heardBefore = heard(tab).length;
+  release();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  // The killed process said nothing more, and nothing was kept of what it was saying.
+  expect(heard(tab)).toHaveLength(heardBefore);
+  expect(keptOf(thread.id)).toEqual([]);
+  // The server carries on.
+  const next = await startThread('make notes');
+  expect((await tab.status(next.id, 'done')).id).toBe(next.id);
+});
+
+test('whoever started a thread renames it by hand, which every device hears and is not news', async () => {
+  const jordan = await teammate('jordan', 'Jordan');
+  const tab = await connect();
+  const theirs = await as(jordan.cookie, connect);
+  const thread = await startThread('make notes', PUBLIC);
+  const done = await tab.status(thread.id, 'done');
+
+  expect((await rename(thread, '  🛒 Shop notes \nand more')).status).toBe(200);
+  const renamed = await theirs.until('thread', (e) => e.thread.title === '🛒 Shop notes');
+  expect(renamed.thread).toEqual({ ...done, title: '🛒 Shop notes' });
+  expect((await connect()).hello.threads[0].title).toBe('🛒 Shop notes');
+  // Cut to one short line, like any name.
+  await rename(thread, 'x'.repeat(100));
+  expect((await tab.until('thread', (e) => e.thread.title.startsWith('x'))).thread.title).toBe('x'.repeat(70));
+
+  for (const title of ['', '  \n', 7, undefined]) expect((await rename(thread, title)).status, String(title)).toBe(400);
+  for (const res of [
+    await as(jordan.cookie, () => rename(thread, 'mine')),
+    await as(jordan.cookie, () => retitle(thread)),
+  ])
+    expect([res.status, await error(res)]).toEqual([403, 'Only the person who started a thread can rename it.']);
+  expect((await connect()).hello.threads[0].title).toBe('x'.repeat(70));
+});
+
+test('asked to, Claude names a thread again from its first five messages, its own included', async () => {
+  await serve(TWO_TURNS, NAMING);
+  const tab = await connect();
+  const thread = await startThread('make notes');
+  await tab.until('thread', (e) => e.thread.title === NAME);
+  await rename(thread, 'something else');
+  await tab.status(thread.id, 'done');
+  await say(thread, 'what is in them?');
+  await tab.status(thread.id, 'working');
+  await tab.status(thread.id, 'done');
+  // Claude has nothing more to say to these, but they are in the thread.
+  for (const text of ['and now?', 'one more']) await say(thread, text);
+
+  const res = await retitle(thread);
+  expect(await res.json()).toEqual({ title: NAME });
+  expect((await tab.until('thread', (e) => e.thread.title === NAME)).thread.id).toBe(thread.id);
+  expect(claude.named).toHaveLength(2);
+  expect(claude.named[1].prompt).toBe(
+    [
+      ['user', 'make notes'],
+      ['claude', 'Done — notes.txt is created with the line "hello from acocrew".'],
+      ['user', 'what is in them?'],
+      [
+        'claude',
+        'math.js is a simple module that exports an `add` function which takes two numbers and returns their sum. notes.txt contains the line "hello from acocrew" that we just created.',
+      ],
+      ['user', 'and now?'],
+    ]
+      .map(([by, text]) => `<message from="${by}">\n${text}\n</message>`)
+      .join('\n'),
+  );
+  expect(claude.named[1].options).toMatchObject({ model: HAIKU.model, tools: [], settingSources: [] });
+});
+
+test('when Claude gives no new name, the thread keeps the one it has and the person is told', async () => {
+  const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+  onTestFinished(() => logged.mockRestore());
+  await serve(TWO_TURNS, [{ _crash: true }]);
+  const tab = await connect();
+  const thread = await startThread('make notes');
+  await tab.status(thread.id, 'done');
+  const res = await retitle(thread);
+  expect([res.status, await error(res)]).toEqual([500, 'Claude did not come up with a name. Try again.']);
+  expect((await connect()).hello.threads[0].title).toBe('make notes');
 });

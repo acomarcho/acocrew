@@ -28,7 +28,7 @@ import { throughProxy, type Proxy } from './proxy.ts';
 // How the model proxy is set up right now, and how many tokens one of its models keeps in view.
 type ProxyNow = { read(): Proxy; windowOf(model: string): number | null };
 import { channels, threads } from './schema.ts';
-import { inferTitle } from './title.ts';
+import { inferTitle, TITLE_MESSAGES } from './title.ts';
 import { contextUsed, createTranslator, nextAt, wasAborted, type Out } from './translate.ts';
 
 // The part of the Claude Agent SDK we use. Tests pass a fake with the same shape.
@@ -166,11 +166,12 @@ export function createRunner(
   };
 
   // Saves a change to a thread and tells everyone who sees it. `news` is a change people want to look at: it moves the
-  // thread to the top of the list, and makes it unseen for whoever does not have it on screen.
+  // thread to the top of the list, and makes it unseen for whoever does not have it on screen. A change that comes
+  // in after the thread was deleted (a name, a branch) has nothing left to change.
   function setThread(threadId: string, patch: Partial<StoredThread>, news = true) {
     const set = news ? { ...patch, updatedAt: Date.now() } : patch;
     const row = db.update(threads).set(set).where(eq(threads.id, threadId)).returning(threadCols).get();
-    hub.thread(withLive(row));
+    if (row) hub.thread(withLive(row));
   }
 
   // Claude can switch branches while it works, so the branch is read again after it did something.
@@ -424,6 +425,7 @@ export function createRunner(
 
   return {
     withLive,
+    setThread,
 
     // What a message can ask Claude to run with `/name` when Claude works in this folder.
     commands(folder: string) {
@@ -491,11 +493,17 @@ export function createRunner(
       }
     },
 
-    // Gives a new thread a proper name, in the background. If that does not work out, it keeps the name it has.
-    name(threadId: string, text: string) {
-      inferTitle(query, text)
-        .then((title) => title && setThread(threadId, { title }, false))
-        .catch((err) => console.error('Could not name the thread:', err));
+    // Names the thread after its first messages, people's and Claude's, and gives back the name. Null when that
+    // did not work out: the thread keeps the name it has. Getting a name is not news.
+    async name(threadId: string) {
+      const said = loadItems(db, threadId)
+        .flatMap((item) => (item.kind === 'message' && !item.parent && item.text ? [item] : []))
+        .slice(0, TITLE_MESSAGES)
+        .map(({ by, text }) => ({ by, text }));
+      if (!said.length) return null;
+      const title = await inferTitle(query, said).catch((err) => void console.error('Could not name the thread:', err));
+      if (title) setThread(threadId, { title }, false);
+      return title ?? null;
     },
 
     // Hands the user's reply to the approval prompt or question that is waiting for it.
@@ -518,6 +526,9 @@ export function createRunner(
       }
       kill(session);
     },
+
+    // Ends the thread's Claude process at once, without a word in the thread: it is being deleted.
+    end: close,
 
     // The bubbles Claude is writing right now.
     live: (threadId: string) => sessions.get(threadId)?.translator.live() ?? [],

@@ -38,7 +38,7 @@ import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, join, sep } from 'node:path';
 import { WebSocketServer } from 'ws';
 import {
   createAuth,
@@ -69,14 +69,14 @@ import {
   type StoredThread,
 } from './db.ts';
 import { folderInside, isRepo, listFolders } from './folders.ts';
-import { addWorktree, listPlaces } from './git.ts';
+import { addWorktree, listPlaces, removeWorktree } from './git.ts';
 import { listAccounts, switchAccount } from './github.ts';
 import { createHub } from './hub.ts';
 import { openFiles, type Files } from './files.ts';
 import { openImages, type Images } from './images.ts';
 import { createProxy } from './proxy.ts';
 import { createRunner, type QueryFn } from './runner.ts';
-import { automations, channels, chats, seen, session as sessions, shares, threads, user } from './schema.ts';
+import { automations, channels, chats, events, seen, session as sessions, shares, threads, user } from './schema.ts';
 import { firstLine } from './title.ts';
 import { threadTools } from './tools.ts';
 
@@ -428,7 +428,8 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
     const thread = runner.withLive(saved);
     hub.thread(thread);
     runner.send(thread.id, message, userId);
-    if (message.text) runner.name(thread.id, message.text);
+    // In the background: nothing waits for the name.
+    void runner.name(thread.id);
     return thread;
   }
   // What Claude in a thread can do on acocrew itself, checked like what a person sends.
@@ -593,12 +594,14 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
     return c.json({ ok: true });
   });
 
-  // Who sees a thread is for whoever started it to decide: whether it is private or public, and who it is
-  // shared with. The people stay on the list while it is public, for when it is private again.
-  for (const part of ['visibility', 'shares']) {
+  // Some things about a thread are for whoever started it to decide: who sees it (whether it is private or public,
+  // and who it is shared with), its name, and whether it is deleted. The people it is shared with stay on the list
+  // while it is public, for when it is private again.
+  const OWNERS_ONLY = { visibility: 'share', shares: 'share', title: 'rename', retitle: 'rename', delete: 'delete' };
+  for (const [part, what] of Object.entries(OWNERS_ONLY)) {
     app.use(`/api/threads/:id/${part}`, async (c, next) => {
       if (c.get('thread').createdBy !== c.get('user').id)
-        return c.json({ error: 'Only the person who started a thread can share it.' }, 403);
+        return c.json({ error: `Only the person who started a thread can ${what} it.` }, 403);
       await next();
     });
   }
@@ -742,14 +745,43 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
   app.post('/api/threads/:id/pin', async (c) => {
     const { pinned } = await c.req.json().catch(() => ({}));
     if (typeof pinned !== 'boolean') return c.json({ error: 'Needs pinned or not.' }, 400);
-    const set = { pinnedAt: pinned ? Date.now() : null };
-    const row = db
-      .update(threads)
-      .set(set)
-      .where(eq(threads.id, c.get('thread').id))
-      .returning(threadCols)
-      .get();
-    hub.thread(runner.withLive(row));
+    runner.setThread(c.get('thread').id, { pinnedAt: pinned ? Date.now() : null }, false);
+    return c.json({ ok: true });
+  });
+
+  // A name typed by hand. Like a name from Claude it is one short line, and it is not news.
+  app.post('/api/threads/:id/title', async (c) => {
+    const { title } = await c.req.json().catch(() => ({}));
+    const name = typeof title === 'string' ? firstLine(title).trim() : '';
+    if (!name) return refuse(c, 'Needs a name.');
+    runner.setThread(c.get('thread').id, { title: name }, false);
+    return c.json({ ok: true });
+  });
+
+  // Asks Claude for a new name, from how the thread starts now. Gives back the name.
+  app.post('/api/threads/:id/retitle', async (c) => {
+    const title = await runner.name(c.get('thread').id);
+    return title ? c.json({ title }) : c.json({ error: 'Claude did not come up with a name. Try again.' }, 500);
+  });
+
+  // Deletes the thread and everything in it, for everyone. Its worktree goes too, with whatever is in it and its
+  // branches, once no other thread works there. Only a worktree acocrew made itself can go: never the repository
+  // folder, and never one that someone made by hand and a thread was started in.
+  app.post('/api/threads/:id/delete', async (c) => {
+    const thread = c.get('thread');
+    runner.end(thread.id);
+    db.transaction((tx) => {
+      for (const table of [events, chats, seen, shares]) tx.delete(table).where(eq(table.threadId, thread.id)).run();
+      tx.delete(threads).where(eq(threads.id, thread.id)).run();
+    });
+    hub.drop(thread.id, (userId) => canSee(thread, userId));
+    const ours = thread.path?.startsWith(worktrees + sep) && thread.path;
+    const inUse = ours && db.select({ id: threads.id }).from(threads).where(eq(threads.path, ours)).get();
+    // The branch it was made on is named after its folder (see `startThread`).
+    if (ours && !inUse)
+      await removeWorktree(findChannel(thread.channelId)!.path, ours, `acocrew/${basename(ours)}`).catch((err) =>
+        console.error(`Could not delete the worktree ${ours}:`, err),
+      );
     return c.json({ ok: true });
   });
 
