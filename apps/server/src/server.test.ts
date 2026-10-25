@@ -507,6 +507,7 @@ test('with the built web app, one server gives out the app, its files and the ap
   mkdirSync(join(web, 'assets'));
   writeFileSync(join(web, 'index.html'), '<html>the app</html>');
   writeFileSync(join(web, 'assets', 'app.js'), 'console.log(1)');
+  writeFileSync(join(web, 'manifest.webmanifest'), '{}');
   server.close();
   server = await startServer(0, { db, query: claude.query, home, images, worktrees, secret: 'test', web });
 
@@ -517,6 +518,13 @@ test('with the built web app, one server gives out the app, its files and the ap
   expect(await (await ask('/assets/app.js')).text()).toBe('console.log(1)');
   expect(await (await ask(HEALTH_PATH)).json()).toEqual({ ok: true });
   expect((await ask('/api/nope')).status).toBe(404);
+
+  // Files outside assets/ keep their names across builds, so the browser must check before reusing them.
+  // Otherwise a phone can keep the old app after an update. Files in assets/ get a new name each build.
+  for (const path of ['/', '/c/some-channel/t/some-thread', '/manifest.webmanifest']) {
+    expect((await ask(path)).headers.get('cache-control'), path).toBe('no-cache');
+  }
+  expect((await ask('/assets/app.js')).headers.get('cache-control')).toBeNull();
 });
 
 test('folders: lists visible folders and marks git repositories', async () => {
