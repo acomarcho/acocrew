@@ -8,6 +8,8 @@
     "typecheck": "vp run -r typecheck",
     "test": "vp run -r test",
     "check": "vp check",
+    "hooks": "scripts/install-hooks.sh",
+    "prepare": "scripts/install-hooks.sh",
     "stable": "scripts/stable.sh"
   },
   "devDependencies": {

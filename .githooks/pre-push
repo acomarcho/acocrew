@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Whole-project gate before a push: typecheck, then tests in the packages that
+# have them. Slow by design: `git push --no-verify` skips it.
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+pnpm typecheck
+
+# Per package, not via the root `test` script: that also runs in packages with
+# no tests, and vp test exits 1 when it finds none, which would block every push.
+ran=0
+while IFS= read -r manifest; do
+  pkg=${manifest%/package.json}
+  [ -n "$pkg" ] || continue
+  if git ls-files -- "$pkg" | grep -qE '\.(test|spec)\.[cm]?[jt]sx?$'; then
+    echo "pre-push: tests in $pkg"
+    ( cd "$pkg" && pnpm test ) || exit 1
+    ran=1
+  fi
+done < <(git ls-files -- '*package.json')
+
+if [ "$ran" -eq 0 ]; then
+  echo "pre-push: no test files, skipping tests"
+fi
