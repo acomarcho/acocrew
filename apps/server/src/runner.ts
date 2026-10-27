@@ -29,6 +29,7 @@ import { throughProxy, type Proxy } from './proxy.ts';
 type ProxyNow = { read(): Proxy; windowOf(model: string): number | null };
 import { channels, threads } from './schema.ts';
 import { inferTitle, TITLE_MESSAGES } from './title.ts';
+import { dropUnsignedThinking } from './transcript.ts';
 import { contextUsed, createTranslator, nextAt, wasAborted, type Out } from './translate.ts';
 
 // The part of the Claude Agent SDK we use. Tests pass a fake with the same shape.
@@ -230,6 +231,15 @@ export function createRunner(
       .where(eq(threads.id, threadId))
       .get()!;
     const folder = path ?? repo;
+    // A conversation that ran on the proxy's models is cleaned up for Claude's own (see transcript.ts). If that
+    // does not work out, Claude still starts: the conversation may well be fine as it is.
+    if (sessionId && MODELS.some((option) => option.id === message.model)) {
+      try {
+        dropUnsignedThinking(sessionId);
+      } catch (err) {
+        console.error('Could not clean up the conversation for Claude:', err);
+      }
+    }
     const before = loadItems(db, threadId).find((item) => item.kind === 'todos');
     const input = queue<SDKUserMessage>();
     let session!: Session;

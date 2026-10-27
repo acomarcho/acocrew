@@ -256,6 +256,8 @@ const GH = fileURLToPath(new URL('./fixtures/gh.js', import.meta.url));
 process.env.GH_CONFIG_DIR = join(home, '.gh');
 mkdirSync(process.env.GH_CONFIG_DIR);
 const githubLogins = join(process.env.GH_CONFIG_DIR, 'hosts.json');
+// Claude Code's own files (its conversations) are looked for in this folder too, so no test touches the real ones.
+process.env.CLAUDE_CONFIG_DIR = join(home, '.claude');
 // What a real `gh auth status --json hosts` printed with two accounts logged in (names changed).
 const TWO_ACCOUNTS = fileURLToPath(new URL('./fixtures/gh-status.json', import.meta.url));
 const git = (dir: string, ...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim();
@@ -2821,6 +2823,31 @@ test('an idle thread can go from a proxy model to Claude and back, in the same c
   expect(claude.closed()).toBe(1);
   expect(claude.calls[1]).toMatchObject({ model: 'claude-opus-5-5[1m]', resume: SESSION, env: undefined });
   expect(claude.calls[1].settings).toEqual({ fastMode: false, env: {} });
+});
+
+// A real conversation Claude Code kept: a turn on Opus, then two on DeepSeek through the proxy. DeepSeek's
+// thinking is not signed, and one block of it is a single space (taken from a thread that broke this way).
+// Anthropic turns the whole conversation down over that block, so Claude's models get it without unsigned thinking.
+test('going from a proxy model to Claude takes the thinking Anthropic did not sign out of the conversation', async () => {
+  const kept = fileURLToPath(new URL('./fixtures/proxy-thinking.jsonl', import.meta.url));
+  const file = join(process.env.CLAUDE_CONFIG_DIR!, 'projects', '-code-notes', `${SESSION}.jsonl`);
+  mkdirSync(join(file, '..'), { recursive: true });
+  copyFileSync(kept, file);
+  onTestFinished(() => rmSync(file));
+  const thinking = (path: string) =>
+    readFileSync(path, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .flatMap((line) => JSON.parse(line).message?.content ?? [])
+      .filter((block: { type: string }) => block.type === 'thinking');
+
+  const tab = await connect();
+  const thread = await startThread('make notes', DEEPSEEK);
+  await tab.status(thread.id, 'done');
+  await say(thread, 'what is in them?', OPUS);
+  await tab.status(thread.id, 'done');
+  expect(thinking(kept).filter((block) => !block.signature)).toHaveLength(6);
+  expect(thinking(file)).toEqual(thinking(kept).filter((block) => block.signature));
 });
 
 test('a new proxy set-up reaches an idle proxy thread with its next message', async () => {
