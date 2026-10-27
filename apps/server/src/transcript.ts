@@ -2,7 +2,7 @@
 // conversation when it moves between Claude's models and the proxy's. The proxy's models leave thinking that
 // Anthropic did not sign, and Anthropic turns a whole conversation down over some of it (a block of nothing but a
 // space). So before one of Claude's own models picks a conversation up, the unsigned thinking is taken out.
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -33,5 +33,8 @@ export function dropUnsignedThinking(sessionId: string) {
       return JSON.stringify(entry);
     })
     .join('\n');
-  if (cleaned !== kept) writeFileSync(file, cleaned);
+  if (cleaned === kept) return;
+  // Written next to it and moved over it, so a server that dies halfway does not leave half a conversation.
+  writeFileSync(`${file}.tmp`, cleaned, { mode: statSync(file).mode });
+  renameSync(`${file}.tmp`, file);
 }
