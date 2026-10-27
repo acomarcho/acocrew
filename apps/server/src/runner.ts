@@ -16,6 +16,7 @@ import type {
   SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 import { eq, isNull, ne } from 'drizzle-orm';
+import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { loadItems, saveItem, threadCols, type Db, type StoredThread } from './db.ts';
@@ -48,7 +49,8 @@ type Tool = Extract<Item, { kind: 'tool' }>;
 // One running Claude process and what we know about it right now.
 type Session = {
   input: ReturnType<typeof queue<SDKUserMessage>>;
-  running: ReturnType<QueryFn>;
+  // Comes once the thread's previous process has exited (see `start`).
+  running: Promise<ReturnType<QueryFn>>;
   translator: ReturnType<typeof createTranslator>;
   // The folder Claude works in.
   folder: string;
@@ -147,6 +149,8 @@ export function createRunner(
   tools: (threadId: string) => McpServerConfig,
 ) {
   const sessions = new Map<string, Session>();
+  // Each thread's last process, until it has really exited. Closed or not, it can still be writing the conversation.
+  const exits = new Map<string, Promise<unknown>>();
 
   function addItem(threadId: string, item: Item) {
     saveItem(db, threadId, item);
@@ -231,18 +235,17 @@ export function createRunner(
       .where(eq(threads.id, threadId))
       .get()!;
     const folder = path ?? repo;
-    // A conversation that ran on the proxy's models is cleaned up for Claude's own (see transcript.ts). If that
-    // does not work out, Claude still starts: the conversation may well be fine as it is.
-    if (sessionId && MODELS.some((option) => option.id === message.model)) {
-      try {
-        dropUnsignedThinking(sessionId);
-      } catch (err) {
-        console.error('Could not clean up the conversation for Claude:', err);
-      }
-    }
     const before = loadItems(db, threadId).find((item) => item.kind === 'todos');
     const input = queue<SDKUserMessage>();
     let session!: Session;
+    // Started the way the SDK would, only so that we see when the process has really exited. One that could not
+    // start (no pid) never ran.
+    let exited: Promise<unknown> | undefined;
+    const spawnClaudeCodeProcess: Options['spawnClaudeCodeProcess'] = ({ command, args, cwd, env, signal }) => {
+      const child = spawn(command, args, { cwd, env, signal, stdio: ['pipe', 'pipe', 'inherit'] });
+      if (child.pid) exited = new Promise((resolve) => child.once('exit', resolve));
+      return child;
+    };
 
     // Claude calls this before any tool that is not plainly safe, and for its questions to the user.
     const canUseTool: Options['canUseTool'] = async (name, toolInput, { signal, suggestions, toolUseID }) => {
@@ -279,20 +282,36 @@ export function createRunner(
       return { ...allow, updatedPermissions: rules };
     };
 
-    const running = query({
-      prompt: input,
-      options: {
-        cwd: folder,
-        ...launch,
-        resume: sessionId ?? undefined,
-        // The SDK hands Claude this environment instead of the server's own, so it is the server's plus the login.
-        env: login && { ...process.env, ...login },
-        // Claude asks us about every action. With full access we say yes right away.
-        permissionMode: 'default',
-        canUseTool,
-        includePartialMessages: true,
-        mcpServers: { acocrew: tools(threadId) },
-      },
+    // Two processes must not write one conversation, so this one waits until the thread's last one has exited
+    // (after Stop it can take a few seconds to wind down). Messages wait in `input` meanwhile.
+    const running = (exits.get(threadId) ?? Promise.resolve()).then(() => {
+      // Stopped or deleted while it waited: there is nothing left to start it for.
+      if (session.closed) throw new Error('Closed before it started.');
+      // A conversation that ran on the proxy's models is cleaned up for Claude's own (see transcript.ts). If that
+      // does not work out, Claude still starts: the conversation may well be fine as it is.
+      if (sessionId && MODELS.some((option) => option.id === message.model)) {
+        try {
+          dropUnsignedThinking(sessionId);
+        } catch (err) {
+          console.error('Could not clean up the conversation for Claude:', err);
+        }
+      }
+      return query({
+        prompt: input,
+        options: {
+          cwd: folder,
+          ...launch,
+          resume: sessionId ?? undefined,
+          // The SDK hands Claude this environment instead of the server's own, so it is the server's plus the login.
+          env: login && { ...process.env, ...login },
+          // Claude asks us about every action. With full access we say yes right away.
+          permissionMode: 'default',
+          canUseTool,
+          includePartialMessages: true,
+          mcpServers: { acocrew: tools(threadId) },
+          spawnClaudeCodeProcess,
+        },
+      });
     });
     session = {
       input,
@@ -310,14 +329,18 @@ export function createRunner(
       closed: false,
     };
     sessions.set(threadId, session);
-    void listen(threadId, session);
+    // The SDK stops reading a closed process after 2 seconds, so its end is not proof the process is gone. A
+    // process that never started is gone once the reading ends.
+    const gone = listen(threadId, session).then(() => exited);
+    exits.set(threadId, gone);
+    void gone.then(() => exits.get(threadId) === gone && exits.delete(threadId));
     return session;
   }
 
   // Reads everything Claude says for as long as the process lives, whether or not anyone just wrote to it.
   async function listen(threadId: string, session: Session) {
     try {
-      for await (const msg of session.running) {
+      for await (const msg of await session.running) {
         // Once closed on purpose, keep reading (and ignoring) until the stream ends by itself. Walking away
         // from the stream would kill the process before it has wound down.
         if (!session.closed) hear(threadId, session, msg);
@@ -386,7 +409,10 @@ export function createRunner(
 
   function kill(session: Session) {
     session.input.close();
-    session.running.close();
+    void session.running.then(
+      (running) => running.close(),
+      () => {},
+    );
   }
 
   function close(threadId: string) {
@@ -532,7 +558,7 @@ export function createRunner(
       // Ask Claude to wind down first, so its own record of the conversation ends cleanly.
       if (session.busy) {
         const giveUp = new Promise((resolve) => setTimeout(resolve, INTERRUPT_MS).unref());
-        await Promise.race([session.running.interrupt().catch(() => {}), giveUp]);
+        await Promise.race([session.running.then((running) => running.interrupt()).catch(() => {}), giveUp]);
       }
       kill(session);
     },
