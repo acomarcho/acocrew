@@ -131,6 +131,11 @@ function fakeClaude(script: Line[], naming: Line[] = []) {
   const releases: (() => void)[] = [];
   // Set to make Claude fail the next time it is asked what it can run.
   let listing: Error | undefined;
+  // Set to make the next process a real one that winds down slowly (see `windDown`).
+  let slow: { ms: number; file: string; last: string; exited: () => void } | undefined;
+  // Real processes still running, and conversations started while one was.
+  let alive = 0;
+  let overlaps = 0;
   let closed = 0;
   let interrupted = 0;
   let abandoned = 0;
@@ -150,6 +155,32 @@ function fakeClaude(script: Line[], naming: Line[] = []) {
       return Object.assign(name(), { close() {}, async interrupt() {}, supportedCommands: async () => [] });
     }
     calls.push(options);
+    if (alive) overlaps++;
+    // Started the way the SDK starts Claude when the server gives its own way to.
+    const spawning = slow;
+    slow = undefined;
+    const child =
+      spawning &&
+      options.spawnClaudeCodeProcess!({
+        command: 'sh',
+        // Like a real one, it ends once its input does, but only after writing one last entry.
+        args: [
+          '-c',
+          'cat >/dev/null; sleep "$0"; printf "%s\\n" "$1" >> "$2"',
+          `${spawning.ms / 1000}`,
+          spawning.last,
+          spawning.file,
+        ],
+        env: process.env,
+        signal: new AbortController().signal,
+      });
+    if (child) {
+      alive++;
+      child.once('exit', () => {
+        alive--;
+        spawning.exited();
+      });
+    }
     const abort = new AbortController();
     const users = prompt[Symbol.asyncIterator]();
     let kill = () => {};
@@ -207,6 +238,8 @@ function fakeClaude(script: Line[], naming: Line[] = []) {
         dead = true;
         abort.abort();
         kill();
+        // The SDK ends the process's input and does not wait for it to exit.
+        child?.stdin.end();
         // A killed process never finishes its turn. The next one starts at the next user message.
         while (script[pos] && !('_user' in script[pos])) pos++;
       },
@@ -235,6 +268,12 @@ function fakeClaude(script: Line[], naming: Line[] = []) {
     said,
     pause,
     failListing: () => void (listing = new Error('Claude is not logged in')),
+    // The next process keeps running for `ms` after it is closed, then writes `last` to the end of `file` (its
+    // conversation) and exits. Settles once it has.
+    windDown: (ms: number, file: string, last: string) =>
+      new Promise<void>((exited) => (slow = { ms, file, last, exited })),
+    // How many conversations were started while an earlier process was still running.
+    overlaps: () => overlaps,
     closed: () => closed,
     interrupted: () => interrupted,
     abandoned: () => abandoned,
@@ -1369,7 +1408,7 @@ test('a Claude process with nothing to do for ten minutes is closed, and the nex
   const thread = await startThread('make notes');
   await tab.status(thread.id, 'done');
   expect(claude.closed()).toBe(0);
-  vi.advanceTimersByTime(10 * 60_000);
+  await vi.advanceTimersByTimeAsync(10 * 60_000);
   expect(claude.closed()).toBe(1);
   vi.useRealTimers();
 
@@ -2827,27 +2866,76 @@ test('an idle thread can go from a proxy model to Claude and back, in the same c
 
 // A real conversation Claude Code kept: a turn on Opus, then two on DeepSeek through the proxy. DeepSeek's
 // thinking is not signed, and one block of it is a single space (taken from a thread that broke this way).
-// Anthropic turns the whole conversation down over that block, so Claude's models get it without unsigned thinking.
-test('going from a proxy model to Claude takes the thinking Anthropic did not sign out of the conversation', async () => {
-  const kept = fileURLToPath(new URL('./fixtures/proxy-thinking.jsonl', import.meta.url));
+// `proxyConversation` puts a copy where Claude Code keeps the test thread's conversation.
+const PROXY_THINKING = fileURLToPath(new URL('./fixtures/proxy-thinking.jsonl', import.meta.url));
+function proxyConversation() {
   const file = join(process.env.CLAUDE_CONFIG_DIR!, 'projects', '-code-notes', `${SESSION}.jsonl`);
   mkdirSync(join(file, '..'), { recursive: true });
-  copyFileSync(kept, file);
+  copyFileSync(PROXY_THINKING, file);
   onTestFinished(() => rmSync(file));
-  const thinking = (path: string) =>
-    readFileSync(path, 'utf8')
-      .split('\n')
-      .filter(Boolean)
-      .flatMap((line) => JSON.parse(line).message?.content ?? [])
-      .filter((block: { type: string }) => block.type === 'thinking');
+  return file;
+}
+const thinking = (path: string) =>
+  readFileSync(path, 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .flatMap((line) => JSON.parse(line).message?.content ?? [])
+    .filter((block: { type: string }) => block.type === 'thinking');
+// The entry with a blank thinking block that DeepSeek wrote, the one Anthropic turns the conversation down over.
+const BLANK_THINKING = readFileSync(PROXY_THINKING, 'utf8')
+  .split('\n')
+  .find((line) => line.includes('"thinking":" "'))!;
+
+// Anthropic turns the whole conversation down over that block, so Claude's models get it without unsigned thinking.
+test('going from a proxy model to Claude takes the thinking Anthropic did not sign out of the conversation', async () => {
+  const file = proxyConversation();
 
   const tab = await connect();
   const thread = await startThread('make notes', DEEPSEEK);
   await tab.status(thread.id, 'done');
   await say(thread, 'what is in them?', OPUS);
   await tab.status(thread.id, 'done');
-  expect(thinking(kept).filter((block) => !block.signature)).toHaveLength(6);
-  expect(thinking(file)).toEqual(thinking(kept).filter((block) => block.signature));
+  expect(thinking(PROXY_THINKING).filter((block) => !block.signature)).toHaveLength(6);
+  expect(thinking(file)).toEqual(thinking(PROXY_THINKING).filter((block) => block.signature));
+});
+
+test('a message right after Stop waits until the stopped Claude has stopped writing the conversation', async () => {
+  const file = proxyConversation();
+  // DeepSeek is stopped mid-turn, and on its way out writes one more blank thinking block.
+  const stopped = claude.windDown(300, file, BLANK_THINKING);
+  const release = claude.pause((msg) => msg.type === 'system');
+  claude.pause(toolResult); // never released: Stop arrives while the Write tool is running
+  const tab = await connect();
+  const thread = await startThread('make notes', DEEPSEEK);
+  await tab.open(thread.id);
+  release();
+  await tab.until('item', (e) => e.item.kind === 'tool');
+
+  await post(`/api/threads/${thread.id}/stop`);
+  await tab.status(thread.id, 'done');
+  await say(thread, 'what is in them?', OPUS);
+  await tab.status(thread.id, 'working');
+  await tab.status(thread.id, 'done');
+  await stopped;
+  expect(thinking(file).filter((block) => !block.signature)).toEqual([]);
+  expect(claude.overlaps()).toBe(0);
+  expect(claude.calls[1]).toMatchObject({ model: 'claude-opus-5-5[1m]', resume: SESSION });
+});
+
+test('a change of model on an idle thread starts the new Claude once the old one has exited', async () => {
+  const file = proxyConversation();
+  const closed = claude.windDown(300, file, BLANK_THINKING);
+  const tab = await connect();
+  const thread = await startThread('make notes', DEEPSEEK);
+  await tab.status(thread.id, 'done');
+
+  await say(thread, 'what is in them?', OPUS);
+  await tab.status(thread.id, 'done');
+  await closed;
+  expect(thinking(file).filter((block) => !block.signature)).toEqual([]);
+  expect(claude.closed()).toBe(1);
+  expect(claude.overlaps()).toBe(0);
+  expect(claude.calls[1]).toMatchObject({ model: 'claude-opus-5-5[1m]', resume: SESSION });
 });
 
 test('a new proxy set-up reaches an idle proxy thread with its next message', async () => {
