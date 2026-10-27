@@ -285,6 +285,8 @@ export function createRunner(
     // Two processes must not write one conversation, so this one waits until the thread's last one has exited
     // (after Stop it can take a few seconds to wind down). Messages wait in `input` meanwhile.
     const running = (exits.get(threadId) ?? Promise.resolve()).then(() => {
+      // Stopped or deleted while it waited: there is nothing left to start it for.
+      if (session.closed) throw new Error('Closed before it started.');
       // A conversation that ran on the proxy's models is cleaned up for Claude's own (see transcript.ts). If that
       // does not work out, Claude still starts: the conversation may well be fine as it is.
       if (sessionId && MODELS.some((option) => option.id === message.model)) {

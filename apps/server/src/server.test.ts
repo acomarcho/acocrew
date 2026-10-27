@@ -2938,6 +2938,31 @@ test('a change of model on an idle thread starts the new Claude once the old one
   expect(claude.calls[1]).toMatchObject({ model: 'claude-opus-5-5[1m]', resume: SESSION });
 });
 
+test('Stop on a message still waiting for the stopped Claude to exit means it never reaches Claude', async () => {
+  const stopped = claude.windDown(300, join(home, 'late.jsonl'), '{}');
+  const release = claude.pause((msg) => msg.type === 'system');
+  claude.pause(toolResult); // never released: Stop arrives while the Write tool is running
+  const tab = await connect();
+  const thread = await startThread('make notes');
+  await tab.open(thread.id);
+  release();
+  await tab.until('item', (e) => e.item.kind === 'tool');
+  await post(`/api/threads/${thread.id}/stop`);
+  await tab.status(thread.id, 'done');
+  await say(thread, 'never mind');
+  await tab.status(thread.id, 'working');
+  await post(`/api/threads/${thread.id}/stop`);
+  await tab.status(thread.id, 'done');
+  await stopped;
+  expect(claude.calls).toHaveLength(1);
+
+  await say(thread, 'what is in them?');
+  await tab.status(thread.id, 'working');
+  await tab.status(thread.id, 'done');
+  expect(claude.calls[1]).toMatchObject({ resume: SESSION });
+  expect(claude.said.at(-1)).toBe('what is in them?');
+});
+
 test('a new proxy set-up reaches an idle proxy thread with its next message', async () => {
   const tab = await connect();
   const thread = await startThread('make notes', DEEPSEEK);
