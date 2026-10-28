@@ -3,12 +3,14 @@ import type { Channel, Thread } from '@acocrew/shared';
 import { DragDropProvider, KeyboardSensor, PointerSensor } from '@dnd-kit/react';
 import { isSortable, useSortable } from '@dnd-kit/react/sortable';
 import { createFileRoute, Link, Navigate, Outlet, useChildMatches } from '@tanstack/react-router';
-import { Hash, ListFilter, Plus, Users } from 'lucide-react';
+import { Hash, ListChecks, ListFilter, Plus, Trash2, Users, X } from 'lucide-react';
 import { useState } from 'react';
 import { draftsIn, useDrafts } from '../drafts';
 import { needsYou, orderChannels, pinnedOf, setNavOpen, useApp, useMe } from '../store';
 import { AutomationSection } from '../automations';
 import {
+  DANGER,
+  DeleteThreads,
   DraftRows,
   Drawer,
   NavButton,
@@ -101,6 +103,15 @@ function Inbox() {
   const me = useMe();
   const [whose, setWhose] = useState('all');
   const [state, setState] = useState('all');
+  // The threads ticked to be deleted, while picking them. Null the rest of the time. Another repository starts
+  // without any.
+  const [picked, setPicked] = useState<Set<string> | null>(null);
+  const [pickedIn, setPickedIn] = useState(channelId);
+  const [asking, setAsking] = useState(false);
+  if (pickedIn !== channelId) {
+    setPickedIn(channelId);
+    setPicked(null);
+  }
   // How many threads this person began here and has not sent yet.
   const drafts = useDrafts((state) => draftsIn(state.drafts, channelId).length);
   // On phones the list and the detail take turns. The detail shows when a thread or "new" is open.
@@ -116,6 +127,16 @@ function Inbox() {
   // Pinned threads get a part of their own, and are not repeated under the rest.
   const pinned = pinnedOf(rows);
   const rest = rows.filter((t) => t.pinnedAt === null);
+  // Only this person's own can be deleted, and only what the list still shows is.
+  const mine = rows.filter((t) => t.createdBy === me.id);
+  const chosen = rows.filter((t) => picked?.has(t.id));
+  const pick = (id: string) =>
+    setPicked((old) => {
+      const next = new Set(old);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
+  const row = (t: Thread) => <ThreadRow key={t.id} thread={t} picked={picked?.has(t.id)} onPick={pick} />;
 
   return (
     <div className="relative flex h-full overflow-hidden">
@@ -152,14 +173,49 @@ function Inbox() {
       <section
         className={`w-full min-w-0 flex-col border-border md:flex md:w-[360px] md:shrink-0 md:border-r ${detailOpen ? 'hidden' : 'flex'}`}
       >
-        <header className="flex items-center gap-2 px-3 py-2.5">
-          <NavButton />
-          <div className="min-w-0 flex-1">
-            <div className="truncate font-bold">#{channel.name}</div>
-            <div className="truncate font-mono text-xs text-muted-foreground">{channel.path}</div>
-          </div>
-          <NewThreadButton channelId={channel.id} iconOnly />
-        </header>
+        {picked ? (
+          <header className="flex items-center gap-2 bg-primary/[0.07] px-3 py-2.5">
+            <button
+              type="button"
+              aria-label="Stop picking"
+              title="Stop picking"
+              onClick={() => setPicked(null)}
+              className="grid size-9 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-muted"
+            >
+              <X size={18} />
+            </button>
+            <div className="min-w-0 flex-1 truncate font-bold">{chosen.length} picked</div>
+            <button
+              type="button"
+              onClick={() =>
+                setPicked(new Set(mine.filter((t) => t.status === 'done' || t.status === 'failed').map((t) => t.id)))
+              }
+              className="rounded-md px-2 py-1 text-sm font-medium text-primary hover:bg-muted"
+            >
+              All finished
+            </button>
+          </header>
+        ) : (
+          <header className="flex items-center gap-2 px-3 py-2.5">
+            <NavButton />
+            <div className="min-w-0 flex-1">
+              <div className="truncate font-bold">#{channel.name}</div>
+              <div className="truncate font-mono text-xs text-muted-foreground">{channel.path}</div>
+            </div>
+            {mine.length > 0 && (
+              <button
+                type="button"
+                aria-label="Pick threads to delete"
+                title="Pick threads to delete"
+                onClick={() => setPicked(new Set())}
+                className="grid size-9 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+              >
+                <ListChecks size={18} />
+              </button>
+            )}
+            <NewThreadButton channelId={channel.id} iconOnly />
+          </header>
+        )}
         {/* Two filters side by side: whose threads, then in which state. */}
         <div className="flex items-center gap-1 border-b border-border px-1.5 pb-1.5">
           <Picker icon={<Users size={14} />} value={whose} options={WHOSE} onChange={setWhose} down fullLabel />
@@ -178,18 +234,38 @@ function Inbox() {
           {/* Not there when nothing is pinned. */}
           {pinned.length > 0 && (
             <Section title="Pinned" count={pinned.length} short>
-              {pinned.map((t) => (
-                <ThreadRow key={t.id} thread={t} />
-              ))}
+              {pinned.map(row)}
             </Section>
           )}
           <Section title="Threads" count={rest.length}>
-            {rest.map((t) => (
-              <ThreadRow key={t.id} thread={t} />
-            ))}
+            {rest.map(row)}
             {rest.length === 0 && <p className="p-6 text-center text-sm text-muted-foreground">Nothing here.</p>}
           </Section>
         </div>
+        {picked && (
+          <div className="flex items-center gap-2 border-t border-border px-3 py-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))]">
+            <span className="min-w-0 flex-1 truncate text-sm text-muted-foreground">Tick your threads to delete</span>
+            <button
+              type="button"
+              disabled={!chosen.length}
+              onClick={() => setAsking(true)}
+              className={`${DANGER} flex items-center gap-1.5`}
+            >
+              <Trash2 size={15} />
+              Delete {chosen.length || ''}
+            </button>
+          </div>
+        )}
+        {asking && (
+          <DeleteThreads
+            threads={chosen}
+            onClose={() => setAsking(false)}
+            onDeleted={() => {
+              setAsking(false);
+              setPicked(null);
+            }}
+          />
+        )}
       </section>
 
       <section className={`min-w-0 flex-1 flex-col md:flex ${detailOpen ? 'flex' : 'hidden'}`}>

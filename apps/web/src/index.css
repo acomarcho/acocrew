@@ -8,6 +8,9 @@
    Streamdown uses them, which put light-on-light text in code blocks. Now they only apply under a `.dark` class. */
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* `held:` styles apply while Cmd or Ctrl is held down (the app sets data-held on <html> then). */
+@custom-variant held (&:where([data-held] *));
+
 /* Components only use these color names, so a theme change is one edit to :root.
    The names follow shadcn/ui, because Streamdown expects them. */
 @theme inline {
