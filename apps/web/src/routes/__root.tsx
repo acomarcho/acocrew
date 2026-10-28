@@ -48,6 +48,19 @@ function App({ me, recheck }: { me: Me; recheck: () => Promise<unknown> }) {
   useEffect(() => connect(recheck), [recheck]);
   // Without an answer the model picker keeps Claude's own models.
   useEffect(() => void loadModels().catch(() => {}), []);
+  useEffect(() => {
+    // Whether Cmd or Ctrl is held, for `held:` styles. It is let go too when the window loses focus mid-press.
+    const hold = (e: KeyboardEvent) => document.documentElement.toggleAttribute('data-held', e.metaKey || e.ctrlKey);
+    const letGo = () => document.documentElement.removeAttribute('data-held');
+    window.addEventListener('keydown', hold);
+    window.addEventListener('keyup', hold);
+    window.addEventListener('blur', letGo);
+    return () => {
+      window.removeEventListener('keydown', hold);
+      window.removeEventListener('keyup', hold);
+      window.removeEventListener('blur', letGo);
+    };
+  }, []);
   return (
     <div className="h-dvh bg-background text-foreground">
       {ready ? <Outlet /> : <p className="grid h-full place-items-center text-muted-foreground">Connecting...</p>}

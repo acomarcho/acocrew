@@ -18,7 +18,16 @@ import {
   type Visibility,
 } from '@acocrew/shared';
 import { Link, useNavigate } from '@tanstack/react-router';
-import { useEffect, useEffectEvent, useId, useRef, useState, type ReactNode } from 'react';
+import {
+  useEffect,
+  useEffectEvent,
+  useId,
+  useRef,
+  useState,
+  type MouseEvent,
+  type PointerEvent,
+  type ReactNode,
+} from 'react';
 import {
   ArrowUp,
   Brain,
@@ -952,9 +961,57 @@ export function PinButton({ thread, className = '' }: { thread: Thread; classNam
   );
 }
 
+// Runs `then` once a finger has rested on the element for a while. A finger that moves to scroll lets go, as the
+// browser cancels its touch. Android asks for its own menu at that moment, which starts it right away instead,
+// and an iPhone gets a timer. The click that ends the press does nothing more.
+function useLongPress(then?: () => void) {
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const touching = useRef(false);
+  const fired = useRef(false);
+  if (!then) return {};
+  const release = () => {
+    clearTimeout(timer.current);
+    touching.current = false;
+  };
+  const fire = () => {
+    release();
+    fired.current = true;
+    then();
+  };
+  return {
+    onPointerDown: (e: PointerEvent) => {
+      if (e.pointerType !== 'touch') return;
+      touching.current = true;
+      fired.current = false;
+      timer.current = setTimeout(fire, 450);
+    },
+    onPointerUp: release,
+    onPointerCancel: release,
+    onContextMenu: (e: MouseEvent) => {
+      if (!touching.current) return;
+      e.preventDefault();
+      fire();
+    },
+    onClickCapture: (e: MouseEvent) => {
+      if (!fired.current) return;
+      fired.current = false;
+      e.preventDefault();
+      e.stopPropagation();
+    },
+  };
+}
+
+type ThreadRowProps = {
+  thread: Thread;
+  // Whether it is ticked, while threads are being picked to delete. Undefined the rest of the time.
+  picked?: boolean;
+  // Ticks the thread or takes the tick off. A long press starts the picking with it, where that can happen.
+  onPick?: (id: string) => void;
+};
+
 // One thread in the list. A thread that needs this person stands out. The others stay calm: one that Claude
 // is busy in says for how long, and one with nothing new only keeps a hollow dot.
-export function ThreadRow({ thread: t }: { thread: Thread }) {
+export function ThreadRow({ thread: t, picked, onPick }: ThreadRowProps) {
   const seen = useApp((state) => state.seen);
   const me = useMe();
   const unread = useApp((state) => state.unread[t.id]);
@@ -968,21 +1025,44 @@ export function ThreadRow({ thread: t }: { thread: Thread }) {
   // Only whoever started it can delete it.
   const mine = t.createdBy === me.id;
   const [deleting, setDeleting] = useState(false);
+  // While threads are picked, a click ticks one of this person's own instead of opening it. Nothing else can be
+  // done to a row then.
+  const picking = picked !== undefined;
+  const swipes = mine && !picking;
+  // It stays on while picking, where a long press ticks like a tap: the click that ends the press that started
+  // the picking must not take the tick off again.
+  const press = useLongPress(mine && onPick ? () => onPick(t.id) : undefined);
+  // Cmd or Ctrl held deletes at once. Should that fail, it asks after all.
+  const trash = (e: MouseEvent) =>
+    e.metaKey || e.ctrlKey ? void deleteThread(t.id).catch(() => setDeleting(true)) : setDeleting(true);
   return (
     // On a touch screen, swiping the row left shows Delete: the row scrolls sideways and snaps open or shut, so the
     // browser does the dragging. With a mouse, a trash button shows on hover instead.
     <div
-      className={`group relative ${mine ? 'flex snap-x snap-mandatory overflow-x-hidden overscroll-x-contain [scrollbar-width:none] pointer-coarse:overflow-x-auto' : ''}`}
+      className={`group relative ${swipes ? 'flex snap-x snap-mandatory overflow-x-hidden overscroll-x-contain [scrollbar-width:none] pointer-coarse:overflow-x-auto' : ''}`}
     >
       <Link
         to="/c/$channelId/t/$threadId"
         params={{ channelId: t.channelId, threadId: t.id }}
-        className="block w-full shrink-0 snap-start border-b border-border px-3.5 py-3 hover:bg-muted"
-        activeProps={{ className: 'bg-muted' }}
-        inactiveProps={{ className: loud ? 'bg-primary/[0.07]' : '' }}
+        {...press}
+        onClick={(e) => {
+          if (!picking) return;
+          e.preventDefault();
+          if (mine) onPick?.(t.id);
+        }}
+        // Without this an iPhone answers a long press with a preview of the link.
+        className={`block w-full shrink-0 snap-start border-b border-border px-3.5 py-3 [-webkit-touch-callout:none] hover:bg-muted ${picking && !mine ? 'opacity-40' : ''}`}
+        activeProps={{ className: picking ? '' : 'bg-muted' }}
+        inactiveProps={{ className: loud || picked ? 'bg-primary/[0.07]' : '' }}
       >
         <span className={`flex items-center gap-2 ${pinned ? 'pr-8' : ''}`}>
-          {calm ? (
+          {picking && mine ? (
+            <span
+              className={`grid size-4 shrink-0 place-items-center rounded border ${picked ? 'border-primary bg-primary text-primary-foreground' : 'border-muted-foreground/50 bg-card'}`}
+            >
+              {picked && <Check size={12} strokeWidth={3} />}
+            </span>
+          ) : calm ? (
             <span className="size-2 shrink-0 rounded-full border border-muted-foreground/50" />
           ) : (
             <StatusDot status={t.status} />
@@ -1032,20 +1112,21 @@ export function ThreadRow({ thread: t }: { thread: Thread }) {
       </Link>
       {/* A pinned thread can be unpinned right in the list. The buttons lie on the row: a link cannot hold one. */}
       <div className="absolute top-1 right-1.5 flex">
-        {mine && (
+        {/* Shows on every row of this person's while Cmd or Ctrl is held, as a click deletes then. */}
+        {swipes && (
           <button
             type="button"
             aria-label="Delete thread"
-            title="Delete thread"
-            onClick={() => setDeleting(true)}
-            className="grid size-9 place-items-center rounded-md bg-muted text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-rose-600 focus-visible:opacity-100 pointer-coarse:hidden"
+            title="Delete thread (hold ⌘ or Ctrl to skip asking)"
+            onClick={trash}
+            className="grid size-9 place-items-center rounded-md bg-muted text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-rose-600 focus-visible:opacity-100 held:bg-rose-600 held:text-white held:opacity-100 pointer-coarse:hidden"
           >
             <Trash2 size={16} />
           </button>
         )}
-        {pinned && <PinButton thread={t} />}
+        {pinned && !picking && <PinButton thread={t} />}
       </div>
-      {mine && (
+      {swipes && (
         <button
           type="button"
           // Shuts the row again, so it is closed whether the thread is deleted or not.
@@ -1058,41 +1139,50 @@ export function ThreadRow({ thread: t }: { thread: Thread }) {
           Delete
         </button>
       )}
-      {deleting && <DeleteThread thread={t} onClose={() => setDeleting(false)} />}
+      {deleting && <DeleteThreads threads={[t]} onClose={() => setDeleting(false)} />}
     </div>
   );
 }
 
 const BUTTON = 'rounded-md border border-border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:opacity-50';
-const DANGER =
+export const DANGER =
   'rounded-md bg-rose-600 px-3 py-1.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50';
 
-// Asks before a thread is deleted for good. `onClose` runs when it is kept. Once it is deleted, the server tells
-// every screen and the thread is gone from them, this box with it.
-function DeleteThread({ thread, onClose }: { thread: Thread; onClose: () => void }) {
+type DeleteThreadsProps = { threads: Thread[]; onClose: () => void; onDeleted?: () => void };
+
+// Asks once before one or more threads are deleted for good, then deletes them all together. `onClose` runs when
+// they are kept, `onDeleted` once all are gone. The server tells every screen of each one it deletes, and the
+// thread is gone from them. One that could not be deleted stays, and the box says why.
+export function DeleteThreads({ threads, onClose, onDeleted }: DeleteThreadsProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const confirm = () => {
+  const one = threads.length === 1;
+  const confirm = async () => {
     setBusy(true);
-    deleteThread(thread.id).catch((err: Error) => {
-      setBusy(false);
-      setError(err.message);
-    });
+    const done = await Promise.allSettled(threads.map((t) => deleteThread(t.id)));
+    const failed = done.flatMap((d) => (d.status === 'rejected' ? [(d.reason as Error).message] : []));
+    if (!failed.length) return onDeleted?.();
+    setBusy(false);
+    setError(one ? failed[0] : `${failed.length} could not be deleted: ${failed[0]}`);
   };
+  const trees = threads.some((t) => t.path);
   return (
-    <Popup title="Delete this thread?">
+    <Popup title={one ? 'Delete this thread?' : `Delete ${threads.length} threads?`}>
       <p className="text-sm break-words text-muted-foreground">
-        “{thread.title}” and everything in it will be deleted for good, for everyone.
-        {thread.path &&
-          ' Its worktree and branch go too, with any changes in them, unless another thread still works there.'}
+        {one ? `“${threads[0].title}” and everything in it` : 'They and everything in them'} will be deleted for good,
+        for everyone.
+        {trees &&
+          (one
+            ? ' Its worktree and branch go too, with any changes in them, unless another thread still works there.'
+            : ' Their worktrees and branches go too, with any changes in them, unless another thread still works there.')}
       </p>
       {error && <p className="text-sm text-rose-500">{error}</p>}
       <div className="flex justify-end gap-2">
         <button type="button" autoFocus className={BUTTON} onClick={onClose}>
-          Keep it
+          {one ? 'Keep it' : 'Keep them'}
         </button>
-        <button type="button" disabled={busy} className={DANGER} onClick={confirm}>
-          {busy ? 'Deleting…' : 'Delete'}
+        <button type="button" disabled={busy} className={DANGER} onClick={() => void confirm()}>
+          {busy ? 'Deleting…' : one ? 'Delete' : `Delete ${threads.length}`}
         </button>
       </div>
     </Popup>
@@ -1196,7 +1286,7 @@ export function ThreadMenu({ thread }: { thread: Thread }) {
         </>
       )}
       {asking === 'rename' && <RenameThread thread={thread} onClose={() => setAsking(null)} />}
-      {asking === 'delete' && <DeleteThread thread={thread} onClose={() => setAsking(null)} />}
+      {asking === 'delete' && <DeleteThreads threads={[thread]} onClose={() => setAsking(null)} />}
     </div>
   );
 }

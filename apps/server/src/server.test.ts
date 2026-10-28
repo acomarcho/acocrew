@@ -3136,6 +3136,22 @@ test('a deleted thread takes its worktree and branches with it, changes and all,
   expect((await places(channel)).worktrees.map((worktree) => worktree.path)).not.toContain(folder);
 });
 
+// The thread list deletes all the threads someone ticked at once, so their worktrees go from one repository at once.
+test('threads deleted at the same time each take their own worktree and branch', async () => {
+  const channel = await addChannel(blog);
+  const worktreesBefore = git(blog, 'worktree', 'list');
+  const start = async (text: string) =>
+    (await (await post('/api/threads', { channelId: channel.id, text, from: 'main', ...HAIKU })).json()) as Thread;
+  const made = [await start('one'), await start('two'), await start('three'), await start('four')];
+
+  for (const res of await Promise.all(made.map(deleteThread))) expect(res.status).toBe(200);
+  for (const thread of made) {
+    expect(existsSync(thread.path!)).toBe(false);
+    expect(branches(blog)).not.toContain(`acocrew/${thread.id.slice(0, 8)}`);
+  }
+  expect(git(blog, 'worktree', 'list')).toBe(worktreesBefore);
+});
+
 test('a branch that was there before the thread, and that Claude only checked out in its worktree, stays', async () => {
   const channel = await addChannel();
   // Someone's own branch, from yesterday, with a commit of its own that is nowhere else.
