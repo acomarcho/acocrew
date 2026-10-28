@@ -15,6 +15,12 @@ const MIGRATIONS = fileURLToPath(new URL('../drizzle', import.meta.url));
 export function openDb(file: string | Buffer) {
   if (typeof file === 'string' && file !== ':memory:') mkdirSync(dirname(file), { recursive: true });
   const sqlite = new Database(file);
+  // Every query blocks the server (better-sqlite3 is synchronous), so a write must not wait for the disk to
+  // flush. With WAL, commits are appended to a side file and flushed only at checkpoints, and NORMAL is still
+  // crash-safe there: a power cut can lose the last few commits but never corrupts the file. A database held
+  // in memory stays in its own 'memory' mode.
+  sqlite.pragma('journal_mode = WAL');
+  sqlite.pragma('synchronous = NORMAL');
   sqlite.pragma('foreign_keys = ON');
   const db = drizzle(sqlite);
   migrate(db, { migrationsFolder: MIGRATIONS });

@@ -135,6 +135,7 @@ Why:
 
 - One machine, one file, nothing to install or run next to the server. We have no reason to want Postgres.
 - `better-sqlite3` answers right away instead of "later" (it is synchronous). That lets the server sign a browser up for a thread and read what is in the thread in one step, with nothing able to slip in between.
+- Because every query holds up the whole server, writes must not wait for the disk to flush. The file runs in WAL mode with `synchronous = NORMAL`: a write is appended to `acocrew.db-wal` and the disk is flushed only now and then (a "checkpoint"), not on every write. A power cut can lose the last few writes but never breaks the file. Without this, the server stalled for 10+ seconds while other programs kept the disk busy (issue #40). To copy the database by hand, stop the server first or use SQLite's `.backup`, since recent writes may still be only in `acocrew.db-wal`.
 
 Tables:
 
