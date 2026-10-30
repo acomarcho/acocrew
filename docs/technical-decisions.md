@@ -97,7 +97,7 @@ Why:
 
 - **No Next.** The server must be one long-running process, because it holds the Claude process per thread, paused permission prompts and connected sockets in memory. Next is built around short request handlers.
 - **TanStack Router** type checks links and URL parameters, so a renamed route fails the build instead of breaking for a user.
-- **zustand** holds what the web app knows, in two stores. `store.ts` has what the server sent (repositories, threads, people, the open thread). `drafts.ts` has what someone typed and has not sent yet, and saves it in the browser's local storage. A screen reads only the parts it shows, so typing or a streaming answer does not draw every screen again.
+- **zustand** holds what the web app knows, in two stores. `store.ts` has what the server sent (repositories, threads, people, the open thread). `drafts.ts` has what someone typed and has not sent yet, and saves it in the browser's local storage. A screen reads only the parts it shows, so typing or a streaming answer does not draw every screen again. The same goes inside a screen: in a thread, only the message box reads the draft, so typing does not draw the thread again. A thread also draws only its last 100 rows, and 100 more each time the reader scrolls near the top. A long thread has thousands, and drawing them all made every keystroke and every streamed chunk slow.
 - **Vite+** is one tool for what would otherwise be five. It came out as 1.0 on 2026-09-28, so it is new. The tools inside it (Vite, Vitest, Oxlint, Oxfmt) are mature, and going back to them directly is a small change. T3 Code uses the same setup.
 - **No build step for the server or shared code.** Node runs the TypeScript files directly.
 

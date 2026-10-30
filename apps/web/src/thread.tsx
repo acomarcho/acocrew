@@ -31,11 +31,13 @@ import {
   createContext,
   useContext,
   useEffect,
+  useEffectEvent,
   useLayoutEffect,
   useRef,
   useState,
   useSyncExternalStore,
   type ReactNode,
+  type RefObject,
 } from 'react';
 import { defaultRehypePlugins, Streamdown, type StreamdownProps } from 'streamdown';
 import { byDay, ChatBox, ChatWords, dayLabel, dayOf, follows, timeline, type Entry, type Show } from './chat';
@@ -367,6 +369,127 @@ function Todos({ todos }: { todos: Todo[] }) {
   );
 }
 
+// How many rows a thread shows at first, and how many more each time the reader scrolls near the top. A long
+// thread has thousands, and drawing them all made every update slow.
+const PAGE = 100;
+
+// The rows of the timeline that show: those from `from` (a time) on. Gives back where they start in `rows`.
+const shownFrom = (rows: Entry[], from: number) => {
+  const start = rows.findIndex((row) => row.at >= from);
+  return start < 0 ? rows.length : start;
+};
+
+// The thread's rows, from the last PAGE on. Near the top, PAGE earlier ones are added, and the view is kept
+// where it was. Made once the thread's content is in, so it starts at its last PAGE rows.
+function Rows({
+  rows,
+  scroller,
+  stick,
+}: {
+  rows: Entry[];
+  scroller: RefObject<HTMLDivElement | null>;
+  stick: RefObject<boolean>;
+}) {
+  const chatNew = useApp((state) => state.chatNew);
+  // A time, not a count, so new rows at the bottom do not push rows out at the top.
+  const [from, setFrom] = useState(() => rows.at(-PAGE)?.at ?? 0);
+  // While the reader is at the bottom, it is the last PAGE rows again whenever rows come or go (new ones
+  // streaming in, a switch of what shows), so the thread does not grow back to thousands of rows.
+  const [count, setCount] = useState(rows.length);
+  const last = rows.at(-PAGE)?.at ?? 0;
+  if (rows.length !== count) {
+    setCount(rows.length);
+    if (stick.current && last > from) setFrom(last);
+  }
+  const start = shownFrom(rows, from);
+  const top = useRef<HTMLDivElement>(null);
+  // The scroller and how far its view was from the bottom before earlier rows came in, to put it back there.
+  const kept = useRef<{ el: HTMLDivElement; gap: number } | null>(null);
+  const earlier = useEffectEvent((el: HTMLDivElement) => {
+    kept.current = { el, gap: el.scrollHeight - el.scrollTop };
+    setFrom(rows[Math.max(0, start - PAGE)].at);
+  });
+  useEffect(() => {
+    const el = scroller.current;
+    if (!top.current || !el) return;
+    // Watched again after each load, so a short page keeps loading until it fills the screen.
+    const watch = new IntersectionObserver(([seen]) => seen.isIntersecting && earlier(el), {
+      root: el,
+      rootMargin: '800px 0px 0px 0px',
+    });
+    watch.observe(top.current);
+    return () => watch.disconnect();
+  }, [start, scroller]);
+  useLayoutEffect(() => {
+    if (!kept.current) return;
+    const { el, gap } = kept.current;
+    el.scrollTop = el.scrollHeight - gap;
+    kept.current = null;
+  }, [from]);
+  return (
+    <>
+      {start > 0 && <div ref={top} className="h-px" />}
+      {byDay(rows.slice(start)).map((day) => (
+        // Keyed by the day, so switching what shows does not redraw a day (and close its open cards).
+        <DaySection key={dayOf(day[0].at)} at={day[0].at}>
+          {day.map((row, i) =>
+            row.kind === 'chat' ? (
+              <ChatRow key={`chat-${row.id}`} chat={row} fresh={row.id === chatNew} />
+            ) : (
+              <ItemView key={row.id} item={row} lead={byUser(day[i - 1])} />
+            ),
+          )}
+        </DaySection>
+      ))}
+    </>
+  );
+}
+
+// The box to write to Claude. It is its own component, so typing redraws only the box and not the thread.
+function Reply({
+  thread,
+  questions,
+  active,
+  onSend,
+}: {
+  thread: Thread;
+  questions: ReturnType<typeof useQuestions>;
+  active: boolean;
+  onSend: () => void;
+}) {
+  const commands = useCommands(`thread=${thread.id}`);
+  // What this person typed and has not sent yet. Of the settings it holds only what they changed. The rest
+  // follows the thread, so a teammate's change shows up here and is not undone by the next reply.
+  const draft = useDraft(thread.id);
+  const { model, effort, context, fast, access } = thread;
+  const settings: Settings = { model, effort, context, fast, access, ...draft.settings };
+  return (
+    <Composer
+      placeholder={
+        questions ? 'Type your own answer, or leave this blank to use the selected option' : 'Reply in thread'
+      }
+      value={draft}
+      onChange={(change) => editDraft(thread.id, change(draftOf(thread.id)))}
+      settings={settings}
+      onSettings={(next) => {
+        const changed = Object.entries(next).filter(([key, value]) => thread[key as keyof Settings] !== value);
+        editDraft(thread.id, { settings: Object.fromEntries(changed) });
+      }}
+      commands={commands}
+      canSendEmpty={questions?.canSend}
+      textOnly={Boolean(questions)}
+      onSend={async (message) => {
+        onSend();
+        // While Claude has a question open, the message box answers it.
+        if (questions) return questions.send(message.text);
+        await sendMessage(thread.id, { ...message, ...settings });
+        editDraft(thread.id, { settings: {} });
+      }}
+      onStop={active ? () => void stopThread(thread.id).catch(() => {}) : undefined}
+    />
+  );
+}
+
 // Whether the person can see this browser tab right now.
 const watchTab = (changed: () => void) => {
   document.addEventListener('visibilitychange', changed);
@@ -378,18 +501,11 @@ const tabVisible = () => !document.hidden;
 export function ThreadView({ thread, channel }: { thread: Thread; channel: Channel }) {
   const items = useApp((state) => state.items);
   const chats = useApp((state) => state.chats);
-  const chatNew = useApp((state) => state.chatNew);
   const unread = useApp((state) => state.unread[thread.id]);
   const seenAt = useApp((state) => state.seen[thread.id] ?? 0);
   // Which part of the thread shows, and who the message box writes to.
   const [show, setShow] = useState<Show>('all');
   const [to, setTo] = useState<'claude' | 'people'>('claude');
-  const commands = useCommands(`thread=${thread.id}`);
-  // What this person typed and has not sent yet. Of the settings it holds only what they changed. The rest
-  // follows the thread, so a teammate's change shows up here and is not undone by the next reply.
-  const draft = useDraft(thread.id);
-  const { model, effort, context, fast, access } = thread;
-  const settings: Settings = { model, effort, context, fast, access, ...draft.settings };
   // Follow new content only while the reader is at the bottom, so reading further up is not interrupted (see
   // `follows`). `lastTop` also records where our own jumps land, so a jump's scroll event (which can arrive
   // after the reader already turned the wheel up) does not count as the reader moving down.
@@ -483,18 +599,7 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
           }}
           className="min-h-0 flex-1 overflow-y-auto py-3"
         >
-          {byDay(rows).map((day) => (
-            // Keyed by the day, so switching what shows does not redraw a day (and close its open cards).
-            <DaySection key={dayOf(day[0].at)} at={day[0].at}>
-              {day.map((row, i) =>
-                row.kind === 'chat' ? (
-                  <ChatRow key={`chat-${row.id}`} chat={row} fresh={row.id === chatNew} />
-                ) : (
-                  <ItemView key={row.id} item={row} lead={byUser(day[i - 1])} />
-                ),
-              )}
-            </DaySection>
-          ))}
+          {items && <Rows rows={rows} scroller={scroller} stick={stick} />}
           {thread.status === 'working' && show !== 'people' && (
             <Working lead={byUser(rows.at(-1))} since={thread.since} />
           )}
@@ -526,29 +631,7 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
           </div>
           {to === 'people' && <ChatBox thread={thread} />}
           {to === 'claude' && (
-            <Composer
-              placeholder={
-                questions ? 'Type your own answer, or leave this blank to use the selected option' : 'Reply in thread'
-              }
-              value={draft}
-              onChange={(change) => editDraft(thread.id, change(draftOf(thread.id)))}
-              settings={settings}
-              onSettings={(next) => {
-                const changed = Object.entries(next).filter(([key, value]) => thread[key as keyof Settings] !== value);
-                editDraft(thread.id, { settings: Object.fromEntries(changed) });
-              }}
-              commands={commands}
-              canSendEmpty={questions?.canSend}
-              textOnly={Boolean(questions)}
-              onSend={async (message) => {
-                stick.current = true;
-                // While Claude has a question open, the message box answers it.
-                if (questions) return questions.send(message.text);
-                await sendMessage(thread.id, { ...message, ...settings });
-                editDraft(thread.id, { settings: {} });
-              }}
-              onStop={active ? () => void stopThread(thread.id).catch(() => {}) : undefined}
-            />
+            <Reply thread={thread} questions={questions} active={active} onSend={() => (stick.current = true)} />
           )}
         </div>
       </div>
