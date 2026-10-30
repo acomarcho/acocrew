@@ -1,6 +1,6 @@
 # Technical decisions
 
-Last updated: 2026-10-21
+Last updated: 2026-10-30
 
 ## What we are building
 
@@ -189,6 +189,18 @@ A file that is not an image (a zip, a PDF, a spreadsheet) cannot go inside the m
 4. When the message is handed to Claude, the server copies each file into `.attachments/` in the folder the thread works in, and ends the words with "Attached files:" and a line per path. That folder has a `.gitignore` of `*`, so the files are never committed by accident.
 
 Left out for now: images and files that were uploaded but never sent are never cleaned up, and a file cannot be downloaded again from a sent message.
+
+## How Claude shows a picture, a page or a drawing
+
+Claude can show people an image (PNG, JPEG, GIF, WebP, SVG), an HTML page or an Excalidraw drawing in its reply. It is the same idea as T3 Code: Claude saves the file where it works and writes `![title](path)`. The instructions of the acocrew tools tell it so.
+
+1. Before the message is drawn, a step in the web app (`shown.tsx`) points every image whose source is a file path at `GET /api/threads/<id>/shown?path=<path>`. Images from other sites stay blocked, so a reply cannot leak data by loading an address someone planted in a file Claude read.
+2. The server (`shown.ts`) gives the file back only if it is one of those kinds, at most 25MB, and inside the thread's folder once links are followed (the repository's folder for a thread with no worktree). Anything else is "not found", the same as a thread the person may not see.
+3. Every file comes with a `Content-Security-Policy` that has `sandbox`. An HTML page runs its scripts, but with an origin of its own: it cannot read the login cookie, the app's storage or the API, also when it is opened in a tab of its own. It can still reach other sites, so a page that loads a chart library from a CDN works.
+4. The web app picks how to show it from the ending. An image shows as an image, a page in a sandboxed frame, a drawing as a picture made by Excalidraw's own `exportToSvg`. Excalidraw is big, so it loads only when a reply has a drawing, and its fonts are copied into the build so drawing never asks a CDN.
+5. A click on an image or a drawing opens it big over the page, the same popup as attached images. It zooms with the wheel, a pinch, a double click or the buttons, and drags.
+
+The file is read each time it is shown, so a reply shows the file as it is now. If Claude changes or deletes it later, older replies change too.
 
 ## How the message box knows what Claude can run
 

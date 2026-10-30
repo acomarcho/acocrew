@@ -46,6 +46,8 @@ import { useCommands } from './commands';
 import { draftOf, editDraft, useDraft } from './drafts';
 import { answer, closeThread, markChatSeen, markSeen, openThread, sendMessage, stopThread, useApp } from './store';
 import { ShareButton } from './sharing';
+import { imageUrl } from './images';
+import { pluginsFor, ShownFile, shownPrefix } from './shown';
 import {
   Avatar,
   Composer,
@@ -65,13 +67,15 @@ type Tool = Extract<Item, { kind: 'tool' }>;
 // Both are made once, so a bubble that did not change is not drawn again while another one streams.
 const plugins = { code };
 // Claude reads files we do not control, and those could trick it into writing an image link that leaks data
-// the moment the browser loads it. So images from other sites are not loaded. Everything else is the default.
+// the moment the browser loads it. So images from other sites are not loaded, only files from the thread's folder
+// (see shown.tsx). Everything else is the default.
 type RehypePlugins = NonNullable<StreamdownProps['rehypePlugins']>;
 const [harden, hardenOptions] = defaultRehypePlugins.harden as [RehypePlugins[number], object];
 const rehypePlugins = Object.values({
   ...defaultRehypePlugins,
-  harden: [harden, { ...hardenOptions, allowedImagePrefixes: [] }],
+  harden: [harden, { ...hardenOptions, defaultOrigin: location.origin, allowedImagePrefixes: [shownPrefix()] }],
 }) as RehypePlugins;
+const components = { img: ShownFile };
 
 const clock = (at: number) => new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 
@@ -209,6 +213,7 @@ function ToolCard({ tool }: { tool: Tool }) {
 // Everything Claude does in a row (tools, answers, errors) sits under one "Claude" heading.
 // `nested` rows are a subagent's steps inside its card, which has no room for avatars.
 function ItemView({ item, lead, nested }: { item: Item; lead: boolean; nested?: boolean }) {
+  const threadId = useApp((state) => state.openId)!;
   if (item.kind === 'todos') return null;
   if (item.kind === 'message' && item.by === 'user') {
     return (
@@ -217,7 +222,7 @@ function ItemView({ item, lead, nested }: { item: Item; lead: boolean; nested?: 
           {/* A set height, so the chat does not jump when an image finishes loading. */}
           {item.images?.map((id) => (
             <span key={id} className="mr-2 mb-1 inline-block">
-              <Picture id={id} className="h-40 bg-card object-contain" />
+              <Picture src={imageUrl(id)} className="h-40 bg-card object-contain" />
             </span>
           ))}
           {item.files?.map((id) => (
@@ -250,7 +255,12 @@ function ItemView({ item, lead, nested }: { item: Item; lead: boolean; nested?: 
       )}
       {item.kind === 'message' && (
         <Copyable text={item.text} at={item.at}>
-          <Streamdown className="space-y-2 break-words" plugins={plugins} rehypePlugins={rehypePlugins}>
+          <Streamdown
+            className="space-y-2 break-words"
+            plugins={plugins}
+            rehypePlugins={pluginsFor(threadId, rehypePlugins)}
+            components={components}
+          >
             {item.text}
           </Streamdown>
         </Copyable>
