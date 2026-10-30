@@ -1514,6 +1514,46 @@ test('only png, jpeg, gif and webp up to 10MB are taken, and a message can only 
   expect((await say(thread, '', HAIKU)).status).toBe(400);
 });
 
+test('a message can show images, pages and drawings from the thread folder, and nothing outside it', async () => {
+  const thread = await startThread('make a chart');
+  const shown = (path: unknown) => ask(`/api/threads/${thread.id}/shown?path=${encodeURIComponent(String(path))}`);
+  mkdirSync(join(shop, 'out'), { recursive: true });
+  writeFileSync(join(shop, 'out', 'chart.png'), PNG);
+  writeFileSync(join(shop, 'out', 'page.html'), '<script>document.cookie</script>');
+  writeFileSync(join(shop, 'out', 'flow.excalidraw'), '{"elements":[]}');
+  writeFileSync(join(shop, 'out', 'notes.txt'), 'not shown');
+  writeFileSync(join(home, 'secret.png'), 'private');
+  symlinkSync(join(home, 'secret.png'), join(shop, 'out', 'link.png'));
+
+  const png = await shown('out/chart.png');
+  expect(png.headers.get('content-type')).toBe('image/png');
+  expect(png.headers.get('x-content-type-options')).toBe('nosniff');
+  expect(Buffer.from(await png.arrayBuffer())).toEqual(PNG);
+  // The same file by its full path.
+  expect((await shown(join(shop, 'out', 'chart.png'))).status).toBe(200);
+  // A page runs scripts, but in a sandbox with its own origin, so it never gets the login cookie.
+  const page = await shown('out/page.html');
+  expect(page.headers.get('content-type')).toMatch(/^text\/html/);
+  expect(page.headers.get('content-security-policy')).toMatch(/^sandbox allow-scripts/);
+  expect(page.headers.get('content-security-policy')).not.toMatch(/same-origin/);
+  expect((await shown('out/flow.excalidraw')).headers.get('content-type')).toBe('application/json');
+
+  for (const path of [
+    'out/notes.txt',
+    'out/link.png',
+    '../../secret.png',
+    join(home, 'secret.png'),
+    'out',
+    'out/gone.png',
+    '',
+  ]) {
+    expect((await shown(path)).status, path).toBe(404);
+  }
+  // A thread someone else may not see shows them nothing.
+  const jordan = await teammate('jordan');
+  expect((await as(jordan.cookie, () => shown('out/chart.png'))).status).toBe(404);
+});
+
 // A real zip, made with `zip -X` from two small files (notes.txt and stock.csv).
 const ZIP = readFileSync(new URL('./fixtures/notes.zip', import.meta.url));
 const sendFile = (body: Uint8Array, name: string) =>

@@ -40,6 +40,7 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { basename, join, sep } from 'node:path';
 import { WebSocketServer } from 'ws';
+import { findShown } from './shown.ts';
 import {
   createAuth,
   createUser,
@@ -583,6 +584,20 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
     if (!thread) return c.json({ error: 'Thread not found.' }, 404);
     c.set('thread', thread);
     await next();
+  });
+
+  // A file Claude shows in a message. It may change while Claude works, so the browser asks again each time.
+  app.get('/api/threads/:id/shown', (c) => {
+    const thread = c.get('thread');
+    const channel = db.select().from(channels).where(eq(channels.id, thread.channelId)).get()!;
+    const shown = findShown(thread.path ?? channel.path, c.req.query('path'));
+    if (!shown) return c.json({ error: 'File not found.' }, 404);
+    return c.body(readFileSync(shown.file), 200, {
+      'content-type': shown.type,
+      'content-security-policy': shown.csp,
+      'x-content-type-options': 'nosniff',
+      'cache-control': 'private, no-cache',
+    });
   });
 
   app.post('/api/threads/:id/messages', async (c) => {

@@ -58,7 +58,12 @@ import {
   Trash2,
   X,
   Zap,
+  ZoomIn,
+  ZoomOut,
+  Maximize,
 } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { TransformComponent, TransformWrapper } from 'react-zoom-pan-pinch';
 import { CommandMenu, suggest, useCommands, useSuggestions } from './commands';
 import {
   attachedTo,
@@ -253,35 +258,70 @@ export function Drawer({ children, className = '' }: { children: ReactNode; clas
   );
 }
 
-// An attached image, shown small. A click opens it big over the page. Escape closes that (the browser does
-// this for a dialog), and so does a click on the close button or anywhere beside the image.
-export function Picture({ id, className }: { id: string; className: string }) {
+// An image, shown small. A click opens it big over the page, where it zooms (wheel, pinch, double click or the
+// buttons) and drags. Escape closes it (the browser does this for a dialog), and so do the close button and a click
+// beside the image that did not end a drag. The popup sits in <body>, since the image can sit inside a paragraph.
+export function Picture({ src, alt = '', className }: { src: string; alt?: string; className: string }) {
   const popup = useRef<HTMLDialogElement>(null);
+  const [open, setOpen] = useState(false);
+  const dragged = useRef(false);
+  useEffect(() => {
+    if (open) popup.current?.showModal();
+  }, [open]);
+  const beside = (e: MouseEvent) => {
+    if (!dragged.current && !(e.target as Element).closest('img, button')) popup.current?.close();
+  };
+  const round = 'grid size-9 place-items-center rounded-full bg-black/60 text-white hover:bg-black';
   return (
     <>
-      <button type="button" onClick={() => popup.current?.showModal()} aria-label="View image" className="block">
-        <img src={imageUrl(id)} alt="" className={`cursor-zoom-in rounded-md border border-border ${className}`} />
+      <button type="button" onClick={() => setOpen(true)} aria-label="View image" className="block max-w-full">
+        <img src={src} alt={alt} className={`cursor-zoom-in rounded-md border border-border ${className}`} />
       </button>
-      {/* Covers the whole screen, so a click that misses the image lands on it. */}
-      <dialog
-        ref={popup}
-        onClick={() => popup.current?.close()}
-        className="size-full max-h-none max-w-none items-center justify-center bg-black/80 p-4 open:flex"
-      >
-        <img
-          src={imageUrl(id)}
-          alt="Attached image"
-          onClick={(e) => e.stopPropagation()}
-          className="max-h-full max-w-full rounded-md object-contain"
-        />
-        <button
-          type="button"
-          aria-label="Close"
-          className="absolute top-3 right-3 grid size-9 place-items-center rounded-full bg-black/60 text-white hover:bg-black"
-        >
-          <X size={18} />
-        </button>
-      </dialog>
+      {open &&
+        createPortal(
+          <dialog
+            ref={popup}
+            onClose={() => setOpen(false)}
+            onClick={beside}
+            className="size-full max-h-none max-w-none bg-black/80 p-0 open:block"
+          >
+            <TransformWrapper
+              maxScale={20}
+              // The default grows 1.5x per mouse wheel notch. This is 0.4x, and still smooth on a trackpad.
+              wheel={{ step: 0.004 }}
+              doubleClick={{ mode: 'toggle' }}
+              onPanningStart={() => (dragged.current = false)}
+              onPanning={() => (dragged.current = true)}
+              onPinch={() => (dragged.current = true)}
+            >
+              {({ zoomIn, zoomOut, resetTransform }) => (
+                <>
+                  <TransformComponent
+                    wrapperStyle={{ width: '100%', height: '100%' }}
+                    contentStyle={{ width: '100%', height: '100%', alignItems: 'center', justifyContent: 'center' }}
+                  >
+                    <img src={src} alt={alt || 'Image'} className="max-h-full max-w-full object-contain p-4" />
+                  </TransformComponent>
+                  <div className="absolute top-3 right-3 flex gap-2">
+                    <button type="button" aria-label="Zoom in" onClick={() => zoomIn()} className={round}>
+                      <ZoomIn size={18} />
+                    </button>
+                    <button type="button" aria-label="Zoom out" onClick={() => zoomOut()} className={round}>
+                      <ZoomOut size={18} />
+                    </button>
+                    <button type="button" aria-label="Fit" onClick={() => resetTransform()} className={round}>
+                      <Maximize size={18} />
+                    </button>
+                    <button type="button" aria-label="Close" onClick={() => popup.current?.close()} className={round}>
+                      <X size={18} />
+                    </button>
+                  </div>
+                </>
+              )}
+            </TransformWrapper>
+          </dialog>,
+          document.body,
+        )}
     </>
   );
 }
@@ -660,7 +700,7 @@ export function Composer({
               key={id}
               onRemove={() => onChange((value) => ({ ...value, images: value.images.filter((other) => other !== id) }))}
             >
-              <Picture id={id} className="size-16 object-cover" />
+              <Picture src={imageUrl(id)} className="size-16 object-cover" />
             </Removable>
           ))}
           {files.map((id) => (

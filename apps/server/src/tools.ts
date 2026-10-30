@@ -41,7 +41,10 @@ const INSTRUCTIONS = `These tools work on acocrew, the team chat app this conver
 - start_thread starts one. Use it when the user asks for a new acocrew thread or session, or wants work split
   into threads they can follow. By default it gets a new worktree from the newest main branch. When the user
   wants it in this worktree (this folder, here), pass worktree: "this".
-- list_threads, read_thread and send_message check on threads and reply in them.`;
+- list_threads, read_thread and send_message check on threads and reply in them.
+People read your replies in acocrew. To show them an image (png, jpg, gif, webp, svg), an HTML page or an
+Excalidraw drawing (.excalidraw), save it inside the folder you work in and put \`![title](path)\` in your reply.
+An HTML page must be one self-contained file.`;
 
 export function threadTools(threadId: string, { db, start, send }: ThreadOps) {
   const row = (id: string) => db.select(threadCols).from(threads).where(eq(threads.id, id)).get();
