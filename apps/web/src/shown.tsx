@@ -14,7 +14,9 @@ export const shownUrl = (threadId: string, path: string) =>
 const isPath = (src: string) => !/^([a-z][a-z\d+.-]*:|\/\/)/i.test(src);
 
 // Points images whose source is a file path at the thread's copy of that file, before `harden` sees them.
-function pointAt(threadId: string) {
+// The thread comes in as an option, not from a closure: Streamdown shares one markdown processor between all
+// plugin lists with the same plugin names and options, so a closure would keep the first thread's id for all.
+function pointAt({ threadId }: { threadId: string }) {
   const visit = (node: Node) => {
     const src = node.properties?.src;
     if (node.tagName === 'img' && typeof src === 'string' && isPath(src)) {
@@ -22,13 +24,13 @@ function pointAt(threadId: string) {
     }
     node.children?.forEach(visit);
   };
-  return () => visit;
+  return visit;
 }
 
 // The plugins for one thread, made once so bubbles that did not change are not drawn again.
 const made = new Map<string, RehypePlugins>();
 export function pluginsFor(threadId: string, rest: RehypePlugins) {
-  if (!made.has(threadId)) made.set(threadId, [pointAt(threadId), ...rest]);
+  if (!made.has(threadId)) made.set(threadId, [[pointAt, { threadId }], ...rest]);
   return made.get(threadId)!;
 }
 export const shownPrefix = () => `${location.origin}/api/threads/`;
