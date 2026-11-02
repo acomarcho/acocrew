@@ -774,6 +774,7 @@ export function Composer({
           icon={<Sparkles size={14} className="text-primary" />}
           value={settings.model}
           options={models}
+          search="Search models"
           onChange={(id) => {
             const picked = models.find((option) => option.id === id)!;
             onSettings({ ...settings, model: id, effort: nearestEffort(picked.efforts, settings.effort) });
