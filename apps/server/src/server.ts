@@ -590,7 +590,7 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
   app.get('/api/threads/:id/shown', (c) => {
     const thread = c.get('thread');
     const channel = db.select().from(channels).where(eq(channels.id, thread.channelId)).get()!;
-    const shown = findShown(thread.path ?? channel.path, c.req.query('path'));
+    const shown = findShown(thread.path ?? channel.path, c.req.query('path'), images);
     if (!shown) return c.json({ error: 'File not found.' }, 404);
     return c.body(readFileSync(shown.file), 200, {
       'content-type': shown.type,

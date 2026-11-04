@@ -1514,7 +1514,7 @@ test('only png, jpeg, gif and webp up to 10MB are taken, and a message can only 
   expect((await say(thread, '', HAIKU)).status).toBe(400);
 });
 
-test('a message can show images, pages and drawings from the thread folder, and nothing outside it', async () => {
+test('a message can show images, pages and drawings from anywhere, but not attachments or files of other kinds', async () => {
   const thread = await startThread('make a chart');
   const shown = (path: unknown) => ask(`/api/threads/${thread.id}/shown?path=${encodeURIComponent(String(path))}`);
   mkdirSync(join(shop, 'out'), { recursive: true });
@@ -1522,31 +1522,32 @@ test('a message can show images, pages and drawings from the thread folder, and 
   writeFileSync(join(shop, 'out', 'page.html'), '<script>document.cookie</script>');
   writeFileSync(join(shop, 'out', 'flow.excalidraw'), '{"elements":[]}');
   writeFileSync(join(shop, 'out', 'notes.txt'), 'not shown');
-  writeFileSync(join(home, 'secret.png'), 'private');
-  symlinkSync(join(home, 'secret.png'), join(shop, 'out', 'link.png'));
+  writeFileSync(join(home, 'elsewhere.png'), PNG);
+  symlinkSync(join(home, 'elsewhere.png'), join(shop, 'out', 'link.png'));
+  // A link named like an image, to a file that is not one (the database, say).
+  symlinkSync(join(shop, 'out', 'notes.txt'), join(shop, 'out', 'sneaky.png'));
+  // An image someone attached, maybe in a thread not everyone may see.
+  const attachment = join(images, await uploaded());
+  symlinkSync(attachment, join(shop, 'out', 'attached.png'));
 
   const png = await shown('out/chart.png');
   expect(png.headers.get('content-type')).toBe('image/png');
   expect(png.headers.get('x-content-type-options')).toBe('nosniff');
   expect(Buffer.from(await png.arrayBuffer())).toEqual(PNG);
-  // The same file by its full path.
-  expect((await shown(join(shop, 'out', 'chart.png'))).status).toBe(200);
   // A page runs scripts, but in a sandbox with its own origin, so it never gets the login cookie.
   const page = await shown('out/page.html');
   expect(page.headers.get('content-type')).toMatch(/^text\/html/);
   expect(page.headers.get('content-security-policy')).toMatch(/^sandbox allow-scripts/);
   expect(page.headers.get('content-security-policy')).not.toMatch(/same-origin/);
   expect((await shown('out/flow.excalidraw')).headers.get('content-type')).toBe('application/json');
+  // Outside the thread folder: by its full path, by going up, and through a link.
+  for (const path of [join(home, 'elsewhere.png'), '../../elsewhere.png', 'out/link.png']) {
+    const res = await shown(path);
+    expect(res.status, path).toBe(200);
+    expect(Buffer.from(await res.arrayBuffer())).toEqual(PNG);
+  }
 
-  for (const path of [
-    'out/notes.txt',
-    'out/link.png',
-    '../../secret.png',
-    join(home, 'secret.png'),
-    'out',
-    'out/gone.png',
-    '',
-  ]) {
+  for (const path of ['out/notes.txt', 'out/sneaky.png', attachment, 'out/attached.png', 'out', 'out/gone.png', '']) {
     expect((await shown(path)).status, path).toBe(404);
   }
   // A thread someone else may not see shows them nothing.
