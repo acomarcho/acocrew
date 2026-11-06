@@ -58,6 +58,7 @@ import {
   channelCols,
   chatCols,
   chatSeen,
+  findItem,
   listAutomations,
   listChannels,
   listSeen,
@@ -65,6 +66,8 @@ import {
   listUnread,
   loadChats,
   loadItems,
+  opening,
+  pageOf,
   threadCols,
   type Db,
   type StoredThread,
@@ -600,6 +603,19 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
     });
   });
 
+  // The rows of a thread before a time, for a reader who scrolled up to them (see `Page`).
+  app.get('/api/threads/:id/items', (c) => {
+    const before = Number(c.req.query('before'));
+    if (!before) return c.json({ error: 'Needs the time to go back from.' }, 400);
+    return c.json(pageOf(loadItems(db, c.get('thread').id), before));
+  });
+
+  // A tool card as it is now, with what went in and out of it, for a reader who opened it.
+  app.get('/api/threads/:id/items/:itemId', (c) => {
+    const item = findItem(db, c.get('thread').id, c.req.param('itemId'));
+    return item ? c.json(item) : c.json({ error: 'Not found.' }, 404);
+  });
+
   app.post('/api/threads/:id/messages', async (c) => {
     const message = readMessage(await c.req.json().catch(() => ({})), store, attached);
     if (!message) return c.json({ error: 'Needs a message and a full set of settings.' }, 400);
@@ -874,15 +890,18 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
         hub.send(ws, { type: 'hello', ...lists, utcOffset: -new Date().getTimezoneOffset() });
       },
       // The browser says which thread it is looking at. It is signed up for that thread's events and gets
-      // everything so far in the same step, so nothing can slip in between.
+      // how the thread is now (see `opening`) in the same step, so nothing can slip in between.
       onMessage(message, ws) {
-        const { threadId } = JSON.parse(String(message.data)) as ClientEvent;
+        const { threadId, from } = JSON.parse(String(message.data)) as ClientEvent;
         const { id } = c.get('user');
         if (!findThread(threadId, id)) return;
         hub.open(ws, threadId);
-        const items = [...loadItems(db, threadId), ...runner.live(threadId)].sort((a, b) => a.at - b.at);
+        const page = opening(
+          [...loadItems(db, threadId), ...runner.live(threadId)],
+          typeof from === 'number' ? from : undefined,
+        );
         const chat = { chats: loadChats(db, threadId), chatSeen: chatSeen(db, id, threadId) };
-        hub.send(ws, { type: 'items', threadId, items, ...chat });
+        hub.send(ws, { type: 'items', threadId, ...page, ...chat });
       },
       onClose: (_, ws) => void hub.remove(ws),
     })),

@@ -1,6 +1,6 @@
 # Technical decisions
 
-Last updated: 2026-10-30
+Last updated: 2026-11-06
 
 ## What we are building
 
@@ -44,7 +44,7 @@ The patterns we take from T3 Code:
 2. **Translate before sending to any screen.** Raw SDK messages are turned into our own events. Each event carries the whole item (for example the full chat bubble as it looks now) with a stable id, so receiving the same event twice is harmless.
 3. **A permission prompt is a paused function call.** `canUseTool` creates a promise, stores it under a request id, and waits. The UI shows the question. The answer resolves the promise.
 4. **Number everything, then fan out.** Every event is saved to a log and gets a number that only goes up. After saving, it is sent to every device subscribed to that thread over a WebSocket.
-5. **Late joiners get a snapshot plus the rest.** A device that opens a thread mid-turn gets the current state stamped with a number, then only the events after that number. The server starts listening for that device first and takes the snapshot second, so nothing falls in the gap.
+5. **Late joiners get a snapshot plus the rest.** A device that opens a thread mid-turn gets the current state stamped with a number, then only the events after that number. The server starts listening for that device first and takes the snapshot second, so nothing falls in the gap. The snapshot is not the whole thread: see the thread rows under Decision 4.
 6. **Messages go straight in.** Several people can send to the same thread. A message is handed to Claude right away. If Claude is busy it picks the message up when it can, sometimes inside the turn that is already running.
 7. **Stop and resume.** Stop interrupts and closes the Claude process. The next message starts a new process that resumes the same session.
 
@@ -97,7 +97,7 @@ Why:
 
 - **No Next.** The server must be one long-running process, because it holds the Claude process per thread, paused permission prompts and connected sockets in memory. Next is built around short request handlers.
 - **TanStack Router** type checks links and URL parameters, so a renamed route fails the build instead of breaking for a user.
-- **zustand** holds what the web app knows, in two stores. `store.ts` has what the server sent (repositories, threads, people, the open thread). `drafts.ts` has what someone typed and has not sent yet, and saves it in the browser's local storage. A screen reads only the parts it shows, so typing or a streaming answer does not draw every screen again. The same goes inside a screen: in a thread, only the message box reads the draft, so typing does not draw the thread again. A thread also draws only its last 100 rows, and 100 more each time the reader scrolls near the top. A long thread has thousands, and drawing them all made every keystroke and every streamed chunk slow.
+- **zustand** holds what the web app knows, in two stores. `store.ts` has what the server sent (repositories, threads, people, the open thread). `drafts.ts` has what someone typed and has not sent yet, and saves it in the browser's local storage. A screen reads only the parts it shows, so typing or a streaming answer does not draw every screen again. The same goes inside a screen: in a thread, only the message box reads the draft, so typing does not draw the thread again. A thread also draws only its last 100 rows, and 100 more each time the reader scrolls near the top. A long thread has thousands, and drawing them all made every keystroke and every streamed chunk slow. The server sends rows the same way. Opening a thread gets its last 100 rows (with the steps inside their subagent cards), plus the to-do list and anything still going on, however far back it started. Once the reader has scrolled through what the browser has, it asks for the 100 rows before (`GET /api/threads/:id/items?before=`). A finished tool card also comes without what went in and out. That is most of a thread (97% of a 10MB one), and it only shows on a card someone opens, so the card asks for it then (`GET /api/threads/:id/items/:itemId`). The longest threads went from 10 to 25MB on opening to under 400KB.
 - **Vite+** is one tool for what would otherwise be five. It came out as 1.0 on 2026-09-28, so it is new. The tools inside it (Vite, Vitest, Oxlint, Oxfmt) are mature, and going back to them directly is a small change. T3 Code uses the same setup.
 - **No build step for the server or shared code.** Node runs the TypeScript files directly.
 

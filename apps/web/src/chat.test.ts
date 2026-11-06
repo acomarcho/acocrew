@@ -199,3 +199,13 @@ test('the page getting shorter at the bottom does not count as the reader scroll
   page.grow(100);
   expect(page.fromBottom()).toBe(0);
 });
+
+test('a thread loaded from some time on shows nothing from before it, chat included', () => {
+  const said = (id: number, at: number) => ({ id, at, userId: 'ann', text: 'hi', tagged: [] }) as Chat;
+  const bubble = (id: string, at: number) => ({ id, kind: 'message', by: 'claude', text: id, at }) as Item;
+  const items = [bubble('old background card', 5), bubble('first loaded', 100), bubble('last', 300)];
+  const chats = [said(1, 50), said(2, 200)];
+  const at = (rows: { at: number }[]) => rows.map((row) => row.at);
+  expect(at(timeline(items, chats, 'all', 100))).toEqual([100, 200, 300]);
+  expect(at(timeline(items, chats, 'all'))).toEqual([5, 50, 100, 200, 300]);
+});

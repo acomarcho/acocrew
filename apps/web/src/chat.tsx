@@ -13,10 +13,12 @@ export type Entry = Item | ({ kind: 'chat' } & Chat);
 export type Show = 'all' | 'claude' | 'people';
 
 // Everything in a thread in the order it happened: what was said to and done by Claude, with what people wrote
-// to each other in between. `show` leaves one of the two out.
-export function timeline(items: Item[], chats: Chat[], show: Show): Entry[] {
+// to each other in between. `show` leaves one of the two out. Only from the time `from` on, when the thread is
+// loaded from there: anything from before would sit above rows still to come.
+export function timeline(items: Item[], chats: Chat[], show: Show, from: number | null = null): Entry[] {
   const said = chats.map((chat) => ({ kind: 'chat' as const, ...chat }));
-  return [...(show === 'people' ? [] : items), ...(show === 'claude' ? [] : said)].sort((a, b) => a.at - b.at);
+  const all = [...(show === 'people' ? [] : items), ...(show === 'claude' ? [] : said)];
+  return all.filter((row) => row.at >= (from ?? -Infinity)).sort((a, b) => a.at - b.at);
 }
 
 // Which day something happened on this device's clock.
