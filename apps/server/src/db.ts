@@ -127,24 +127,26 @@ function brief(item: Item): Item {
   return rest;
 }
 
-// The last PAGE rows of a thread before `before` (a time), and the steps inside their cards. A step comes after
-// its card, so going through in time order meets the card first.
-export function pageOf(items: Item[], before = Infinity): Page {
+// The rows of a thread before `before` (a time), and the steps inside their cards: the last PAGE of them, or all
+// of them from the time `start` on. A step comes after its card, so going through in time order meets the card first.
+export function pageOf(items: Item[], before = Infinity, start?: number): Page {
   const sorted = items.toSorted((a, b) => a.at - b.at);
   const rows = sorted.filter((item) => !item.parent && item.at < before);
-  const from = rows.length > PAGE ? rows[rows.length - PAGE].at : null;
+  const from = start ?? rows.at(-PAGE)?.at ?? 0;
   const kept = new Set<string>();
   const page = sorted.filter((item) => {
-    const keep = item.parent ? kept.has(item.parent) : item.at >= (from ?? -Infinity) && item.at < before;
+    const keep = item.parent ? kept.has(item.parent) : item.at >= from && item.at < before;
     if (keep) kept.add(item.id);
     return keep;
   });
-  return { items: page.map(brief), from };
+  return { items: page.map(brief), from: (rows[0]?.at ?? from) < from ? from : null };
 }
 
-// What a thread opens with: its last page, and what is still going on in it however long ago that started.
-export function opening(items: Item[]): Page {
-  const { items: page, from } = pageOf(items);
+// What a thread opens with: its last page (or its rows from `start` on, for a browser that had those already), and
+// what is still going on in it however long ago that started (the to-do list, unfinished tools). The steps that
+// finished inside such a card come with the page the card is on.
+export function opening(items: Item[], start?: number): Page {
+  const { items: page, from } = pageOf(items, Infinity, start);
   const shown = new Set(page.map((item) => item.id));
   const going = (item: Item) => item.kind === 'todos' || (item.kind === 'tool' && !item.done);
   const current = items.filter((item) => going(item) && !shown.has(item.id));

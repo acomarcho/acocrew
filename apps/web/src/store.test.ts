@@ -203,7 +203,8 @@ test('the app fills up from the socket, follows the open thread, and forgets it 
   vi.useRealTimers();
   expect(Socket.last).not.toBe(first);
   Socket.last.onopen();
-  expect(JSON.parse(Socket.last.sent[0])).toEqual({ type: 'open', threadId: 't' });
+  // From as far back as the thread was in: all of it.
+  expect(JSON.parse(Socket.last.sent[0])).toEqual({ type: 'open', threadId: 't', from: 0 });
 
   hangUp();
   expect(useApp.getState()).toMatchObject({ ...START, navOpen: false });

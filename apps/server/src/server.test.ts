@@ -409,8 +409,8 @@ async function connect() {
     closed: new Promise<void>((resolve) => socket.once('close', () => resolve())),
     items,
     // Opens a thread and waits for everything in it so far.
-    async open(threadId: string) {
-      socket.send(JSON.stringify({ type: 'open', threadId }));
+    async open(threadId: string, from?: number) {
+      socket.send(JSON.stringify({ type: 'open', threadId, from }));
       await until('items', (e) => e.threadId === threadId);
     },
     // Waits until the thread next reports this status.
@@ -1177,6 +1177,19 @@ test('a long thread opens with its last 100 rows, and the ones before come a pag
   expect(last.from).toBeNull();
   expect(ids(last.items).filter((id) => id.startsWith('tool-'))).toEqual(rows(0, 50));
   expect(last.items[0]).toMatchObject({ kind: 'message', text: 'make notes' });
+
+  // After a reconnect the browser opens the thread again, from as far back as it had it. 0 is all of it.
+  const again = async (from: number) => {
+    await tab.open(thread.id, from);
+    return tab.events.findLast((e) => e.type === 'items') as Extract<ServerEvent, { type: 'items' }>;
+  };
+  const back = await again(second.from!);
+  expect(back.from).toBe(second.from);
+  expect(ids(back.items.filter((item) => !item.parent && item.at >= back.from!))).toEqual(rows(50, 250));
+  const whole = await again(0);
+  expect(whole.from).toBeNull();
+  // The to-do list and the background card came with the opening and with the last page.
+  expect(whole.items).toHaveLength(opened.items.length + second.items.length + last.items.length - 2);
 });
 
 test('opening a card gets what went in and out of it, for people who see the thread only', async () => {

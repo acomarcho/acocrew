@@ -408,17 +408,19 @@ const shownFrom = (rows: Entry[], from: number) => {
 // The thread's rows, from the last PAGE on. Near the top, PAGE earlier ones are added, and the view is kept
 // where it was. Once all the rows the browser has are shown, the next page is asked of the server, and shown
 // when it is in. Made once the thread's content is in, so it starts at its last PAGE rows.
+// `loadedFrom` is the time the rows the browser has start at, null when they are all in.
 function Rows({
   rows,
+  loadedFrom,
   scroller,
   stick,
 }: {
   rows: Entry[];
+  loadedFrom: number | null;
   scroller: RefObject<HTMLDivElement | null>;
   stick: RefObject<boolean>;
 }) {
   const chatNew = useApp((state) => state.chatNew);
-  const more = useApp((state) => state.itemsFrom !== null);
   // A time, not a count, so new rows at the bottom do not push rows out at the top.
   const [from, setFrom] = useState(() => rows.at(-PAGE)?.at ?? 0);
   // While the reader is at the bottom, it is the last PAGE rows again whenever rows come or go (new ones
@@ -441,15 +443,14 @@ function Rows({
   useEffect(() => {
     const el = scroller.current;
     if (!top.current || !el) return;
-    // Watched again after each load (a page coming in moves `start`), so a short page keeps loading until it
-    // fills the screen.
+    // Watched again after each load, so a short page keeps loading until it fills the screen.
     const watch = new IntersectionObserver(([seen]) => seen.isIntersecting && earlier(el), {
       root: el,
       rootMargin: '800px 0px 0px 0px',
     });
     watch.observe(top.current);
     return () => watch.disconnect();
-  }, [start, more, scroller]);
+  }, [start, loadedFrom, scroller]);
   useLayoutEffect(() => {
     if (!kept.current) return;
     const { el, gap } = kept.current;
@@ -458,7 +459,7 @@ function Rows({
   }, [from]);
   return (
     <>
-      {(start > 0 || more) && <div ref={top} className="h-px" />}
+      {(start > 0 || loadedFrom !== null) && <div ref={top} className="h-px" />}
       {byDay(rows.slice(start)).map((day) => (
         // Keyed by the day, so switching what shows does not redraw a day (and close its open cards).
         <DaySection key={dayOf(day[0].at)} at={day[0].at}>
@@ -546,7 +547,9 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
   const all = items ?? [];
   // What a subagent did is shown inside its card, not in the main flow.
   const top = all.filter((item) => !item.parent);
-  const rows = timeline(top, chats, show, itemsFrom);
+  // All of the chat is in, so with only the chat showing there is nothing to load.
+  const loadedFrom = show === 'people' ? null : itemsFrom;
+  const rows = timeline(top, chats, show, loadedFrom);
   const todos = all.find((item) => item.kind === 'todos');
   // The first thing Claude is waiting on the user for, wherever it is (a subagent's step counts too).
   const asking = all.find(isAsking);
@@ -630,7 +633,7 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
           }}
           className="min-h-0 flex-1 overflow-y-auto py-3"
         >
-          {items && <Rows rows={rows} scroller={scroller} stick={stick} />}
+          {items && <Rows rows={rows} loadedFrom={loadedFrom} scroller={scroller} stick={stick} />}
           {thread.status === 'working' && show !== 'people' && (
             <Working lead={byUser(rows.at(-1))} since={thread.since} />
           )}

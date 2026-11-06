@@ -892,11 +892,14 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
       // The browser says which thread it is looking at. It is signed up for that thread's events and gets
       // how the thread is now (see `opening`) in the same step, so nothing can slip in between.
       onMessage(message, ws) {
-        const { threadId } = JSON.parse(String(message.data)) as ClientEvent;
+        const { threadId, from } = JSON.parse(String(message.data)) as ClientEvent;
         const { id } = c.get('user');
         if (!findThread(threadId, id)) return;
         hub.open(ws, threadId);
-        const page = opening([...loadItems(db, threadId), ...runner.live(threadId)]);
+        const page = opening(
+          [...loadItems(db, threadId), ...runner.live(threadId)],
+          typeof from === 'number' ? from : undefined,
+        );
         const chat = { chats: loadChats(db, threadId), chatSeen: chatSeen(db, id, threadId) };
         hub.send(ws, { type: 'items', threadId, ...page, ...chat });
       },

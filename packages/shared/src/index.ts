@@ -285,8 +285,9 @@ export type ServerEvent =
 // the one in the `items` event.
 export type Page = { items: Item[]; from: number | null };
 
-// What the web app sends over the WebSocket: which thread it is looking at.
-export type ClientEvent = { type: 'open'; threadId: string };
+// What the web app sends over the WebSocket: which thread it is looking at. `from` is set when it opens the thread
+// again (after a reconnect): it wants the rows from that time on, as many as it had.
+export type ClientEvent = { type: 'open'; threadId: string; from?: number };
 
 export type Folder = { name: string; path: string; isRepo: boolean };
 export type FolderList = { path: string; parent: string | null; folders: Folder[] };

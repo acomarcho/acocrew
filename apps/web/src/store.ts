@@ -244,10 +244,11 @@ export function connect(recheck: () => Promise<unknown>) {
   const open = () => {
     const ws = new WebSocket(location.origin.replace(/^http/, 'ws') + WS_PATH);
     socket = ws;
-    // After a reconnect, ask again for the thread on screen so nothing is missed.
+    // After a reconnect, ask again for the thread on screen so nothing is missed, from as far back as it was in
+    // (0 when all of it was).
     ws.onopen = () => {
-      const { openId } = useApp.getState();
-      if (openId) tell({ type: 'open', threadId: openId });
+      const { openId, items, itemsFrom } = useApp.getState();
+      if (openId) tell({ type: 'open', threadId: openId, from: items ? (itemsFrom ?? 0) : undefined });
     };
     ws.onmessage = (message) => {
       const event: ServerEvent = JSON.parse(message.data);
