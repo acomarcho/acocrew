@@ -105,8 +105,10 @@ export type Item = { id: string; at: number; parent?: string } & (
       kind: 'tool';
       name: string;
       detail: string;
-      input: string;
-      output: string;
+      // Left out of a finished card when a thread is opened: they are most of a thread, and only show on a card
+      // someone opens. The card asks for them then.
+      input?: string;
+      output?: string;
       done: boolean;
       failed: boolean;
       endAt?: number;
@@ -266,8 +268,11 @@ export type ServerEvent =
   | { type: 'thread'; thread: Thread }
   // The person may no longer see this thread.
   | { type: 'thread-gone'; id: string }
-  // Everything in a thread so far. `chatSeen` is the id of the last chat message this person had on screen.
-  | { type: 'items'; threadId: string; items: Item[]; chats: Chat[]; chatSeen: number }
+  // A thread as it is opened: its last rows, and what is still going on in it however long ago it started (the
+  // to-do list, unfinished tools). `from` is the time those rows start at, null when they are the whole thread.
+  // The rows before come a page at a time (see `Page`). `chatSeen` is the id of the last chat message this person
+  // had on screen.
+  | { type: 'items'; threadId: string; items: Item[]; from: number | null; chats: Chat[]; chatSeen: number }
   // Someone wrote in a thread's chat. Sent to everyone who sees the thread, wherever they are in the app.
   | { type: 'chat'; threadId: string; chat: Chat }
   // How much chat is new to the person now, for the threads where that changed.
@@ -275,6 +280,10 @@ export type ServerEvent =
   | { type: 'item'; threadId: string; item: Item }
   // Words to add to the end of a bubble that Claude is still writing.
   | { type: 'delta'; threadId: string; itemId: string; text: string };
+
+// The rows of a thread before some time: as many as a thread opens with, and the steps inside them. `from` is like
+// the one in the `items` event.
+export type Page = { items: Item[]; from: number | null };
 
 // What the web app sends over the WebSocket: which thread it is looking at.
 export type ClientEvent = { type: 'open'; threadId: string };

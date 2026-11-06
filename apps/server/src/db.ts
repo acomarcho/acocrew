@@ -1,6 +1,6 @@
-import type { Item, Seen, Thread, Unread, Visibility } from '@acocrew/shared';
+import type { Item, Page, Seen, Thread, Unread, Visibility } from '@acocrew/shared';
 import Database from 'better-sqlite3';
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { mkdirSync } from 'node:fs';
@@ -106,6 +106,49 @@ export function loadItems(db: Db, threadId: string): Item[] {
   const items = new Map<string, Item>();
   for (const row of rows) items.set(row.item.id, row.item);
   return [...items.values()];
+}
+
+// The newest content of one item.
+export const findItem = (db: Db, threadId: string, id: string) =>
+  db
+    .select({ item: events.item })
+    .from(events)
+    .where(and(eq(events.threadId, threadId), sql`json_extract(${events.item}, '$.id') = ${id}`))
+    .orderBy(desc(events.seq))
+    .get()?.item;
+
+// How many rows a thread opens with, and how many more come each time the reader scrolls near the top.
+export const PAGE = 100;
+
+// A finished tool card without what went in and out (see `Item`).
+function brief(item: Item): Item {
+  if (item.kind !== 'tool' || !item.done) return item;
+  const { input: _, output: __, ...rest } = item;
+  return rest;
+}
+
+// The last PAGE rows of a thread before `before` (a time), and the steps inside their cards. A step comes after
+// its card, so going through in time order meets the card first.
+export function pageOf(items: Item[], before = Infinity): Page {
+  const sorted = items.toSorted((a, b) => a.at - b.at);
+  const rows = sorted.filter((item) => !item.parent && item.at < before);
+  const from = rows.length > PAGE ? rows[rows.length - PAGE].at : null;
+  const kept = new Set<string>();
+  const page = sorted.filter((item) => {
+    const keep = item.parent ? kept.has(item.parent) : item.at >= (from ?? -Infinity) && item.at < before;
+    if (keep) kept.add(item.id);
+    return keep;
+  });
+  return { items: page.map(brief), from };
+}
+
+// What a thread opens with: its last page, and what is still going on in it however long ago that started.
+export function opening(items: Item[]): Page {
+  const { items: page, from } = pageOf(items);
+  const shown = new Set(page.map((item) => item.id));
+  const going = (item: Item) => item.kind === 'todos' || (item.kind === 'tool' && !item.done);
+  const current = items.filter((item) => going(item) && !shown.has(item.id));
+  return { items: [...current, ...page].sort((a, b) => a.at - b.at), from };
 }
 
 export const chatCols = { id: chats.id, at: chats.at, userId: chats.userId, text: chats.text, tagged: chats.tagged };

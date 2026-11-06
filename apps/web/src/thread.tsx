@@ -44,7 +44,18 @@ import { byDay, ChatBox, ChatWords, dayLabel, dayOf, follows, timeline, type Ent
 import { ApprovalPanel, isAsking, QuestionPanel, useQuestions } from './pending';
 import { useCommands } from './commands';
 import { draftOf, editDraft, useDraft } from './drafts';
-import { answer, closeThread, markChatSeen, markSeen, openThread, sendMessage, stopThread, useApp } from './store';
+import {
+  answer,
+  closeThread,
+  loadOlder,
+  loadTool,
+  markChatSeen,
+  markSeen,
+  openThread,
+  sendMessage,
+  stopThread,
+  useApp,
+} from './store';
 import { ShareButton } from './sharing';
 import { imageUrl } from './images';
 import { pluginsFor, ShownFile, shownPrefix } from './shown';
@@ -160,8 +171,13 @@ function Block({ label, text }: { label: string; text: string }) {
 // One thing Claude did. Click it to see what went in, what came out, and (for a subagent) every step it took.
 function ToolCard({ tool }: { tool: Tool }) {
   const under = useContext(ThreadCtx);
+  const threadId = useApp((state) => state.openId)!;
   const asking = tool.ask === 'pending' && !tool.done;
   const [open, setOpen] = useState(false);
+  const loaded = tool.input !== undefined;
+  useEffect(() => {
+    if (open && !loaded) loadTool(threadId, tool.id).catch(() => {});
+  }, [open, loaded, threadId, tool.id]);
   const steps = under(tool.id);
   const stepTools = steps.filter((step) => step.kind === 'tool');
   const lastStep = stepTools.at(-1);
@@ -195,7 +211,7 @@ function ToolCard({ tool }: { tool: Tool }) {
       </button>
       {open && (
         <div className="space-y-2.5 border-t border-border p-2.5">
-          <Block label="What went in" text={tool.input} />
+          <Block label="What went in" text={tool.input ?? 'Loading…'} />
           {steps.length > 0 && (
             <div className="rounded-md border border-border bg-background py-1">
               {steps.map((step) => (
@@ -203,7 +219,7 @@ function ToolCard({ tool }: { tool: Tool }) {
               ))}
             </div>
           )}
-          <Block label="What came out" text={tool.output} />
+          <Block label="What came out" text={tool.output ?? ''} />
         </div>
       )}
     </div>
@@ -380,7 +396,7 @@ function Todos({ todos }: { todos: Todo[] }) {
 }
 
 // How many rows a thread shows at first, and how many more each time the reader scrolls near the top. A long
-// thread has thousands, and drawing them all made every update slow.
+// thread has thousands, and drawing them all made every update slow. The server sends rows by the same count.
 const PAGE = 100;
 
 // The rows of the timeline that show: those from `from` (a time) on. Gives back where they start in `rows`.
@@ -390,7 +406,8 @@ const shownFrom = (rows: Entry[], from: number) => {
 };
 
 // The thread's rows, from the last PAGE on. Near the top, PAGE earlier ones are added, and the view is kept
-// where it was. Made once the thread's content is in, so it starts at its last PAGE rows.
+// where it was. Once all the rows the browser has are shown, the next page is asked of the server, and shown
+// when it is in. Made once the thread's content is in, so it starts at its last PAGE rows.
 function Rows({
   rows,
   scroller,
@@ -401,6 +418,7 @@ function Rows({
   stick: RefObject<boolean>;
 }) {
   const chatNew = useApp((state) => state.chatNew);
+  const more = useApp((state) => state.itemsFrom !== null);
   // A time, not a count, so new rows at the bottom do not push rows out at the top.
   const [from, setFrom] = useState(() => rows.at(-PAGE)?.at ?? 0);
   // While the reader is at the bottom, it is the last PAGE rows again whenever rows come or go (new ones
@@ -416,20 +434,22 @@ function Rows({
   // The scroller and how far its view was from the bottom before earlier rows came in, to put it back there.
   const kept = useRef<{ el: HTMLDivElement; gap: number } | null>(null);
   const earlier = useEffectEvent((el: HTMLDivElement) => {
+    if (start === 0) return void loadOlder().catch(() => {});
     kept.current = { el, gap: el.scrollHeight - el.scrollTop };
     setFrom(rows[Math.max(0, start - PAGE)].at);
   });
   useEffect(() => {
     const el = scroller.current;
     if (!top.current || !el) return;
-    // Watched again after each load, so a short page keeps loading until it fills the screen.
+    // Watched again after each load (a page coming in moves `start`), so a short page keeps loading until it
+    // fills the screen.
     const watch = new IntersectionObserver(([seen]) => seen.isIntersecting && earlier(el), {
       root: el,
       rootMargin: '800px 0px 0px 0px',
     });
     watch.observe(top.current);
     return () => watch.disconnect();
-  }, [start, scroller]);
+  }, [start, more, scroller]);
   useLayoutEffect(() => {
     if (!kept.current) return;
     const { el, gap } = kept.current;
@@ -438,7 +458,7 @@ function Rows({
   }, [from]);
   return (
     <>
-      {start > 0 && <div ref={top} className="h-px" />}
+      {(start > 0 || more) && <div ref={top} className="h-px" />}
       {byDay(rows.slice(start)).map((day) => (
         // Keyed by the day, so switching what shows does not redraw a day (and close its open cards).
         <DaySection key={dayOf(day[0].at)} at={day[0].at}>
@@ -510,6 +530,7 @@ const tabVisible = () => !document.hidden;
 // The full chat for one thread.
 export function ThreadView({ thread, channel }: { thread: Thread; channel: Channel }) {
   const items = useApp((state) => state.items);
+  const itemsFrom = useApp((state) => state.itemsFrom);
   const chats = useApp((state) => state.chats);
   const unread = useApp((state) => state.unread[thread.id]);
   const seenAt = useApp((state) => state.seen[thread.id] ?? 0);
@@ -525,7 +546,7 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
   const all = items ?? [];
   // What a subagent did is shown inside its card, not in the main flow.
   const top = all.filter((item) => !item.parent);
-  const rows = timeline(top, chats, show);
+  const rows = timeline(top, chats, show, itemsFrom);
   const todos = all.find((item) => item.kind === 'todos');
   // The first thing Claude is waiting on the user for, wherever it is (a subagent's step counts too).
   const asking = all.find(isAsking);

@@ -23,6 +23,7 @@ import {
   type NewProxySettings,
   type NewThread,
   type NewUser,
+  type Page,
   type Person,
   type ProxySettings,
   type Seen,
@@ -53,9 +54,12 @@ type State = {
   github: GithubAccount[] | null;
   // The models a thread can run on: Claude's own until the server has said which ones the model proxy adds.
   models: Model[];
-  // The thread on screen. `items` is null until the server has sent what is in it.
+  // The thread on screen. `items` is null until the server has sent what is in it. It holds the rows from the
+  // time `itemsFrom` on, and what is still going on from before (see the `items` event). `itemsFrom` is null
+  // when the whole thread is in.
   openId: string | null;
   items: Item[] | null;
+  itemsFrom: number | null;
   // What people wrote to each other in that thread, and the first of it they had not had on screen when it
   // was opened (null when they had seen it all).
   chats: Chat[];
@@ -66,7 +70,12 @@ type State = {
   unread: Record<string, Unread>;
 };
 
-type Action = ServerEvent | { type: 'open'; threadId: string } | { type: 'offline' };
+// `older` is the page of rows from before `before`, which was `itemsFrom` when it was asked for.
+type Action =
+  | ServerEvent
+  | { type: 'open'; threadId: string }
+  | { type: 'offline' }
+  | ({ type: 'older'; threadId: string; before: number } & Page);
 
 export const START: State = {
   ready: false,
@@ -81,6 +90,7 @@ export const START: State = {
   models: MODELS,
   openId: null,
   items: null,
+  itemsFrom: null,
   chats: [],
   chatNew: null,
   chatSeen: 0,
@@ -131,10 +141,19 @@ export function reduce(state: State, action: Action): State {
       return { ...state, automations, threads: state.threads.map(loose) };
     }
     case 'open':
-      return { ...state, openId: action.threadId, items: null, chats: [], chatNew: null, chatSeen: 0 };
+      return { ...state, openId: action.threadId, items: null, itemsFrom: null, chats: [], chatNew: null, chatSeen: 0 };
     case 'items': {
-      const { items, chats, chatSeen } = action;
-      return { ...state, items, chats, chatSeen, chatNew: chats.find((chat) => chat.id > chatSeen)?.id ?? null };
+      const { items, from, chats, chatSeen } = action;
+      const chatNew = chats.find((chat) => chat.id > chatSeen)?.id ?? null;
+      return { ...state, items, itemsFrom: from, chats, chatSeen, chatNew };
+    }
+    case 'older': {
+      // The thread was loaded again since (after a reconnect), so this page may not fit on what is there now.
+      if (action.before !== state.itemsFrom) return state;
+      // What is still going on came with the thread already, and may have changed since.
+      const known = new Set(state.items?.map((item) => item.id));
+      const older = action.items.filter((item) => !known.has(item.id));
+      return { ...state, items: [...older, ...(state.items ?? [])], itemsFrom: action.from };
     }
     case 'chat':
       return { ...state, chats: upsert(state.chats, action.chat) };
@@ -264,9 +283,32 @@ export const openThread = (threadId: string) => {
 // The thread left the screen. Nothing is on screen until another one is opened, so what happens in this one
 // is news again: a tag in it pops up, and its chat is not read.
 export const closeThread = () => {
-  const { openId, items, chats, chatNew, chatSeen } = START;
-  useApp.setState({ openId, items, chats, chatNew, chatSeen });
+  const { openId, items, itemsFrom, chats, chatNew, chatSeen } = START;
+  useApp.setState({ openId, items, itemsFrom, chats, chatNew, chatSeen });
 };
+
+// Adds the page of rows before the ones the open thread has, for a reader who scrolled up to them. A page that
+// is on its way is not asked for again.
+let loading: number | null = null;
+export async function loadOlder() {
+  const { openId, itemsFrom: before } = useApp.getState();
+  if (!openId || before === null || before === loading) return;
+  loading = before;
+  try {
+    const page = await request<Page>(`/api/threads/${openId}/items?before=${before}`);
+    dispatch({ type: 'older', threadId: openId, before, ...page });
+  } finally {
+    loading = null;
+  }
+}
+
+// What went in and out of a finished tool card, for a reader who opened it (see `Item`).
+export const loadTool = async (threadId: string, id: string) =>
+  dispatch({
+    type: 'item',
+    threadId,
+    item: await request<Item>(`/api/threads/${threadId}/items/${encodeURIComponent(id)}`),
+  });
 
 // The person has the thread in front of them. Shown right away, and kept by the server for their other
 // devices. If the server did not get it, it says so on the next connect and the thread asks again.

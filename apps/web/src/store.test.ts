@@ -15,6 +15,8 @@ import {
   closeThread,
   connect,
   githubChoices,
+  loadOlder,
+  loadTool,
   needsYou,
   openThread,
   orderChannels,
@@ -179,9 +181,16 @@ test('the app fills up from the socket, follows the open thread, and forgets it 
 
   openThread('t');
   expect(JSON.parse(Socket.last.sent[0])).toEqual({ type: 'open', threadId: 't' });
-  Socket.last.says({ type: 'items', threadId: 't', items: [], chats: [], chatSeen: 0 });
+  Socket.last.says({ type: 'items', threadId: 't', items: [], from: null, chats: [], chatSeen: 0 });
   // What happens in a thread that is not on screen is left out.
-  Socket.last.says({ type: 'items', threadId: 'other', items: [{ id: 'i' } as Item], chats: [], chatSeen: 0 });
+  Socket.last.says({
+    type: 'items',
+    threadId: 'other',
+    items: [{ id: 'i' } as Item],
+    from: null,
+    chats: [],
+    chatSeen: 0,
+  });
   expect(useApp.getState().items).toEqual([]);
 
   // The line drops: the screens stay, the server is asked who is logged in, and the open thread is asked for again.
@@ -287,7 +296,7 @@ test('the chat of the open thread comes with it and grows, and what is new in ev
   state = reduce(state, { type: 'open', threadId: 't' });
   // The first message the person had not had on screen is where the "New" line goes.
   const chats = [chat(1, 'ann'), chat(2, 'me'), chat(3, 'ann'), chat(4, 'ann')];
-  state = reduce(state, { type: 'items', threadId: 't', items: [], chats, chatSeen: 2 });
+  state = reduce(state, { type: 'items', threadId: 't', items: [], from: null, chats, chatSeen: 2 });
   expect([state.chats, state.chatNew, state.chatSeen]).toEqual([chats, 3, 2]);
   // A message that comes in while the thread is open is added once, however often it arrives.
   state = reduce(state, { type: 'chat', threadId: 't', chat: chat(5, 'ann') });
@@ -302,7 +311,7 @@ test('the chat of the open thread comes with it and grows, and what is new in ev
   expect(state.unread).toEqual({ t: { count: 0, tagged: false }, other: { count: 1, tagged: false } });
 
   // Everything was seen already: no line. Another thread starts with nothing until its own chat arrives.
-  expect(reduce(state, { type: 'items', threadId: 't', items: [], chats, chatSeen: 4 }).chatNew).toBeNull();
+  expect(reduce(state, { type: 'items', threadId: 't', items: [], from: null, chats, chatSeen: 4 }).chatNew).toBeNull();
   expect(reduce(state, { type: 'open', threadId: 'other' })).toMatchObject({ chats: [], chatNew: null, chatSeen: 0 });
 });
 
@@ -335,5 +344,56 @@ test('a tag pops up, unless the person is looking at that thread or it tags some
 
   hangUp();
   expect(useApp.getState().tag).toBeNull();
+  vi.unstubAllGlobals();
+});
+
+// A row of a thread as the server sends it on opening: a finished tool card, without what went in and out.
+const card = (id: string, at: number) =>
+  ({ id, kind: 'tool', name: 'Bash', detail: id, done: true, failed: false, at }) as Item;
+// The thread `t` as it opens, with these rows, loaded from the time `from` on.
+const opened = (items: Item[], from: number | null): ServerEvent => ({
+  type: 'items',
+  threadId: 't',
+  items,
+  from,
+  chats: [],
+  chatSeen: 0,
+});
+
+test('scrolling up adds the page before the rows the thread has, once, and not onto a thread loaded again', async () => {
+  const asked: string[] = [];
+  let answer: (body: unknown) => void = () => {};
+  vi.stubGlobal('fetch', (path: string) => {
+    asked.push(path);
+    return new Promise((resolve) => (answer = (body) => resolve(new Response(JSON.stringify(body)))));
+  });
+  const running = { ...card('background', 5), done: false, input: 'go', output: '' } as Item;
+  useApp.setState(reduce(reduce(START, { type: 'open', threadId: 't' }), opened([running, card('b', 100)], 100)));
+
+  const first = loadOlder();
+  void loadOlder();
+  expect(asked).toEqual(['/api/threads/t/items?before=100']);
+  // What is still going on came with the thread already, and stays as it is.
+  answer({ items: [{ ...running, output: 'old' }, card('a', 50)], from: 50 });
+  await first;
+  expect(useApp.getState()).toMatchObject({ items: [card('a', 50), running, card('b', 100)], itemsFrom: 50 });
+
+  // The line dropped while the page was on its way, and the thread came again from its last rows.
+  const late = loadOlder();
+  useApp.setState(reduce(useApp.getState(), opened([card('b', 100)], 100)));
+  answer({ items: [card('z', 10)], from: null });
+  await late;
+  expect(useApp.getState()).toMatchObject({ items: [card('b', 100)], itemsFrom: 100 });
+  vi.unstubAllGlobals();
+});
+
+test('opening a card fills in what went in and out of it', async () => {
+  const full = { ...card('b', 100), input: '{"command":"ls"}', output: 'a.txt' };
+  const asked: string[] = [];
+  vi.stubGlobal('fetch', async (path: string) => (asked.push(path), new Response(JSON.stringify(full))));
+  useApp.setState(reduce(reduce(START, { type: 'open', threadId: 't' }), opened([card('b', 100)], null)));
+  await loadTool('t', 'b');
+  expect(asked).toEqual(['/api/threads/t/items/b']);
+  expect(useApp.getState().items).toEqual([full]);
   vi.unstubAllGlobals();
 });

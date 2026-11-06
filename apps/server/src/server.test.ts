@@ -890,7 +890,7 @@ test('a tool card keeps what went in, what came out and how long it took', async
   await tab.status(thread.id, 'done');
   const write = tab.tool(thread.id, 'Write');
   expect(write.detail).toBe('/home/marcho/acocrew-sample-repo/notes.txt');
-  expect(JSON.parse(write.input)).toMatchObject({ content: 'hello from acocrew' });
+  expect(JSON.parse(write.input!)).toMatchObject({ content: 'hello from acocrew' });
   expect(write.output).toMatch(/^File created successfully/);
   expect(write.endAt).toBeGreaterThan(write.at);
 });
@@ -1082,6 +1082,119 @@ test('a subagent sent to the background keeps its card open after the turn ends,
   expect(screen[1]).toBe('Agent done');
   expect(screen.at(-1)).toMatch(/^message: The agent's report/);
   expect(tab.tool(thread.id, 'Agent').output).toMatch(/^The math.js file exports/);
+});
+
+// A long thread, shaped like the real ones: after the first turn Claude ran 250 tools, each saved when it started and
+// again when it finished, with big outputs. Every 50th is a subagent with two steps of its own. Early on it changed
+// its to-do list and sent a subagent to the background that is still at work.
+async function longThread() {
+  const tab = await connect();
+  const thread = await startThread('make notes');
+  await tab.open(thread.id);
+  await tab.status(thread.id, 'done');
+  const start = Date.now();
+  const tool = (id: string, n: number, parent?: string): Extract<Item, { kind: 'tool' }> => {
+    const output = `result ${id} `.repeat(1000);
+    const base = {
+      id,
+      kind: 'tool' as const,
+      name: parent ? 'Read' : 'Bash',
+      detail: `run ${id}`,
+      failed: false,
+      parent,
+    };
+    return {
+      ...base,
+      input: `{"command": "run ${id}"}`,
+      output,
+      done: true,
+      at: start + n * 10,
+      endAt: start + n * 10 + 5,
+    };
+  };
+  const log: Item[] = [
+    { id: 'todos', kind: 'todos', todos: [{ id: '1', subject: 'Look', status: 'pending' }], at: start },
+  ];
+  for (let n = 0; n < 250; n++) {
+    const done = tool(`tool-${n}`, n);
+    log.push({ ...done, output: '', done: false, endAt: undefined }, done);
+    if (n % 50 === 0) log.push(tool(`step-${n}-a`, n + 0.1, done.id), tool(`step-${n}-b`, n + 0.2, done.id));
+  }
+  const background = { ...tool('background', 2.5), name: 'Agent', output: '', done: false, endAt: undefined };
+  log.push(background);
+  db.insert(events)
+    .values(log.map((item) => ({ threadId: thread.id, item })))
+    .run();
+  return { tab, thread, start, background };
+}
+
+const page = async (thread: Thread, before: number) =>
+  (await (await ask(`/api/threads/${thread.id}/items?before=${before}`)).json()) as {
+    items: Item[];
+    from: number | null;
+  };
+
+test('a long thread opens with its last 100 rows, and the ones before come a page at a time', async () => {
+  const { tab, thread, start, background } = await longThread();
+  await tab.open(thread.id);
+  const opened = tab.events.findLast((e) => e.type === 'items') as Extract<ServerEvent, { type: 'items' }>;
+  const ids = (items: Item[]) => items.map((item) => item.id);
+  const rows = (from: number, to: number) => Array.from({ length: to - from }, (_, i) => `tool-${from + i}`);
+
+  // The last 100 rows and the steps inside them. Also, wherever they are, the to-do list and what is still going on.
+  expect(opened.from).toBe(start + 1500);
+  expect(ids(opened.items.filter((item) => !item.parent && item.at >= opened.from!))).toEqual(rows(150, 250));
+  expect(ids(opened.items.filter((item) => item.parent))).toEqual([
+    'step-150-a',
+    'step-150-b',
+    'step-200-a',
+    'step-200-b',
+  ]);
+  expect(opened.items.find((item) => item.id === 'todos')).toBeDefined();
+  // A finished card comes without what went in and out: that is most of a thread, and only shows on a card someone
+  // opens. What is still going on comes whole.
+  expect(opened.items.find((item) => item.id === 'tool-249')).toEqual({
+    id: 'tool-249',
+    kind: 'tool',
+    name: 'Bash',
+    detail: 'run tool-249',
+    done: true,
+    failed: false,
+    at: start + 2490,
+    endAt: start + 2495,
+  });
+  expect(opened.items.find((item) => item.id === 'background')).toEqual(background);
+  expect(JSON.stringify(opened).length).toBeLessThan(50_000);
+
+  const second = await page(thread, opened.from!);
+  expect(second.from).toBe(start + 500);
+  const withSteps = (n: number) => [`tool-${n}`, `step-${n}-a`, `step-${n}-b`];
+  expect(ids(second.items)).toEqual([...withSteps(50), ...rows(51, 100), ...withSteps(100), ...rows(101, 150)]);
+  expect(second.items[0]).not.toHaveProperty('output');
+
+  // The last page reaches the start of the thread, which the first turn is part of.
+  const last = await page(thread, second.from!);
+  expect(last.from).toBeNull();
+  expect(ids(last.items).filter((id) => id.startsWith('tool-'))).toEqual(rows(0, 50));
+  expect(last.items[0]).toMatchObject({ kind: 'message', text: 'make notes' });
+});
+
+test('opening a card gets what went in and out of it, for people who see the thread only', async () => {
+  const { thread } = await longThread();
+  const res = await ask(`/api/threads/${thread.id}/items/tool-7`);
+  expect(res.status).toBe(200);
+  expect(await res.json()).toMatchObject({
+    id: 'tool-7',
+    input: '{"command": "run tool-7"}',
+    output: expect.stringMatching(/^result tool-7 /),
+  });
+  expect((await ask(`/api/threads/${thread.id}/items/nothing`)).status).toBe(404);
+
+  const jordan = await teammate('jordan');
+  await as(jordan.cookie, async () => {
+    expect((await ask(`/api/threads/${thread.id}/items/tool-7`)).status).toBe(404);
+    expect((await ask(`/api/threads/${thread.id}/items?before=${Date.now()}`)).status).toBe(404);
+  });
 });
 
 test('with "Ask first", Claude waits for a yes before changing things, but reads without asking', async () => {
