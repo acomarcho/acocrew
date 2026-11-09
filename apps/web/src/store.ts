@@ -6,6 +6,7 @@ import {
   MODELS,
   MODELS_PATH,
   PROXY_PATH,
+  USAGE_PATH,
   USERS_PATH,
   WS_PATH,
   type Answer,
@@ -26,6 +27,7 @@ import {
   type Page,
   type Person,
   type ProxySettings,
+  type UsageStats,
   type Seen,
   type ServerEvent,
   type Temporary,
@@ -404,6 +406,7 @@ export const loadModels = async () => useApp.setState({ models: await request<Mo
 // How the machine reaches the model proxy. Only an admin can look or change it. Saving also asks again which
 // models there are.
 export const loadProxy = () => request<ProxySettings>(PROXY_PATH);
+export const loadUsage = () => request<UsageStats>(USAGE_PATH);
 export const saveProxy = async (body: NewProxySettings) => {
   const shown = await request<ProxySettings>(PROXY_PATH, body);
   await loadModels();

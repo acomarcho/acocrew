@@ -226,6 +226,18 @@ export type ProxySettings = {
 // What an admin saves. An empty `key` keeps the one there is.
 export type NewProxySettings = { url: string; background: string; key: string };
 
+// What the machine's Claude Code and Codex would have cost at API prices, read from their logs on the machine.
+// `daily` has one row per day of the server's clock ('YYYY-MM-DD'), oldest first, also for days with nothing.
+// A model's `cost` is null when the price list does not know it.
+export type UsageProvider = 'claude' | 'codex';
+export type UsageTokens = { input: number; cacheRead: number; cacheWrite: number; output: number };
+export type UsageStats = {
+  days: number;
+  total: number;
+  daily: ({ day: string } & Record<UsageProvider, number>)[];
+  models: { provider: UsageProvider; model: string; cost: number | null; tokens: UsageTokens }[];
+};
+
 // When an automation runs: at `time` ('HH:MM', 24 hours) on `days` of the week (0 is Monday, 6 is Sunday).
 // The time is the server machine's own clock. The first WebSocket message says which clock that is (`utcOffset`).
 export type Schedule = { time: string; days: number[] };
@@ -361,6 +373,7 @@ export const AUTOMATIONS_PATH = '/api/automations';
 export const GITHUB_PATH = '/api/github';
 export const PROXY_PATH = '/api/proxy';
 export const MODELS_PATH = '/api/models';
+export const USAGE_PATH = '/api/usage';
 // These two are answered by Better Auth itself.
 export const LOGIN_PATH = '/api/auth/sign-in/username';
 export const LOGOUT_PATH = '/api/auth/sign-out';
