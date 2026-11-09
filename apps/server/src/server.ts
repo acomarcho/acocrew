@@ -17,6 +17,7 @@ import {
   ME_PATH,
   MODELS_PATH,
   PROXY_PATH,
+  USAGE_PATH,
   USERS_PATH,
   VISIBILITY,
   WS_PATH,
@@ -83,6 +84,7 @@ import { createRunner, type QueryFn } from './runner.ts';
 import { automations, channels, chats, events, seen, session as sessions, shares, threads, user } from './schema.ts';
 import { firstLine } from './title.ts';
 import { threadTools } from './tools.ts';
+import { createUsage } from './usage.ts';
 
 // `home` is the only folder tree that repositories can be picked from.
 // `images` is the folder where images and other files attached to messages are kept.
@@ -90,6 +92,7 @@ import { threadTools } from './tools.ts';
 // `web` is the folder with the built web app. Without it the server only answers `/api` and `/ws`.
 // `secret` signs the login cookies. `https` marks them as for https only.
 // `gh` is the GitHub CLI: the program that is asked which GitHub accounts the machine is logged in to.
+// `prices` is where the model price list for Statistics is fetched from.
 export type Deps = {
   db: Db;
   query: QueryFn;
@@ -100,6 +103,7 @@ export type Deps = {
   https?: boolean;
   web?: string;
   gh?: string;
+  prices?: string;
 };
 
 const NAME_MAX = 50;
@@ -137,13 +141,25 @@ function readMessage(body: Partial<NewMessage>, store: Images, attached: Files):
 const readVisibility = (value: unknown) =>
   VISIBILITY.some((option) => option.id === value) ? (value as Visibility) : null;
 
-export async function createApp({ db, query, home, images, worktrees, secret, https = false, web, gh = 'gh' }: Deps) {
+export async function createApp({
+  db,
+  query,
+  home,
+  images,
+  worktrees,
+  secret,
+  https = false,
+  web,
+  gh = 'gh',
+  prices,
+}: Deps) {
   const auth = createAuth(db, secret, https);
   await seedAdmin(auth, db);
   const hub = createHub();
   const store = openImages(images);
   const attached = openFiles(join(images, 'files'));
   const proxy = createProxy(db);
+  const usage = createUsage(home, prices);
   const runner = createRunner(db, hub, query, store, attached, proxy, tools);
   // Why a thread cannot run on this model right now, or nothing when it can. A proxy model is off the list while
   // the proxy is away, which is worth saying in so many words.
@@ -232,8 +248,8 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
   });
 
   // Accounts are made and changed by admins only. So are which GitHub account the machine works as, and how it
-  // reaches the model proxy.
-  for (const path of [USERS_PATH, `${USERS_PATH}/*`, GITHUB_PATH, PROXY_PATH]) {
+  // reaches the model proxy. What the machine spent is for admins too: its logs are of everything run on it.
+  for (const path of [USERS_PATH, `${USERS_PATH}/*`, GITHUB_PATH, PROXY_PATH, USAGE_PATH]) {
     app.use(path, async (c, next) => {
       if (!c.get('user').admin) return c.json({ error: 'Only an admin can do this.' }, 403);
       await next();
@@ -331,6 +347,14 @@ export async function createApp({ db, query, home, images, worktrees, secret, ht
     const why = proxy.save(await c.req.json().catch(() => ({})));
     return why ? refuse(c, why) : c.json(await proxy.shown());
   });
+
+  // What the machine's Claude Code and Codex would have cost at API prices, over the last 30 days.
+  app.get(USAGE_PATH, (c) =>
+    usage.stats().then(
+      (stats) => c.json(stats),
+      (err) => refuse(c, err),
+    ),
+  );
 
   // The models a thread can run on, for the model picker.
   app.get(MODELS_PATH, async (c) => c.json(await proxy.models()));

@@ -33,6 +33,7 @@ import {
   Brain,
   Check,
   ChevronDown,
+  ChartColumn,
   ChevronRight,
   Clock,
   FileText,
@@ -141,7 +142,8 @@ export function AvatarStack({ ids }: { ids: string[] }) {
   );
 }
 
-// Who is logged in, at the bottom of the sidebar. Opens a small menu with Settings and Log out.
+// Who is logged in, at the bottom of the sidebar. Opens a small menu with Settings, Statistics (for admins) and
+// Log out.
 export function UserMenu() {
   const me = useMe();
   const [open, setOpen] = useState(false);
@@ -167,6 +169,12 @@ export function UserMenu() {
               <Cog size={15} className="text-muted-foreground" />
               Settings
             </Link>
+            {me.admin && (
+              <Link to="/statistics" onClick={() => setNavOpen(false)} className={row}>
+                <ChartColumn size={15} className="text-muted-foreground" />
+                Statistics
+              </Link>
+            )}
             <button type="button" onClick={() => void logOut()} className={row}>
               <LogOut size={15} className="text-muted-foreground" />
               Log out

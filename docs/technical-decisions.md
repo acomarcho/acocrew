@@ -425,6 +425,18 @@ So one thread can hand work to others that people can watch and reply to, instea
 
 Not built: telling a thread when one it started finishes, threads in other repositories, marking a message as written by another thread, showing which thread started which, and a limit on how many threads a thread can start.
 
+## Decision 16: Statistics are worked out from Claude Code's and Codex's own logs
+
+Admins have a Statistics page (in the menu under their name, between Settings and Log out). It shows what the machine's Claude Code and Codex would have cost at API prices over the last 30 days: the total, a bar per day, and a row per model. It is the same idea as t3code's usage page.
+
+- **Where the numbers come from** (`apps/server/src/usage.ts`). Both programs keep a log of every session in the home folder (`~/.claude/projects` and `~/.codex/sessions`), with the tokens each model call took. The server reads the log files changed in the last 30 days, one line at a time, and parses only the lines that carry usage. So it counts everything run on the machine, also outside acocrew, which is why only admins see it (`GET /api/usage`).
+- **Counting each call once.** Claude Code writes one line per piece of an answer and repeats the answer's usage on each, and a resumed session copies earlier lines into its new file. A call is counted once by its message and request id. Codex sometimes says the same count twice in a row, and a forked Codex session starts with its parent's lines copied in. Both are skipped.
+- **Prices** come from LiteLLM's public price list (the one t3code and ccusage use), fetched at most once a day. A cache write kept for an hour is priced at its own, higher price, since Claude Code's log says which ones were. A model the list does not know shows "No price" and adds nothing.
+- **Speed.** The first look after the server starts reads everything (about 7GB and 25 to 40 seconds on the main machine). The server keeps what each file said, and reads a file again only when its size or time changed, so the next look takes under a second. What it keeps is about 70MB.
+- It is an estimate: a subscription is not billed per token, and the logs do not say which price tier served a call.
+
+Not built: picking another range than 30 days, and a split per person or per thread.
+
 ## UI direction: the Inbox layout
 
 We mocked five layouts (Slack, Topics, Inbox, Board, Focus). Marcho likes the Inbox one, so `apps/web` now holds only that. The other four are still in git history, in commit `d98b9b7`.

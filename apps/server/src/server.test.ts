@@ -2,6 +2,7 @@ import {
   AUTOMATIONS_PATH,
   COMMANDS_PATH,
   GITHUB_PATH,
+  USAGE_PATH,
   HEALTH_PATH,
   LOGIN_PATH,
   LOGOUT_PATH,
@@ -1838,6 +1839,7 @@ test('nothing is given out without a login', async () => {
       ask(PROXY_PATH),
       post(PROXY_PATH, { url: proxyUrl, background: 'x', key: 'stolen' }),
       ask(MODELS_PATH),
+      ask(USAGE_PATH),
       post('/api/auth/sign-up/email', { email: 'a@b.co', name: 'Sneaky', password: 'sneaky password' }),
     ]);
 
@@ -1976,6 +1978,8 @@ test('an admin makes an account, and its owner picks a password of their own on 
     expect((await post(path, { username: 'sam', admin: true })).status, path).toBe(403);
   }
   expect((await post(`${USERS_PATH}/${tab.hello.people[0].id}/password`, {})).status).toBe(403);
+  // Nor see what the machine spent: its logs are of everyone's work.
+  expect((await ask(USAGE_PATH)).status).toBe(403);
   expect((await connect()).hello.people.map((person) => person.username)).toEqual(['admin', 'jordan.lee', 'robin']);
 });
 

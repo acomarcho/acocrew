@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AddRouteImport } from './routes/add'
 import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as StatisticsRouteImport } from './routes/statistics'
 import { Route as CChannelIdRouteImport } from './routes/c.$channelId'
 import { Route as CChannelIdIndexRouteImport } from './routes/c.$channelId.index'
 import { Route as CChannelIdAAutomationIdRouteImport } from './routes/c.$channelId.a.$automationId'
@@ -31,6 +32,11 @@ const AddRoute = AddRouteImport.update({
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const StatisticsRoute = StatisticsRouteImport.update({
+  id: '/statistics',
+  path: '/statistics',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CChannelIdRoute = CChannelIdRouteImport.update({
@@ -64,6 +70,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/add': typeof AddRoute
   '/settings': typeof SettingsRoute
+  '/statistics': typeof StatisticsRoute
   '/c/$channelId': typeof CChannelIdRouteWithChildren
   '/c/$channelId/': typeof CChannelIdIndexRoute
   '/c/$channelId/a/$automationId': typeof CChannelIdAAutomationIdRoute
@@ -74,6 +81,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/add': typeof AddRoute
   '/settings': typeof SettingsRoute
+  '/statistics': typeof StatisticsRoute
   '/c/$channelId': typeof CChannelIdIndexRoute
   '/c/$channelId/a/$automationId': typeof CChannelIdAAutomationIdRoute
   '/c/$channelId/new/{-$draftId}': typeof CChannelIdNewChar123DraftIdChar125Route
@@ -84,6 +92,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/add': typeof AddRoute
   '/settings': typeof SettingsRoute
+  '/statistics': typeof StatisticsRoute
   '/c/$channelId': typeof CChannelIdRouteWithChildren
   '/c/$channelId/': typeof CChannelIdIndexRoute
   '/c/$channelId/a/$automationId': typeof CChannelIdAAutomationIdRoute
@@ -96,6 +105,7 @@ export interface FileRouteTypes {
     | '/'
     | '/add'
     | '/settings'
+    | '/statistics'
     | '/c/$channelId'
     | '/c/$channelId/'
     | '/c/$channelId/a/$automationId'
@@ -106,6 +116,7 @@ export interface FileRouteTypes {
     | '/'
     | '/add'
     | '/settings'
+    | '/statistics'
     | '/c/$channelId'
     | '/c/$channelId/a/$automationId'
     | '/c/$channelId/new/{-$draftId}'
@@ -115,6 +126,7 @@ export interface FileRouteTypes {
     | '/'
     | '/add'
     | '/settings'
+    | '/statistics'
     | '/c/$channelId'
     | '/c/$channelId/'
     | '/c/$channelId/a/$automationId'
@@ -126,6 +138,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AddRoute: typeof AddRoute
   SettingsRoute: typeof SettingsRoute
+  StatisticsRoute: typeof StatisticsRoute
   CChannelIdRoute: typeof CChannelIdRouteWithChildren
 }
 
@@ -150,6 +163,13 @@ declare module '@tanstack/react-router' {
       path: '/settings'
       fullPath: '/settings'
       preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/statistics': {
+      id: '/statistics'
+      path: '/statistics'
+      fullPath: '/statistics'
+      preLoaderRoute: typeof StatisticsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/c/$channelId': {
@@ -213,6 +233,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AddRoute: AddRoute,
   SettingsRoute: SettingsRoute,
+  StatisticsRoute: StatisticsRoute,
   CChannelIdRoute: CChannelIdRouteWithChildren,
 }
 export const routeTree = rootRouteImport
