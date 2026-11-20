@@ -949,16 +949,31 @@ test('changing the model while Claude is idle starts a new process that resumes 
 const SMALL = { CLAUDE_CODE_DISABLE_1M_CONTEXT: '1' };
 
 test.each([
-  ['Opus has both extras', OPUS, 'claude-opus-5-5[1m]', { fastMode: false, env: {} }],
-  ['200k switches the 1M window off', { ...OPUS, context: '200k' }, 'claude-opus-5-5', { fastMode: false, env: SMALL }],
-  ['fast mode is switched on', { ...OPUS, fast: true }, 'claude-opus-5-5[1m]', { fastMode: true, env: {} }],
+  ['Opus has both extras', OPUS, 'claude-opus-5-5[1m]', { fastMode: false, autoCompactEnabled: true, env: {} }],
+  [
+    '200k switches the 1M window off',
+    { ...OPUS, context: '200k' },
+    'claude-opus-5-5',
+    { fastMode: false, autoCompactEnabled: true, env: SMALL },
+  ],
+  [
+    'fast mode is switched on',
+    { ...OPUS, fast: true },
+    'claude-opus-5-5[1m]',
+    { fastMode: true, autoCompactEnabled: true, env: {} },
+  ],
   [
     'Sonnet has no fast mode',
     { ...OPUS, model: 'claude-sonnet-5-5', fast: true },
     'claude-sonnet-5-5[1m]',
-    { fastMode: false, env: {} },
+    { fastMode: false, autoCompactEnabled: true, env: {} },
   ],
-  ['Haiku has neither', { ...HAIKU, fast: true }, HAIKU.model, { fastMode: false, env: SMALL }],
+  [
+    'Haiku has neither',
+    { ...HAIKU, fast: true },
+    HAIKU.model,
+    { fastMode: false, autoCompactEnabled: true, env: SMALL },
+  ],
 ])('Claude is started with the context window and fast mode the model has: %s', async (_, settings, model, extras) => {
   const tab = await connect();
   const thread = await startThread('make notes', settings);
@@ -1003,7 +1018,7 @@ test('changing the context window or fast mode while Claude is idle starts a new
   expect(done).toMatchObject({ context: '200k', fast: true });
   expect(claude.closed()).toBe(1);
   expect(claude.calls[1]).toMatchObject({ model: 'claude-opus-5-5', resume: SESSION });
-  expect(claude.calls[1].settings).toEqual({ fastMode: true, env: SMALL });
+  expect(claude.calls[1].settings).toEqual({ fastMode: true, autoCompactEnabled: true, env: SMALL });
 });
 
 test('when Claude starts background work and ends its turn, the thread waits, and what Claude says when the work finishes shows up on its own', async () => {
@@ -2945,6 +2960,7 @@ test('a thread on a proxy model runs Claude pointed at the proxy, signed in with
   // Every one of Claude Code's model slots is filled, so nothing it does on its own goes to Anthropic.
   expect(call.settings).toEqual({
     fastMode: false,
+    autoCompactEnabled: true,
     env: {
       CLAUDE_CODE_DISABLE_1M_CONTEXT: '1',
       ANTHROPIC_BASE_URL: proxyUrl,
@@ -2967,7 +2983,7 @@ test("a Claude thread keeps the machine's own Claude login and settings, and nev
   await tab.status(thread.id, 'done');
   expect(proxyAsked.length).toBe(asked);
   expect(claude.calls[0].env).toBeUndefined();
-  expect(claude.calls[0].settings).toEqual({ fastMode: false, env: {} });
+  expect(claude.calls[0].settings).toEqual({ fastMode: false, autoCompactEnabled: true, env: {} });
 });
 
 test('a model neither Claude nor the proxy has is turned down', async () => {
@@ -2991,7 +3007,7 @@ test('an idle thread can go from a proxy model to Claude and back, in the same c
   await tab.status(thread.id, 'done');
   expect(claude.closed()).toBe(1);
   expect(claude.calls[1]).toMatchObject({ model: 'claude-opus-5-5[1m]', resume: SESSION, env: undefined });
-  expect(claude.calls[1].settings).toEqual({ fastMode: false, env: {} });
+  expect(claude.calls[1].settings).toEqual({ fastMode: false, autoCompactEnabled: true, env: {} });
 });
 
 test('a new proxy set-up reaches an idle proxy thread with its next message', async () => {
