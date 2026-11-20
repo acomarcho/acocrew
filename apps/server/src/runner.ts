@@ -105,6 +105,9 @@ function launchOptions({ model, effort, context, fast }: NewMessage, proxy: Prox
     settings: {
       // Always said out loud, so the server user's own Claude settings cannot switch fast mode on.
       fastMode: Boolean(spec?.fast && fast),
+      // The same goes for auto-compaction. Without it a long thread fills its context window and stops with
+      // "Prompt is too long", and the command to switch it back on is hidden here.
+      autoCompactEnabled: true,
       env: { ...env, ...routed?.env },
     },
     login: routed?.login,
