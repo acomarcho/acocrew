@@ -4,6 +4,7 @@
 //   {"_user": true}                 the recorder sent the next user message here
 //   {"_ask": {...}}                 Claude asked for permission (or asked a question) here
 //   {"_quiet": true}                nothing happened for a while (Claude was waiting on background work)
+//   {"_stop": {...}}                Claude finished a turn and told its Stop hook this (what it still has scheduled)
 import { query, type Options, type PermissionResult, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -64,6 +65,11 @@ const SCENARIOS: Record<string, Scenario> = {
       'In one sentence, what did we look at?',
     ],
   },
+  wakeup: {
+    prompts: [
+      'Call the ScheduleWakeup tool (load it with ToolSearch first) with delaySeconds 60, prompt "say WOKE", reason "test", noop false. Then say "scheduled" and end your turn. When you wake up, say "woke" and do not schedule again.',
+    ],
+  },
   todos: {
     prompts: [
       'Make a to-do list with exactly two items using your task list tool: "Read math.js" and "Say hi". Then do them one by one, marking each as in progress and then completed. Finish with "hi".',
@@ -93,6 +99,20 @@ const options: Options = {
   model: 'claude-haiku-4-5-20251001',
   includePartialMessages: true,
   permissionMode: 'default',
+  hooks: {
+    Stop: [
+      {
+        hooks: [
+          async (hook) => {
+            if (hook.hook_event_name !== 'Stop') return {};
+            crons = hook.session_crons?.length ?? 0;
+            out.push({ _stop: { session_crons: hook.session_crons } });
+            return {};
+          },
+        ],
+      },
+    ],
+  },
   canUseTool: async (toolName, toolInput, { suggestions, toolUseID }) => {
     const asked = scenario.ask || toolName === 'AskUserQuestion';
     const result = (asked && scenario.decide ? scenario.decide : allow)(toolName, toolInput);
@@ -103,6 +123,7 @@ const options: Options = {
 
 const running = query({ prompt: input(), options });
 let tasks = 0;
+let crons = 0;
 let last = Date.now();
 let quiet: ReturnType<typeof setTimeout> | undefined;
 const finish = () => {
@@ -121,7 +142,8 @@ for await (const msg of running) {
   if (Date.now() - last > 2000) out.push({ _quiet: true });
   last = Date.now();
   out.push(msg);
-  clearTimeout(quiet);
+  // Every turn starts with `init`. Messages that trail a turn's result do not count as Claude going on.
+  if (msg.type === 'system' && msg.subtype === 'init') clearTimeout(quiet);
   if (msg.type === 'system' && msg.subtype === 'background_tasks_changed') tasks = msg.tasks.length;
   if (msg.type !== 'stream_event')
     console.log(
@@ -131,7 +153,7 @@ for await (const msg of running) {
     );
   if (msg.type !== 'result') continue;
   if (prompts.length) wake();
-  // Done once Claude is idle with nothing in the background for a few seconds.
-  else if (tasks === 0) quiet = setTimeout(finish, 4000);
+  // Done once Claude is idle with nothing in the background or scheduled for a few seconds.
+  else if (tasks === 0 && crons === 0) quiet = setTimeout(finish, 4000);
 }
 finish();

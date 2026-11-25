@@ -35,6 +35,7 @@ import type {
   PermissionResult,
   SDKMessage,
   SDKUserMessage,
+  StopHookInput,
 } from '@anthropic-ai/claude-agent-sdk';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -68,7 +69,8 @@ import { startServer } from './server.ts';
 // A line of a recording (see fixtures/record.ts): a real message from Claude, or a marker for what the
 // outside world did at that point.
 type Ask = { toolName: string; input: Record<string, unknown>; toolUseID: string; suggestions?: never };
-type Marker = { _user: true } | { _ask: Ask } | { _quiet: true } | { _crash: true };
+type Stop = { session_crons: StopHookInput['session_crons'] };
+type Marker = { _user: true } | { _ask: Ask } | { _quiet: true } | { _crash: true } | { _stop: Stop };
 type Line = SDKMessage | Marker;
 
 const recording = (name: string): Line[] =>
@@ -183,6 +185,15 @@ function fakeClaude(script: Line[], naming: Line[] = []) {
         } else if ('_crash' in line) {
           pos++;
           throw new Error('Claude crashed');
+        } else if ('_stop' in line) {
+          // Claude ends a turn by handing its Stop hooks what it still has scheduled.
+          const hook = { ...line._stop, hook_event_name: 'Stop' as const, stop_hook_active: false };
+          const stops = options.hooks?.Stop ?? [];
+          for (const callback of stops.flatMap((matcher) => matcher.hooks)) {
+            await callback({ ...hook, session_id: '', transcript_path: '', cwd: '' }, undefined, {
+              signal: abort.signal,
+            });
+          }
         } else if ('_quiet' in line) {
           await new Promise((resolve) => setImmediate(resolve));
         } else {
@@ -1049,6 +1060,77 @@ test('when Claude starts background work and ends its turn, the thread waits, an
   ]);
   expect(tab.tool(thread.id, 'Bash').output).toMatch(/^Background command .* completed/);
   expect(claude.calls).toHaveLength(1);
+});
+
+test('a thread with a wakeup scheduled waits for it, however long, and Claude speaks up when it fires', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  const script = recording('wakeup');
+  // The second `init` starts the turn the wakeup gives Claude.
+  const wakeup = script.filter((line) => 'type' in line && line.type === 'system' && line.subtype === 'init')[1];
+  await serve(script);
+  const fire = claude.pause((msg) => msg === wakeup);
+  const tab = await connect();
+  const thread = await startThread('wake up in a minute');
+  await tab.open(thread.id);
+
+  // The recording scheduled it for 02:58.
+  const waiting = await tab.status(thread.id, 'waiting');
+  expect(waiting.tasks).toEqual(['Wakes up at 02:58']);
+  vi.advanceTimersByTime(60 * 60_000);
+  expect(claude.closed()).toBe(0);
+
+  fire();
+  await tab.status(thread.id, 'working');
+  const done = await tab.status(thread.id, 'done');
+  expect(done.tasks).toEqual([]);
+  expect(tab.screen(thread.id).at(-1)).toBe('message: woke');
+  // Nothing is scheduled any more, so a quiet process is closed again.
+  vi.advanceTimersByTime(10 * 60_000);
+  expect(claude.closed()).toBe(1);
+});
+
+// Makes the last turn of a recording end in an API error instead. Claude runs no Stop hook after a failed turn.
+function failLastTurn(script: Line[]) {
+  const last = script.findLastIndex((line) => 'type' in line && line.type === 'result');
+  const result = script[last] as Extract<SDKMessage, { subtype: 'success' }>;
+  script.splice(last - 1, 2, { ...result, is_error: true, result: 'API Error: 529' });
+}
+
+test('when the turn a wakeup starts fails, the thread is not left waiting for a wakeup that already fired', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  // The same recording, but the wakeup's turn ends in an API error.
+  const script = recording('wakeup');
+  failLastTurn(script);
+  await serve(script);
+  const tab = await connect();
+  const thread = await startThread('wake up in a minute');
+
+  const failed = await tab.status(thread.id, 'failed');
+  expect(failed.tasks).toEqual([]);
+  vi.advanceTimersByTime(10 * 60_000);
+  expect(claude.closed()).toBe(1);
+});
+
+test('a repeating wakeup outlives a turn that fails', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  // The recording with a repeating schedule instead of a one-time one, and the turn it starts fails.
+  const script = recording('wakeup');
+  const stop = script.find((line) => '_stop' in line) as { _stop: Stop };
+  const [cron] = stop._stop.session_crons!;
+  stop._stop = { session_crons: [{ ...cron, schedule: '*/5 * * * *', recurring: true }] };
+  failLastTurn(script);
+  await serve(script);
+  const tab = await connect();
+  const thread = await startThread('check every five minutes');
+
+  await tab.open(thread.id);
+  await tab.shows(thread.id, (screen) => screen.some((line) => line.includes('529')));
+  expect(tab.events.findLast((e) => e.type === 'thread')!.thread).toMatchObject({
+    status: 'waiting',
+    tasks: ['Wakes up on a repeating schedule (*/5 * * * *)'],
+  });
+  vi.advanceTimersByTime(60 * 60_000);
+  expect(claude.closed()).toBe(0);
 });
 
 test("a subagent's card stays open while it works and lists what it did", async () => {

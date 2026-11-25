@@ -9,6 +9,8 @@ import {
   type Thread,
 } from '@acocrew/shared';
 import type {
+  HookCallback,
+  SessionCronSummary,
   McpServerConfig,
   Options,
   PermissionResult,
@@ -62,6 +64,8 @@ type Session = {
   failed: boolean;
   // Background work Claude is waiting on, in its own words.
   tasks: string[];
+  // When Claude has asked to be woken up (ScheduleWakeup, CronCreate, /loop). The timers live in the process.
+  wakeups: SessionCronSummary[];
   // Since when Claude has been at it without a break. Null while it has nothing going on or waits for the user.
   since: number | null;
   // Approval prompts and questions waiting for the user: tool id -> how to hand over the answer.
@@ -114,6 +118,16 @@ function launchOptions({ model, effort, context, fast }: NewMessage, proxy: Prox
   };
 }
 
+// How a scheduled wakeup reads in the thread. A one-time one is a cron line for a single minute of the day.
+function wakeupLine({ schedule, recurring }: SessionCronSummary) {
+  const [minute, hour] = schedule.split(' ');
+  if (recurring) return `Wakes up on a repeating schedule (${schedule})`;
+  return `Wakes up at ${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`;
+}
+
+// Everything Claude still has going on that will make it speak up by itself.
+const pending = (session: Session) => [...session.tasks, ...session.wakeups.map(wakeupLine)];
+
 // A list you can keep adding to while someone else is reading from it.
 function queue<T>() {
   const items: T[] = [];
@@ -165,7 +179,7 @@ export function createRunner(
   // Adds what is only known while the process runs to a stored thread row.
   const withLive = (row: StoredThread): Thread => {
     const session = sessions.get(row.id);
-    return { ...row, tasks: session?.tasks ?? [], since: session?.since ?? null };
+    return { ...row, tasks: session ? pending(session) : [], since: session?.since ?? null };
   };
 
   // Saves a change to a thread and tells everyone who sees it. `news` is a change people want to look at: it moves the
@@ -204,9 +218,10 @@ export function createRunner(
     const session = sessions.get(threadId);
     if (!session) return;
     const waitingOnUser = session.asks.size > 0;
-    const quiet = !session.busy && !session.tasks.length && !waitingOnUser;
+    const tasks = pending(session);
+    const quiet = !session.busy && !tasks.length && !waitingOnUser;
     let status: Status = 'done';
-    if (session.tasks.length) status = 'waiting';
+    if (tasks.length) status = 'waiting';
     if (session.busy) status = 'working';
     if (quiet && session.failed) status = 'failed';
     if (waitingOnUser) status = 'needs';
@@ -215,7 +230,7 @@ export function createRunner(
     clearTimeout(session.idle);
     if (quiet) session.idle = setTimeout(() => close(threadId), IDLE_MS).unref();
 
-    const shown = JSON.stringify([status, session.tasks]);
+    const shown = JSON.stringify([status, tasks]);
     if (shown === lastShown.get(threadId)) return;
     lastShown.set(threadId, shown);
     setThread(threadId, { status });
@@ -272,6 +287,14 @@ export function createRunner(
       return { ...allow, updatedPermissions: rules };
     };
 
+    // At the end of every turn Claude says which wakeups it still has scheduled.
+    const onStop: HookCallback = async (hook) => {
+      if (hook.hook_event_name !== 'Stop' || session.closed) return {};
+      session.wakeups = hook.session_crons ?? [];
+      sync(threadId);
+      return {};
+    };
+
     const running = query({
       prompt: input,
       options: {
@@ -285,6 +308,7 @@ export function createRunner(
         canUseTool,
         includePartialMessages: true,
         mcpServers: { acocrew: tools(threadId) },
+        hooks: { Stop: [{ hooks: [onStop] }] },
       },
     });
     session = {
@@ -298,6 +322,7 @@ export function createRunner(
       busy: false,
       failed: false,
       tasks: [],
+      wakeups: [],
       since: null,
       asks: new Map(),
       closed: false,
@@ -356,6 +381,9 @@ export function createRunner(
     if (msg.type === 'result') {
       session.busy = false;
       session.failed = msg.is_error && !wasAborted(msg);
+      // A turn that fails skips the Stop hook. A one-time wakeup may be what started it, and is gone then.
+      // Repeating ones stay until Claude deletes them.
+      if (msg.is_error) session.wakeups = session.wakeups.filter((cron) => cron.recurring);
       void noteBranch(threadId);
     }
     const used = contextUsed(msg);
@@ -463,7 +491,7 @@ export function createRunner(
         // that one has nothing going on.
         const old = sessions.get(threadId);
         const changed = old && old.launch !== JSON.stringify(launchOptions(message, proxy));
-        if (changed && !old.busy && !old.tasks.length && !old.asks.size) close(threadId);
+        if (changed && !old.busy && !pending(old).length && !old.asks.size) close(threadId);
         const session = sessions.get(threadId) ?? start(threadId, message);
         session.access = access;
         session.busy = true;
