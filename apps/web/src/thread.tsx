@@ -646,7 +646,7 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
             <p className="mb-2 flex items-start gap-1.5 px-1 text-xs text-muted-foreground">
               <Clock size={13} className="mt-0.5 shrink-0" />
               <span>
-                {thread.status === 'waiting' ? 'Claude is waiting on background work' : 'Running in the background'}:{' '}
+                {thread.status === 'waiting' ? 'Claude is waiting' : 'Running in the background'}:{' '}
                 {thread.tasks.join('; ')}
               </span>
             </p>

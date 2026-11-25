@@ -89,7 +89,7 @@ const STATES = [
   { id: 'all', name: 'Any state', hint: 'Nothing is left out' },
   { id: 'you', name: 'Needs you', hint: 'Your answer, new to you, or a tag' },
   { id: 'working', name: statusLabel('working'), hint: 'Claude is at it' },
-  { id: 'waiting', name: statusLabel('waiting'), hint: 'Background work is running' },
+  { id: 'waiting', name: statusLabel('waiting'), hint: 'Background work is running or a wakeup is scheduled' },
   { id: 'failed', name: statusLabel('failed'), hint: 'Broke off with an error' },
   { id: 'done', name: statusLabel('done'), hint: 'Nothing going on' },
 ];
