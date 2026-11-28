@@ -472,8 +472,18 @@ export function createRunner(
               addItem(threadId, item);
               if (item.kind === 'tool' && item.done) answerCodex(threadId, session, item.id, null);
             } else {
+              const prior = session.live.get(item.id);
               session.live.set(item.id, item);
-              hub.toThread(threadId, { type: 'item', item, threadId });
+              if (item.kind === 'message' && prior?.kind === 'message' && item.text.startsWith(prior.text)) {
+                hub.toThread(threadId, {
+                  type: 'delta',
+                  itemId: item.id,
+                  text: item.text.slice(prior.text.length),
+                  threadId,
+                });
+              } else {
+                hub.toThread(threadId, { type: 'item', item, threadId });
+              }
             }
           },
           onApproval(item) {
@@ -499,7 +509,7 @@ export function createRunner(
         setThread(threadId, { status: 'done' });
       }
     } catch (err) {
-      if (signal.aborted) return;
+      if (signal.aborted) throw err;
       session.since = null;
       savePartial(threadId, session);
       cutShort(threadId, () => note('error', `${err instanceof Error ? err.message : String(err)}${dropped(session)}`));
@@ -522,6 +532,7 @@ export function createRunner(
     const current = codexSessions.get(threadId);
     if (current) {
       current.input.push(message);
+      setThread(threadId, {});
       return;
     }
     if (!codex) {
@@ -548,7 +559,15 @@ export function createRunner(
     session.abort.abort();
     for (const resolve of session.asks.values()) resolve(null);
     session.asks.clear();
-    await session.run;
+    try {
+      await session.run;
+    } catch (err) {
+      session.since = null;
+      savePartial(threadId, session);
+      cutShort(threadId, () => note('error', err instanceof Error ? err.message : String(err)));
+      setThread(threadId, { status: 'failed' });
+      throw err;
+    }
     codexSessions.delete(threadId);
     if (!showNotice) return;
     savePartial(threadId, session);
@@ -724,7 +743,7 @@ export function createRunner(
       if (session) return stopCodex(threadId, session, false);
       close(threadId);
     },
-    shutdown: () => Promise.all([...codexSessions].map(([id, session]) => stopCodex(id, session, false))),
+    shutdown: () => Promise.allSettled([...codexSessions].map(([id, session]) => stopCodex(id, session, false))),
     stopping: (threadId: string) => codexSessions.get(threadId)?.abort.signal.aborted ?? false,
 
     // The bubbles the agent is writing right now.

@@ -100,6 +100,7 @@ test('persists the native ID before input, isolates the child, and saves final t
       'model_provider="openai"',
       'openai_base_url=""',
       'chatgpt_base_url="https://chatgpt.com/backend-api/"',
+      `projects={${JSON.stringify(f.cwd)}={trust_level="untrusted"}}`,
     ]),
   );
   expect(wire.flatMap((line) => (line.method ? [line.method] : []))).toEqual([

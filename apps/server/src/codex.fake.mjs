@@ -132,6 +132,7 @@ input.on('line', (line) => {
         const raw = process.argv[i + 3];
         const at = raw.indexOf('=');
         const [key, field] = raw.slice(0, at).split('.');
+        if (key === 'projects') continue;
         const value = JSON.parse(raw.slice(at + 1));
         if (field) (config[key] ??= {})[field] = value;
         else config[key] = value;
@@ -230,7 +231,8 @@ input.on('line', (line) => {
         event('item/agentMessage/delta', { itemId: agent.id, delta: ' there' }),
         event('item/completed', itemEvent(agent, true)),
         event('item/agentMessage/delta', { itemId: agent.id, delta: 'not another turn', turnId: 'old-turn' }),
-        complete('completed', [agent, finished, failedPatch]),
+        event('item/completed', itemEvent(failedPatch, true)),
+        complete('completed', [agent]),
         event('item/agentMessage/delta', { itemId: agent.id, delta: 'not after completion' }),
       );
     }

@@ -16,6 +16,7 @@ const codex = (() => {
   if (!codexHome && !codexModel && !codexBin) return;
   if (!codexHome || !isAbsolute(codexHome) || !codexModel)
     throw new Error('Enabling Codex needs an absolute ACOCREW_CODEX_HOME and an ACOCREW_CODEX_MODEL.');
+  if (codexBin && !isAbsolute(codexBin)) throw new Error('ACOCREW_CODEX_BIN must be an absolute path.');
   if (!statSync(codexHome, { throwIfNoEntry: false })?.isDirectory())
     throw new Error('ACOCREW_CODEX_HOME must be an existing directory.');
   const path = realpathSync(codexHome);
@@ -41,7 +42,7 @@ const secret = readFileSync(secretFile, 'utf8');
 const built = fileURLToPath(new URL('../../web/dist', import.meta.url));
 const web = existsSync(join(built, 'index.html')) ? built : undefined;
 
-const { port } = await startServer(Number(process.env.PORT) || SERVER_PORT, {
+const { port, close } = await startServer(Number(process.env.PORT) || SERVER_PORT, {
   db,
   query,
   home,
@@ -53,3 +54,9 @@ const { port } = await startServer(Number(process.env.PORT) || SERVER_PORT, {
   codex,
 });
 console.log(`acocrew server listening on http://127.0.0.1:${port}${web ? ' (with the built web app)' : ''}`);
+
+if (codex) {
+  const stop = () => void close().finally(() => process.exit());
+  process.once('SIGTERM', stop);
+  process.once('SIGINT', stop);
+}

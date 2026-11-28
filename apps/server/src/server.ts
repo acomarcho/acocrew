@@ -198,7 +198,7 @@ export async function createApp({
       (message.model !== thread.model || message.effort !== thread.effort || message.access !== thread.access)
     )
       return 'The model, effort and access of a Codex thread cannot be changed.';
-    if (message.model !== codex.model) return `${message.model} is not offered by Codex.`;
+    if (!thread && message.model !== codex.model) return `${message.model} is not offered by Codex.`;
     if (!CODEX_EFFORTS.includes(message.effort)) return 'Codex does not support that effort setting.';
   }
   // `user` is whoever is logged in on the browser that sent the request, and `login` is the id of that login.
@@ -881,7 +881,11 @@ export async function createApp({
   // folder, and never one that someone made by hand and a thread was started in.
   app.post('/api/threads/:id/delete', async (c) => {
     const thread = c.get('thread');
-    await runner.end(thread.id);
+    try {
+      await runner.end(thread.id);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
     db.transaction((tx) => {
       for (const table of [events, chats, seen, shares]) tx.delete(table).where(eq(table.threadId, thread.id)).run();
       tx.delete(threads).where(eq(threads.id, thread.id)).run();
@@ -898,7 +902,11 @@ export async function createApp({
   });
 
   app.post('/api/threads/:id/stop', async (c) => {
-    await runner.stop(c.get('thread').id);
+    try {
+      await runner.stop(c.get('thread').id);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
     return c.json({ ok: true });
   });
 

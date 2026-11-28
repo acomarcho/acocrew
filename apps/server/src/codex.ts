@@ -203,12 +203,15 @@ function approvalDetails(method: string, params: Obj, patch: Obj | undefined) {
 export function createCodexTurn(config: CodexConfig): CodexTurn {
   return async ({ cwd, sessionId, text, model, effort, access, signal, onSession, onItem, onApproval }) => {
     if (signal.aborted) return 'interrupted';
-    if (model !== config.model) throw new Error('This model is not enabled for Codex.');
+    if (sessionId === null && model !== config.model) throw new Error('This model is not enabled for Codex.');
     const [home, folder] = await Promise.all([dedicatedHome(config.home), realpath(cwd)]);
     if (signal.aborted) return 'interrupted';
 
     const group = process.platform !== 'win32';
-    const child = spawn(config.binary ?? 'codex', ARGS, {
+    if (config.binary && !isAbsolute(config.binary)) throw new Error('The Codex binary path must be absolute.');
+    // Full access must not cause App Server to trust and load settings from the checkout.
+    const trust = `projects={${JSON.stringify(folder)}={trust_level="untrusted"}}`;
+    const child = spawn(config.binary ?? 'codex', [...ARGS, '-c', trust], {
       cwd: folder,
       env: nativeEnv(home),
       detached: group,

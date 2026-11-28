@@ -3153,7 +3153,7 @@ test('Codex creates, asks permission across WebSocket reconnect, and resumes aft
 
   // A fresh app has only the database to recover the Codex session and its saved items from.
   db = openDb(db.$client.serialize());
-  await serve([], NAMING, config);
+  await serve([], NAMING, { ...config, codex: { ...CODEX, model: 'gpt-5.5' } });
   const after = await connect();
   expect(after.hello.threads).toContainEqual(
     expect.objectContaining({ id: thread.id, agent: 'codex', title: 'By hand' }),
@@ -3181,6 +3181,36 @@ test('Codex creates, asks permission across WebSocket reconnect, and resumes aft
   expect(after.items(thread.id)).toContainEqual(expect.objectContaining({ by: 'codex', text: 'Codex: second prompt' }));
   expect(claude.calls).toEqual([]);
   expect(proxyAsked).toHaveLength(before);
+});
+
+test('opening an active Codex thread returns the latest version of each live item once', async () => {
+  const turn: CodexTurn = async ({ onItem, signal }) => {
+    const message = { id: 'stream', at: nextAt(), kind: 'message', by: 'codex' } as const;
+    const tool = {
+      id: 'command',
+      at: nextAt(),
+      kind: 'tool',
+      name: 'Command',
+      detail: 'printf hello',
+      done: false,
+      failed: false,
+    } as const;
+    onItem({ ...message, text: 'Hello' }, false);
+    onItem(tool, false);
+    onItem({ ...tool, output: 'hello' }, false);
+    onItem({ ...message, text: 'Hello there' }, false);
+    await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+    return 'interrupted';
+  };
+  await serve([], undefined, { codex: CODEX, codexTurn: turn });
+  const tab = await connect();
+  const thread = await startThread('hello', CODEX_START);
+  await tab.open(thread.id);
+  expect(tab.items(thread.id).filter((item) => item.id === 'command')).toEqual([
+    expect.objectContaining({ output: 'hello' }),
+  ]);
+  expect(tab.items(thread.id)).toContainEqual(expect.objectContaining({ id: 'stream', text: 'Hello there' }));
+  expect((await post(`/api/threads/${thread.id}/stop`)).status).toBe(200);
 });
 
 test('a request withdrawn by Codex closes its approval and rejects stale browser answers', async () => {
@@ -3241,6 +3271,22 @@ test('Codex permission prompts expire after a restart, but the next prompt still
   expect((await say(thread, 'continue', CODEX_MESSAGE)).status).toBe(200);
   await after.status(thread.id, 'done');
   expect(turn).toHaveBeenNthCalledWith(2, expect.objectContaining({ sessionId: CODEX_SESSION, text: 'continue' }));
+});
+
+test('a failed Codex teardown does not report success or delete the thread', async () => {
+  const turn: CodexTurn = async ({ signal }) => {
+    await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+    throw new Error('Could not confirm that the Codex process closed.');
+  };
+  await serve([], undefined, { codex: CODEX, codexTurn: turn });
+  const tab = await connect();
+  const thread = await startThread('first prompt', CODEX_START);
+  const stop = await post(`/api/threads/${thread.id}/stop`);
+  expect(stop.status).toBe(500);
+  expect(await stop.json()).toEqual({ error: 'Could not confirm that the Codex process closed.' });
+  await tab.status(thread.id, 'failed');
+  expect((await post(`/api/threads/${thread.id}/delete`)).status).toBe(500);
+  expect(allThreads().map((row) => row.id)).toEqual([thread.id]);
 });
 
 test.each(['stop', 'delete'])('Codex %s rejects replies until the running turn ends', async (action) => {
