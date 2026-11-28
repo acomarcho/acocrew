@@ -127,3 +127,23 @@ test('what another tab saved is taken over, so this tab does not undo it with it
   // What was only picked in this tab is in no save, and is still picked.
   expect(tab.draftOf('picking').visibility).toBe('public');
 });
+
+test('switching runtimes preserves the draft, including each runtime’s settings', async () => {
+  let page = await load();
+  page.editDraft('new', {
+    channelId: 'shop',
+    text: 'work on the cart',
+    files: ['notes.txt'],
+    place: 'existing',
+    path: '/home/me/shop',
+    settings: { model: 'a-proxy-model', fast: true },
+  });
+  const claude = page.draftOf('new');
+  page.editDraft('new', { agent: 'codex' });
+  const codexSettings = { access: 'full', effort: 'high' } as const;
+  page.editDraft('new', { codexSettings });
+  page = await load();
+  expect(page.draftOf('new')).toEqual({ ...claude, agent: 'codex', codexSettings });
+  page.editDraft('new', { agent: 'claude' });
+  expect(page.draftOf('new')).toEqual({ ...claude, agent: 'claude', codexSettings });
+});

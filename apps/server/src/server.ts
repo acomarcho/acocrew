@@ -26,6 +26,7 @@ import {
   type Answer,
   type ClientEvent,
   type Me,
+  type Model,
   type NewAutomation,
   type NewMessage,
   type Places,
@@ -53,6 +54,7 @@ import {
   temporaryPassword,
 } from './auth.ts';
 import { CHECK_MS, nextRun, readSchedule, shown, type Stored } from './automations.ts';
+import { createCodexTurn, type CodexConfig, type CodexTurn } from './codex.ts';
 import {
   automationCols,
   canSee,
@@ -104,7 +106,11 @@ export type Deps = {
   web?: string;
   gh?: string;
   prices?: string;
+  codex?: CodexConfig;
+  codexTurn?: CodexTurn;
 };
+
+const CODEX_EFFORTS = ['low', 'medium', 'high', 'xhigh'];
 
 const NAME_MAX = 50;
 // A display name as it is kept, or nothing when it cannot be used.
@@ -152,7 +158,23 @@ export async function createApp({
   web,
   gh = 'gh',
   prices,
+  codex,
+  codexTurn,
 }: Deps) {
+  const codexModels: Model[] = codex
+    ? [
+        {
+          id: codex.model,
+          name: codex.model,
+          hint: 'Through Codex',
+          bigContext: false,
+          fast: false,
+          efforts: CODEX_EFFORTS,
+          window: null,
+        },
+      ]
+    : [];
+  const runCodex = codex && (codexTurn ?? createCodexTurn(codex));
   const auth = createAuth(db, secret, https);
   await seedAdmin(auth, db);
   const hub = createHub();
@@ -160,11 +182,25 @@ export async function createApp({
   const attached = openFiles(join(images, 'files'));
   const proxy = createProxy(db);
   const usage = createUsage(home, prices);
-  const runner = createRunner(db, hub, query, store, attached, proxy, tools);
+  const runner = createRunner(db, hub, query, store, attached, proxy, tools, runCodex);
   // Why a thread cannot run on this model right now, or nothing when it can. A proxy model is off the list while
   // the proxy is away, which is worth saying in so many words.
   const unoffered = async (model: string) =>
     !(await proxy.offers(model)) && `${model} is not offered right now. Is the model proxy running?`;
+  function codexRefusal(message: NewMessage, thread?: StoredThread) {
+    if (!codex) return 'Codex is not enabled on this server.';
+    if (message.images.length || message.files.length) return 'Codex threads only accept text.';
+    // The shared message format still needs a context value. Codex chooses its own window.
+    if (message.context !== '200k' || message.fast)
+      return 'Codex does not support Claude’s context or fast mode settings.';
+    if (
+      thread &&
+      (message.model !== thread.model || message.effort !== thread.effort || message.access !== thread.access)
+    )
+      return 'The model, effort and access of a Codex thread cannot be changed.';
+    if (message.model !== codex.model) return `${message.model} is not offered by Codex.`;
+    if (!CODEX_EFFORTS.includes(message.effort)) return 'Codex does not support that effort setting.';
+  }
   // `user` is whoever is logged in on the browser that sent the request, and `login` is the id of that login.
   // `thread` is the thread a request is about (see the routes under `/api/threads/:id`).
   const app = new Hono<{ Variables: { user: Me; login: string; thread: StoredThread } }>();
@@ -357,7 +393,7 @@ export async function createApp({
   );
 
   // The models a thread can run on, for the model picker.
-  app.get(MODELS_PATH, async (c) => c.json(await proxy.models()));
+  app.get(MODELS_PATH, async (c) => c.json(c.req.query('agent') === 'codex' ? codexModels : await proxy.models()));
 
   app.get('/api/folders', (c) => {
     const list = listFolders(home, c.req.query('path') ?? home);
@@ -401,7 +437,7 @@ export async function createApp({
     return c.json(await listPlaces(channel.path));
   });
 
-  // Starts a thread: saves it, tells everyone and hands the first message to Claude. People and automations
+  // Starts a thread: saves it, tells everyone and hands the first message to its agent. People and automations
   // both start threads through here. Gives back the thread, or why there is none.
   type Where = { from?: unknown; path?: unknown };
   type Refusal = { error: string; status: 400 | 500 };
@@ -412,6 +448,7 @@ export async function createApp({
     message: NewMessage,
     pick: Where,
     { userId, visibility, automationId, shared = [] }: Starter,
+    agent: Thread['agent'] = 'claude',
   ): Promise<Thread | Refusal> {
     const id = randomUUID();
     const short = id.slice(0, 8);
@@ -435,6 +472,7 @@ export async function createApp({
       path: place.path === channel.path ? null : place.path,
       branch: place.branch,
       title: firstLine(message.text) || (message.files[0] ? fileName(message.files[0]) : 'Image'),
+      agent,
       model: message.model,
       effort: message.effort,
       context: message.context,
@@ -457,7 +495,7 @@ export async function createApp({
     hub.thread(thread);
     runner.send(thread.id, message, userId);
     // In the background: nothing waits for the name.
-    void runner.name(thread.id);
+    if (agent === 'claude') void runner.name(thread.id);
     return thread;
   }
   // What Claude in a thread can do on acocrew itself, checked like what a person sends.
@@ -469,6 +507,8 @@ export async function createApp({
         return why ? { error: why } : startThread(findChannel(channelId)!, message, pick, starter);
       },
       async send(id, message, userId) {
+        const row = db.select({ agent: threads.agent }).from(threads).where(eq(threads.id, id)).get();
+        if (row?.agent === 'codex') return 'Send messages to Codex threads from the app.';
         const why = await unoffered(message.model);
         if (!why) runner.send(id, message, userId);
         return why || undefined;
@@ -483,15 +523,17 @@ export async function createApp({
       .get();
 
   app.post('/api/threads', async (c) => {
-    const body = await c.req.json().catch(() => ({}));
+    const body = (await c.req.json().catch(() => null)) ?? {};
+    const { agent = 'claude' } = body;
+    if (agent !== 'claude' && agent !== 'codex') return refuse(c, 'Pick Claude or Codex.');
     const message = readMessage(body, store, attached);
     const channel = findChannel(body.channelId);
     const visibility = readVisibility(body.visibility);
     if (!message || !channel || !visibility)
       return c.json({ error: 'Needs a channel, a message and a full set of settings.' }, 400);
-    const why = await unoffered(message.model);
+    const why = agent === 'codex' ? codexRefusal(message) : await unoffered(message.model);
     if (why) return refuse(c, why);
-    const thread = await startThread(channel, message, body, { userId: c.get('user').id, visibility });
+    const thread = await startThread(channel, message, body, { userId: c.get('user').id, visibility }, agent);
     return 'error' in thread ? c.json({ error: thread.error }, thread.status) : c.json(thread);
   });
 
@@ -641,11 +683,20 @@ export async function createApp({
   });
 
   app.post('/api/threads/:id/messages', async (c) => {
-    const message = readMessage(await c.req.json().catch(() => ({})), store, attached);
+    const body = (await c.req.json().catch(() => null)) ?? {};
+    const thread = c.get('thread');
+    const { agent = thread.agent } = body;
+    if (agent !== thread.agent) return refuse(c, 'The agent of a thread cannot be changed.');
+    const message = readMessage(body, store, attached);
     if (!message) return c.json({ error: 'Needs a message and a full set of settings.' }, 400);
-    const why = await unoffered(message.model);
+    const why = agent === 'codex' ? codexRefusal(message, thread) : await unoffered(message.model);
     if (why) return refuse(c, why);
-    runner.send(c.get('thread').id, message, c.get('user').id);
+    const userId = c.get('user').id;
+    if (agent === 'codex') {
+      if (!findThread(thread.id, userId)) return c.json({ error: 'Thread not found.' }, 404);
+      if (runner.stopping(thread.id)) return c.json({ error: 'Codex is still stopping.' }, 409);
+    }
+    runner.send(thread.id, message, userId);
     return c.json({ ok: true });
   });
 
@@ -699,10 +750,14 @@ export async function createApp({
   });
 
   app.post('/api/threads/:id/answers', async (c) => {
-    const body = (await c.req.json().catch(() => ({}))) as Answer;
-    if (!DECISIONS.includes(body.decision)) return c.json({ error: 'Not an answer.' }, 400);
-    const taken = runner.answer(c.get('thread').id, body);
-    return taken ? c.json({ ok: true }) : c.json({ error: 'Claude is no longer waiting for this answer.' }, 409);
+    const body = (await c.req.json().catch(() => null)) as Answer | null;
+    if (!body || !DECISIONS.includes(body.decision)) return c.json({ error: 'Not an answer.' }, 400);
+    const { id, agent } = c.get('thread');
+    if (agent === 'codex' && (body.decision === 'always' || body.answers !== undefined))
+      return refuse(c, 'Codex only supports approving or declining this request, or stopping the turn.');
+    if (runner.answer(id, body)) return c.json({ ok: true });
+    const name = agent === 'codex' ? 'Codex' : 'Claude';
+    return c.json({ error: `${name} is no longer waiting for this answer.` }, 409);
   });
 
   // The person has the thread on screen, as it was at `at` (its `updatedAt` in their browser). What happened
@@ -815,7 +870,9 @@ export async function createApp({
 
   // Asks Claude for a new name, from how the thread starts now. Gives back the name.
   app.post('/api/threads/:id/retitle', async (c) => {
-    const title = await runner.name(c.get('thread').id);
+    const { agent, id } = c.get('thread');
+    if (agent === 'codex') return refuse(c, 'Codex threads can only be renamed by hand.');
+    const title = await runner.name(id);
     return title ? c.json({ title }) : c.json({ error: 'Claude did not come up with a name. Try again.' }, 500);
   });
 
@@ -824,7 +881,7 @@ export async function createApp({
   // folder, and never one that someone made by hand and a thread was started in.
   app.post('/api/threads/:id/delete', async (c) => {
     const thread = c.get('thread');
-    runner.end(thread.id);
+    await runner.end(thread.id);
     db.transaction((tx) => {
       for (const table of [events, chats, seen, shares]) tx.delete(table).where(eq(table.threadId, thread.id)).run();
       tx.delete(threads).where(eq(threads.id, thread.id)).run();
@@ -849,6 +906,7 @@ export async function createApp({
   // channel's repository for a thread that has not been started yet.
   app.get(COMMANDS_PATH, async (c) => {
     const thread = findThread(c.req.query('thread') ?? '', c.get('user').id);
+    if (thread?.agent === 'codex') return c.json([]);
     const channel = db
       .select()
       .from(channels)
@@ -943,20 +1001,26 @@ export async function createApp({
     app.get('*', serveStatic({ root: web, path: 'index.html', onFound }));
   }
 
-  return { app, close: () => clearInterval(check) };
+  return {
+    app,
+    close() {
+      clearInterval(check);
+      return runner.shutdown();
+    },
+  };
 }
 
 // Listens on localhost only. Tailscale or a tunnel sits in front of it.
 export async function startServer(port: number, deps: Deps) {
   const { app, close } = await createApp(deps);
   const websocket = { server: new WebSocketServer({ noServer: true }) };
-  return new Promise<{ port: number; close: () => void }>((resolve) => {
+  return new Promise<{ port: number; close: typeof close }>((resolve) => {
     const server = serve({ fetch: app.fetch, port, hostname: '127.0.0.1', websocket }, (info) =>
       resolve({
         port: info.port,
         close() {
-          close();
           server.close();
+          return close();
         },
       }),
     );

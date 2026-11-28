@@ -62,7 +62,7 @@ function Repo({ channel, index }: { channel: Channel; index: number }) {
       <span className="flex-1 truncate">{channel.name}</span>
       {busy > 0 && (
         <span
-          title={`Claude is busy in ${busy} ${busy === 1 ? 'thread' : 'threads'}`}
+          title={`${busy} ${busy === 1 ? 'thread is' : 'threads are'} working`}
           className="size-1.5 shrink-0 animate-pulse rounded-full bg-amber-500"
         />
       )}
@@ -88,7 +88,7 @@ const WHOSE = [
 const STATES = [
   { id: 'all', name: 'Any state', hint: 'Nothing is left out' },
   { id: 'you', name: 'Needs you', hint: 'Your answer, new to you, or a tag' },
-  { id: 'working', name: statusLabel('working'), hint: 'Claude is at it' },
+  { id: 'working', name: statusLabel('working'), hint: 'The agent is working' },
   { id: 'waiting', name: statusLabel('waiting'), hint: 'Background work is running or a wakeup is scheduled' },
   { id: 'failed', name: statusLabel('failed'), hint: 'Broke off with an error' },
   { id: 'done', name: statusLabel('done'), hint: 'Nothing going on' },

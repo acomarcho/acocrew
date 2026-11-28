@@ -6,17 +6,18 @@ import { request } from './store';
 
 // `from` says where Claude would run: `thread=<id>`, or `channel=<id>` for a thread not started yet.
 // Empty until the server answers. If it cannot, there are just no suggestions.
-export function useCommands(from: string) {
-  const [list, setList] = useState<Command[]>([]);
+export function useCommands(from?: string) {
+  const [list, setList] = useState<{ from: string; commands: Command[] }>();
   useEffect(() => {
+    if (!from) return;
     let left = false;
     request<Command[]>(`${COMMANDS_PATH}?${from}`).then(
-      (answer) => !left && setList(answer),
+      (commands) => !left && setList({ from, commands }),
       () => {},
     );
     return () => void (left = true);
   }, [from]);
-  return list;
+  return list && list.from === from ? list.commands : [];
 }
 
 // What to suggest for the `/name` that ends at the caret: where its slash is, and what fits, in the order

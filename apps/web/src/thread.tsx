@@ -60,7 +60,9 @@ import { ShareButton } from './sharing';
 import { imageUrl } from './images';
 import { pluginsFor, ShownFile, shownPrefix } from './shown';
 import {
+  agentName,
   Avatar,
+  codexMessage,
   Composer,
   Elapsed,
   FileChip,
@@ -97,8 +99,8 @@ const byUser = (entry?: Entry) => !entry || entry.kind === 'chat' || (entry.kind
 const ThreadCtx = createContext<(id: string) => Item[]>(null!);
 
 // One row of the chat. `lead` rows show who is talking; the rows under them belong to the same speaker.
-// The speaker is Claude (`agent`), or the person whose user id is `by`. `note` is a few words after the time.
-type Speaker = { agent?: boolean; by?: string; note?: string };
+// `by` is the person's user id. `note` is a few words after the time.
+type Speaker = { agent?: Thread['agent']; by?: string; note?: string };
 function Row({ agent, by, note, lead, at, children }: Speaker & { lead: boolean; at?: number; children: ReactNode }) {
   const people = useApp((state) => state.people);
   const person: Person | undefined = people.find((known) => known.id === by);
@@ -112,7 +114,7 @@ function Row({ agent, by, note, lead, at, children }: Speaker & { lead: boolean;
       <div className="min-w-0 flex-1">
         {lead && (
           <div className="mb-1 flex items-baseline gap-2">
-            <span className="font-semibold">{agent ? 'Claude' : (person?.name ?? 'Someone')}</span>
+            <span className="font-semibold">{agent ? agentName(agent) : (person?.name ?? 'Someone')}</span>
             {agent && <span className="rounded bg-primary/15 px-1.5 text-[11px] font-medium text-primary">Agent</span>}
             {at && <span className="text-xs text-muted-foreground">{clock(at)}</span>}
             {note && <span className="truncate text-[11px] text-sky-700">{note}</span>}
@@ -226,9 +228,19 @@ function ToolCard({ tool }: { tool: Tool }) {
   );
 }
 
-// Everything Claude does in a row (tools, answers, errors) sits under one "Claude" heading.
+// The agent’s tools, answers and errors sit under the same heading.
 // `nested` rows are a subagent's steps inside its card, which has no room for avatars.
-function ItemView({ item, lead, nested }: { item: Item; lead: boolean; nested?: boolean }) {
+function ItemView({
+  item,
+  lead,
+  agent,
+  nested,
+}: {
+  item: Item;
+  lead: boolean;
+  agent?: Thread['agent'];
+  nested?: boolean;
+}) {
   const threadId = useApp((state) => state.openId)!;
   if (item.kind === 'todos') return null;
   if (item.kind === 'message' && item.by === 'user') {
@@ -285,7 +297,7 @@ function ItemView({ item, lead, nested }: { item: Item; lead: boolean; nested?: 
   );
   if (nested) return <div className="px-2.5 py-1">{body}</div>;
   return (
-    <Row agent lead={lead} at={item.at}>
+    <Row agent={item.kind === 'message' && item.by !== 'user' ? item.by : agent} lead={lead} at={item.at}>
       {body}
     </Row>
   );
@@ -329,9 +341,9 @@ function DaySection({ at, children }: { at: number; children: ReactNode }) {
   );
 }
 
-function Working({ lead, since }: { lead: boolean; since: number | null }) {
+function Working({ agent, lead, since }: { agent: Thread['agent']; lead: boolean; since: number | null }) {
   return (
-    <Row agent lead={lead}>
+    <Row agent={agent} lead={lead}>
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
         <span>Working {since && <Elapsed from={since} label="for" />}</span>
         <span className="flex gap-1">
@@ -355,7 +367,7 @@ function ContextBar({ thread }: { thread: Thread }) {
   if (used === null) return null;
   const max = contextWindow(thread, models);
   return (
-    <Row agent lead={false}>
+    <Row lead={false}>
       <div className="flex items-center gap-2 text-xs text-muted-foreground tabular-nums" title="Context window used">
         <div
           role="progressbar"
@@ -373,13 +385,13 @@ function ContextBar({ thread }: { thread: Thread }) {
 }
 
 // Claude's own to-do list, shown until everything on it is done.
-function Todos({ todos }: { todos: Todo[] }) {
+function Todos({ agent, todos }: { agent: Thread['agent']; todos: Todo[] }) {
   const left = todos.filter((todo) => todo.status !== 'completed');
   if (left.length === 0) return null;
   return (
     <div className="mb-2 rounded-lg border border-border bg-card px-3 py-2 text-sm">
       <div className="mb-1 text-xs font-medium text-muted-foreground">
-        Claude's to-do list · {todos.length - left.length} of {todos.length} done
+        {agentName(agent)}'s to-do list · {todos.length - left.length} of {todos.length} done
       </div>
       {todos.map((todo) => (
         <div key={todo.id} className="flex items-center gap-2 py-0.5">
@@ -410,11 +422,13 @@ const shownFrom = (rows: Entry[], from: number) => {
 // when it is in. Made once the thread's content is in, so it starts at its last PAGE rows.
 // `loadedFrom` is the time the rows the browser has start at, null when they are all in.
 function Rows({
+  agent,
   rows,
   loadedFrom,
   scroller,
   stick,
 }: {
+  agent: Thread['agent'];
   rows: Entry[];
   loadedFrom: number | null;
   scroller: RefObject<HTMLDivElement | null>;
@@ -467,7 +481,7 @@ function Rows({
             row.kind === 'chat' ? (
               <ChatRow key={`chat-${row.id}`} chat={row} fresh={row.id === chatNew} />
             ) : (
-              <ItemView key={row.id} item={row} lead={byUser(day[i - 1])} />
+              <ItemView key={row.id} item={row} agent={agent} lead={byUser(day[i - 1])} />
             ),
           )}
         </DaySection>
@@ -476,7 +490,7 @@ function Rows({
   );
 }
 
-// The box to write to Claude. It is its own component, so typing redraws only the box and not the thread.
+// Typing redraws only the reply box, not the whole thread.
 function Reply({
   thread,
   questions,
@@ -488,24 +502,34 @@ function Reply({
   active: boolean;
   onSend: () => void;
 }) {
-  const commands = useCommands(`thread=${thread.id}`);
+  const codex = thread.agent === 'codex';
+  const commands = useCommands(codex ? undefined : `thread=${thread.id}`);
   // What this person typed and has not sent yet. Of the settings it holds only what they changed. The rest
   // follows the thread, so a teammate's change shows up here and is not undone by the next reply.
   const draft = useDraft(thread.id);
   const { model, effort, context, fast, access } = thread;
-  const settings: Settings = { model, effort, context, fast, access, ...draft.settings };
+  const settings: Settings = { model, effort, context, fast, access, ...(codex ? {} : draft.settings) };
   return (
     <Composer
       placeholder={
-        questions ? 'Type your own answer, or leave this blank to use the selected option' : 'Reply in thread'
+        questions
+          ? 'Type your own answer, or leave this blank to use the selected option'
+          : codex
+            ? 'Reply to Codex'
+            : 'Reply in thread'
       }
+      agent={thread.agent}
       value={draft}
       onChange={(change) => editDraft(thread.id, change(draftOf(thread.id)))}
       settings={settings}
-      onSettings={(next) => {
-        const changed = Object.entries(next).filter(([key, value]) => thread[key as keyof Settings] !== value);
-        editDraft(thread.id, { settings: Object.fromEntries(changed) });
-      }}
+      onSettings={
+        codex
+          ? undefined
+          : (next) => {
+              const changed = Object.entries(next).filter(([key, value]) => thread[key as keyof Settings] !== value);
+              editDraft(thread.id, { settings: Object.fromEntries(changed) });
+            }
+      }
       commands={commands}
       canSendEmpty={questions?.canSend}
       textOnly={Boolean(questions)}
@@ -513,7 +537,7 @@ function Reply({
         onSend();
         // While Claude has a question open, the message box answers it.
         if (questions) return questions.send(message.text);
-        await sendMessage(thread.id, { ...message, ...settings });
+        await sendMessage(thread.id, codex ? codexMessage(message.text, thread) : { ...message, ...settings });
         editDraft(thread.id, { settings: {} });
       }}
       onStop={active ? () => void stopThread(thread.id).catch(() => {}) : undefined}
@@ -530,6 +554,8 @@ const tabVisible = () => !document.hidden;
 
 // The full chat for one thread.
 export function ThreadView({ thread, channel }: { thread: Thread; channel: Channel }) {
+  const { agent } = thread;
+  const name = agentName(agent);
   const items = useApp((state) => state.items);
   const itemsFrom = useApp((state) => state.itemsFrom);
   const chats = useApp((state) => state.chats);
@@ -613,7 +639,7 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
             onChange={setShow}
             options={[
               { id: 'all', name: 'Everything' },
-              { id: 'claude', name: 'Claude' },
+              { id: 'claude', name },
               // The chat is not read while it is filtered away, so what is new in it is counted here.
               { id: 'people', name: 'People', after: <UnreadBadge unread={unread} /> },
             ]}
@@ -633,32 +659,32 @@ export function ThreadView({ thread, channel }: { thread: Thread; channel: Chann
           }}
           className="min-h-0 flex-1 overflow-y-auto py-3"
         >
-          {items && <Rows rows={rows} loadedFrom={loadedFrom} scroller={scroller} stick={stick} />}
+          {items && <Rows agent={agent} rows={rows} loadedFrom={loadedFrom} scroller={scroller} stick={stick} />}
           {thread.status === 'working' && show !== 'people' && (
-            <Working lead={byUser(rows.at(-1))} since={thread.since} />
+            <Working agent={agent} lead={byUser(rows.at(-1))} since={thread.since} />
           )}
           {/* The bar is about Claude, so it goes away with the rest of Claude's side. */}
-          {show !== 'people' && <ContextBar thread={thread} />}
+          {show !== 'people' && agent !== 'codex' && <ContextBar thread={thread} />}
         </div>
         <div className="p-3 pt-0">
-          {todos?.kind === 'todos' && <Todos todos={todos.todos} />}
+          {todos?.kind === 'todos' && <Todos agent={agent} todos={todos.todos} />}
           {thread.tasks.length > 0 && (
             <p className="mb-2 flex items-start gap-1.5 px-1 text-xs text-muted-foreground">
               <Clock size={13} className="mt-0.5 shrink-0" />
               <span>
-                {thread.status === 'waiting' ? 'Claude is waiting' : 'Running in the background'}:{' '}
+                {thread.status === 'waiting' ? `${name} is waiting` : 'Running in the background'}:{' '}
                 {thread.tasks.join('; ')}
               </span>
             </p>
           )}
           {questions && <QuestionPanel flow={questions} />}
-          {asking && !questions && <ApprovalPanel key={asking.id} tool={asking} reply={reply} />}
+          {asking && !questions && <ApprovalPanel key={asking.id} tool={asking} reply={reply} agent={agent} />}
           <div className="mb-2">
             <Segments
               value={to}
               onChange={setTo}
               options={[
-                { id: 'claude', name: 'To Claude', after: <Sparkles size={12} /> },
+                { id: 'claude', name: `To ${name}`, after: <Sparkles size={12} /> },
                 { id: 'people', name: 'To people', after: <Users size={12} /> },
               ]}
             />

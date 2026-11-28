@@ -56,6 +56,8 @@ type State = {
   github: GithubAccount[] | null;
   // The models a thread can run on: Claude's own until the server has said which ones the model proxy adds.
   models: Model[];
+  // The configured Codex model, or none if Codex is disabled. This is separate from the Claude proxy.
+  codexModels: Model[];
   // The thread on screen. `items` is null until the server has sent what is in it. It holds the rows from the
   // time `itemsFrom` on, and what is still going on from before (see the `items` event). `itemsFrom` is null
   // when the whole thread is in.
@@ -90,6 +92,7 @@ export const START: State = {
   seen: {},
   github: null,
   models: MODELS,
+  codexModels: [],
   openId: null,
   items: null,
   itemsFrom: null,
@@ -403,6 +406,9 @@ export function githubChoices(accounts: GithubAccount[] | null) {
 
 // Asks which models a thread can run on now, the model proxy's included.
 export const loadModels = async () => useApp.setState({ models: await request<Model[]>(MODELS_PATH) });
+export const loadCodexModels = async () =>
+  useApp.setState({ codexModels: await request<Model[]>(`${MODELS_PATH}?agent=codex`) });
+
 // How the machine reaches the model proxy. Only an admin can look or change it. Saving also asks again which
 // models there are.
 export const loadProxy = () => request<ProxySettings>(PROXY_PATH);

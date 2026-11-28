@@ -1,5 +1,5 @@
 // Database tables. After changing this file, run `pnpm db:generate` to create a migration.
-import type { Access, Chat, Item, Role, Status, Visibility } from '@acocrew/shared';
+import type { Access, Agent, Chat, Item, Role, Status, Visibility } from '@acocrew/shared';
 import { index, integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 // The four tables below are Better Auth's own (see auth.ts). It reads and writes them by these names.
@@ -107,6 +107,7 @@ export const threads = sqliteTable('threads', {
     .notNull()
     .references(() => channels.id),
   title: text('title').notNull(),
+  agent: text('agent').$type<Agent>().notNull().default('claude'),
   model: text('model').notNull(),
   effort: text('effort').notNull(),
   context: text('context').notNull().default('1m'),
@@ -117,7 +118,7 @@ export const threads = sqliteTable('threads', {
   path: text('path'),
   // The branch that folder was on when Claude last finished a turn there. Null when it was on no branch.
   branch: text('branch'),
-  // Claude's own id for the conversation. Lets a new Claude process pick up where the last one stopped.
+  // The stored agent's own conversation ID. Only that agent can resume it.
   sessionId: text('session_id'),
   // How many tokens the conversation took up in Claude's latest call. Empty until Claude has answered once.
   contextUsed: integer('context_used'),

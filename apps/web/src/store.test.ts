@@ -15,6 +15,8 @@ import {
   closeThread,
   connect,
   githubChoices,
+  loadCodexModels,
+  loadModels,
   loadOlder,
   loadTool,
   needsYou,
@@ -42,7 +44,8 @@ test('a new order moves the repositories, and one the order does not name stays 
 });
 
 // A thread as the server sends it: last changed at 100, with `me` in it.
-const thread = (status: Status, people = ['me']) => ({ id: 't', status, people, updatedAt: 100 }) as Thread;
+const thread = (status: Status, people = ['me']) =>
+  ({ id: 't', agent: 'claude', status, people, updatedAt: 100 }) as Thread;
 
 test('a thread needs you when Claude waits for an answer, or stopped with something you have not seen', () => {
   const needs = (status: Status, seenAt?: number, people?: string[]) =>
@@ -397,4 +400,32 @@ test('opening a card fills in what went in and out of it', async () => {
   expect(asked).toEqual(['/api/threads/t/items/b']);
   expect(useApp.getState().items).toEqual([full]);
   vi.unstubAllGlobals();
+});
+
+test('the Codex catalog is separate from Claude and an empty catalog disables Codex', async () => {
+  const model = {
+    id: 'gpt-5.5',
+    name: 'gpt-5.5',
+    hint: 'Through Codex',
+    bigContext: false,
+    fast: false,
+    efforts: ['medium'],
+    window: null,
+  };
+  let codexEnabled = true;
+  const fetch = vi.fn(async (path: string) => {
+    if (path === '/api/models?agent=codex') return Response.json(codexEnabled ? [model] : []);
+    if (path === '/api/models') return Response.json(MODELS);
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  vi.stubGlobal('fetch', fetch);
+  try {
+    await Promise.all([loadModels(), loadCodexModels()]);
+    expect(useApp.getState()).toMatchObject({ models: MODELS, codexModels: [model] });
+    codexEnabled = false;
+    await loadCodexModels();
+    expect(useApp.getState()).toMatchObject({ models: MODELS, codexModels: [] });
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });

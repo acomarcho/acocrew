@@ -35,6 +35,7 @@ export const threadCols = {
   id: threads.id,
   channelId: threads.channelId,
   title: threads.title,
+  agent: threads.agent,
   model: threads.model,
   effort: threads.effort,
   context: threads.context,

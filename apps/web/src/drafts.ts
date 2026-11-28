@@ -1,6 +1,6 @@
 // What someone typed and has not sent yet. It is kept outside the screens and saved in this browser, so it is
 // still there after they look at something else, or reload the page.
-import type { Visibility } from '@acocrew/shared';
+import type { Thread, Visibility } from '@acocrew/shared';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { Settings } from './ui';
@@ -14,6 +14,8 @@ export type Draft = {
   // The rest is only there for a thread not started yet: its repository, and what was picked for where it
   // works and who sees it.
   channelId?: string;
+  agent?: Thread['agent'];
+  codexSettings?: Pick<Settings, 'access' | 'effort'>;
   place?: string;
   from?: string;
   path?: string;

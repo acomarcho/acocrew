@@ -1,0 +1,1 @@
+ALTER TABLE `threads` ADD `agent` text DEFAULT 'claude' NOT NULL;
