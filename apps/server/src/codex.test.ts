@@ -1,7 +1,7 @@
 import type { Answer, Item } from '@acocrew/shared';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, expect, test, vi } from 'vite-plus/test';
 import { createCodexTurn, type CodexTurn } from './codex.ts';
@@ -35,7 +35,7 @@ async function fixture(scenario: string, settings?: Partial<Parameters<typeof cr
   await Promise.all([mkdir(home), mkdir(cwd)]);
   await writeFile(join(cwd, 'scenario'), scenario);
   const stop = new AbortController();
-  const sessions: string[] = [];
+  const sessions: (string | null)[] = [];
   const updates: { item: Item; save: boolean }[] = [];
   const run = createCodexTurn({ home, model, binary, ...settings });
   const call = (params?: Partial<TurnParams>) =>
@@ -79,6 +79,8 @@ const expectExited = (wire: Wire[]) => {
 };
 
 test('persists the native ID before input, isolates the child, and saves final text and tools once', async () => {
+  const path = (process.env.PATH ?? '').split(delimiter).filter(isAbsolute).join(delimiter);
+  vi.stubEnv('PATH', `.${delimiter}${delimiter}${path}${delimiter}bin`);
   vi.stubEnv('OPENAI_API_KEY', 'sentinel');
   vi.stubEnv('OPENAI_BASE_URL', 'https://example.invalid');
   vi.stubEnv('HTTPS_PROXY', 'https://example.invalid');
@@ -89,7 +91,7 @@ test('persists the native ID before input, isolates the child, and saves final t
   await expect(f.call()).resolves.toBe('completed');
   const wire = await f.wire();
   expect(f.sessions).toEqual([threadId]);
-  expect(wire[0].env).toMatchObject({ CODEX_HOME: f.home });
+  expect(wire[0].env).toMatchObject({ CODEX_HOME: f.home, PATH: path });
   for (const name of ['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'HTTPS_PROXY', 'ANTHROPIC_API_KEY', 'ACOCREW_SECRET_TEST']) {
     expect(wire[0].env).not.toHaveProperty(name);
   }
@@ -296,9 +298,18 @@ test('stops before spawn, during initialize, and after saving the ID but before 
       },
     }),
   ).resolves.toBe('interrupted');
-  expect(beforeInput.sessions).toEqual([threadId]);
+  expect(beforeInput.sessions).toEqual([threadId, null]);
   expect(method(await beforeInput.wire(), 'turn/start')).toBeUndefined();
   expectExited(await beforeInput.wire());
+});
+
+test('a rejected first turn releases only an allocated ID with no history', async () => {
+  const first = await fixture('reject-start');
+  await expect(first.call()).rejects.toThrow('Turn rejected.');
+  expect(first.sessions).toEqual([threadId, null]);
+  const resumed = await fixture('reject-start');
+  await expect(resumed.call({ sessionId: threadId })).rejects.toThrow('Turn rejected.');
+  expect(resumed.sessions).toEqual([threadId]);
 });
 
 test('interrupts after delayed turn ID and drops late output', async () => {

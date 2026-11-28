@@ -65,7 +65,7 @@ import { openDb, type Db } from './db.ts';
 import { createProxy, PROXY_DEFAULTS } from './proxy.ts';
 import type { QueryFn } from './runner.ts';
 import { automations, channels, chats, events, seen, session as sessions, shares, threads } from './schema.ts';
-import { startServer, type Deps } from './server.ts';
+import { createApp, startServer, type Deps } from './server.ts';
 import { nextAt } from './translate.ts';
 
 // A line of a recording (see fixtures/record.ts): a real message from Claude, or a marker for what the
@@ -3211,6 +3211,62 @@ test('opening an active Codex thread returns the latest version of each live ite
   ]);
   expect(tab.items(thread.id)).toContainEqual(expect.objectContaining({ id: 'stream', text: 'Hello there' }));
   expect((await post(`/api/threads/${thread.id}/stop`)).status).toBe(200);
+});
+
+test('revoking a share while its Codex approval arrives cannot authorize the command', async () => {
+  const jordan = await teammate('jordan');
+  const channel = await addChannel();
+  const { turn, approvals } = codexFixture();
+  const { app, close } = await createApp({
+    db,
+    query: claude.query,
+    home,
+    images,
+    worktrees,
+    secret: 'test',
+    codex: CODEX,
+    codexTurn: turn,
+  });
+  onTestFinished(async () => {
+    await close();
+  });
+  const headers = { ...browser(), host: new URL(url('')).host };
+  const send = (path: string, body: unknown) =>
+    app.request(url(path), { method: 'POST', headers, body: JSON.stringify(body) });
+  const thread = (await (
+    await send('/api/threads', {
+      ...CODEX_START,
+      channelId: channel.id,
+      path: channel.path,
+      text: 'approval test',
+      visibility: 'private',
+    })
+  ).json()) as Thread;
+  const path = `/api/threads/${thread.id}`;
+  expect((await send(`${path}/shares`, { userId: jordan.id, shared: true })).status).toBe(200);
+  const answer = JSON.stringify({ toolId: 'codex-approval', decision: 'approve' });
+  let startReading!: () => void;
+  const reading = new Promise<void>((resolve) => (startReading = resolve));
+  let sendBody!: () => void;
+  const body = new ReadableStream<Uint8Array>(
+    {
+      start(controller) {
+        sendBody = () => {
+          controller.enqueue(new TextEncoder().encode(answer));
+          controller.close();
+        };
+      },
+      pull: startReading,
+    },
+    { highWaterMark: 0 },
+  );
+  const init = { method: 'POST', headers: { ...headers, cookie: jordan.cookie }, duplex: 'half' as const, body };
+  const request = app.fetch(new Request(url(`${path}/answers`), init));
+  await reading;
+  expect((await send(`${path}/shares`, { userId: jordan.id, shared: false })).status).toBe(200);
+  sendBody();
+  expect((await request).status).toBe(404);
+  expect(approvals).toEqual([]);
 });
 
 test('a request withdrawn by Codex closes its approval and rejects stale browser answers', async () => {

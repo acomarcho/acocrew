@@ -463,7 +463,8 @@ export function createRunner(
           access,
           signal,
           onSession(id) {
-            if (!signal.aborted) db.update(threads).set({ sessionId: id }).where(eq(threads.id, threadId)).run();
+            if (id === null || !signal.aborted)
+              db.update(threads).set({ sessionId: id }).where(eq(threads.id, threadId)).run();
           },
           onItem(item, save) {
             if (signal.aborted) return;

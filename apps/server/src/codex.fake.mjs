@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // A local child speaking the Codex 0.160.0 stdio protocol. No model or network calls.
 import { appendFileSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 
 const scenario = readFileSync('scenario', 'utf8');
@@ -165,6 +166,7 @@ input.on('line', (line) => {
         updatedAt: 1,
         preview: '',
         projectId: null,
+        path: join(process.env.CODEX_HOME, `${threadId}.jsonl`),
         modelProvider,
         model: params.model,
         cwd,
@@ -186,6 +188,7 @@ input.on('line', (line) => {
     }
     case 'turn/start': {
       if (scenario === 'stubborn') return;
+      if (scenario === 'reject-start') return send({ id, error: { code: -32602, message: 'Turn rejected.' } });
       const ack = response(id, { turn: turn('inProgress') });
       if (scenario === 'early-stop') return void setTimeout(() => send(ack), 150);
       if (scenario === 'late-approval' || scenario === 'stop-approval') {

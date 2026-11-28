@@ -755,6 +755,7 @@ export async function createApp({
     const { id, agent } = c.get('thread');
     if (agent === 'codex' && (body.decision === 'always' || body.answers !== undefined))
       return refuse(c, 'Codex only supports approving or declining this request, or stopping the turn.');
+    if (!findThread(id, c.get('user').id)) return c.json({ error: 'Thread not found.' }, 404);
     if (runner.answer(id, body)) return c.json({ ok: true });
     const name = agent === 'codex' ? 'Codex' : 'Claude';
     return c.json({ error: `${name} is no longer waiting for this answer.` }, 409);

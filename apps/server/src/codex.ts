@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { delimiter, isAbsolute, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { nextAt } from './translate.ts';
 
@@ -16,7 +16,7 @@ export type CodexTurn = (params: {
   effort: string;
   access: Access;
   signal: AbortSignal;
-  onSession: (id: string) => void;
+  onSession: (id: string | null) => void;
   onItem: (item: Item, save: boolean) => void;
   onApproval: (item: Item) => Promise<Answer | null>;
 }) => Promise<'completed' | 'interrupted'>;
@@ -59,10 +59,12 @@ const ARGS = [
 ];
 
 function nativeEnv(home: string): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { CODEX_HOME: home };
+  // Relative and empty PATH entries would resolve in the checkout, before the sandbox starts.
+  const path = (process.env.PATH ?? '').split(delimiter).filter(isAbsolute).join(delimiter);
+  if (!path) throw new Error('Codex needs a server PATH with at least one absolute directory.');
+  const env: NodeJS.ProcessEnv = { CODEX_HOME: home, PATH: path };
   for (const name of [
     'HOME',
-    'PATH',
     'USER',
     'LOGNAME',
     'LANG',
@@ -231,6 +233,7 @@ export function createCodexTurn(config: CodexConfig): CodexTurn {
     let turnError = '';
     let serial = 0;
     let threadId: string | undefined;
+    let newRollout: string | undefined;
     let turnId: string | undefined;
     let sentTurn = false;
     let stopped = false;
@@ -554,6 +557,7 @@ export function createCodexTurn(config: CodexConfig): CodexTurn {
         throw new Error('Codex did not open the requested persistent, idle thread; no prompt was sent.');
       }
       if (stopped || terminal) return;
+      if (sessionId === null && isAbsolute(str(thread.path))) newRollout = str(thread.path);
       onSession(threadId);
       if (stopped || terminal) return;
       sentTurn = true;
@@ -612,6 +616,15 @@ export function createCodexTurn(config: CodexConfig): CodexTurn {
       child.stderr.destroy();
       child.stdin.destroy();
       await waitForExit(100);
+    }
+    // App Server allocates the ID before writing its rollout. On a cleanly closed, failed first turn,
+    // release only that ID if the native file never appeared. Never reset a previously saved session.
+    if (closed && newRollout && outcome !== 'completed') {
+      const missing = await stat(newRollout).then(
+        () => false,
+        (error: NodeJS.ErrnoException) => error.code === 'ENOENT',
+      );
+      if (missing) onSession(null);
     }
     if (outcome instanceof Error) throw outcome;
     if (!closed) throw new Error('Could not confirm that the Codex process closed.');
