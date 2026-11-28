@@ -26,6 +26,8 @@ type Obj = Record<string, unknown>;
 type RpcId = string | number;
 type Tool = Extract<Item, { kind: 'tool' }>;
 type Message = Extract<Item, { kind: 'message' }>;
+export class CodexTeardownError extends Error {}
+
 type Outcome = Awaited<ReturnType<CodexTurn>> | Error;
 const obj = (value: unknown): Obj =>
   value && typeof value === 'object' && !Array.isArray(value) ? (value as Obj) : {};
@@ -203,9 +205,9 @@ function approvalDetails(method: string, params: Obj, patch: Obj | undefined) {
 }
 
 // An unreadable rollout is not proof it is missing. Keep the ID rather than splitting native history.
-function rolloutExists(path: string) {
+function hasRollout(path: string) {
   return stat(path).then(
-    () => true,
+    (entry) => !entry.isFile() || entry.size > 0,
     (error: NodeJS.ErrnoException) => {
       if (error.code === 'ENOENT') return false;
       throw error;
@@ -230,12 +232,11 @@ export function createCodexTurn(config: CodexConfig): CodexTurn {
   }) => {
     if (signal.aborted) return 'interrupted';
     // After a crash only provisional IDs can be discarded, and only if Codex never wrote their history.
-    if (pendingRollout && !(await rolloutExists(pendingRollout))) {
+    if (pendingRollout && !(await hasRollout(pendingRollout))) {
       sessionId = null;
       onSession(null);
     }
     if (signal.aborted) return 'interrupted';
-    if (sessionId === null && model !== config.model) throw new Error('This model is not enabled for Codex.');
     const [home, folder] = await Promise.all([dedicatedHome(config.home), realpath(cwd)]);
     if (signal.aborted) return 'interrupted';
 
@@ -266,6 +267,7 @@ export function createCodexTurn(config: CodexConfig): CodexTurn {
     let newRollout: string | undefined;
     let turnId: string | undefined;
     let sentTurn = false;
+    let turnSettled = false;
     let stopped = false;
     let terminal = false;
     let closed = false;
@@ -417,6 +419,7 @@ export function createCodexTurn(config: CodexConfig): CodexTurn {
 
     function notification(method: string, params: Obj) {
       if (method === 'turn/completed') {
+        turnSettled = true;
         const turn = obj(params.turn);
         if (!stopped) {
           if (Array.isArray(turn.items)) {
@@ -469,9 +472,10 @@ export function createCodexTurn(config: CodexConfig): CodexTurn {
         const waiter = waiters.get(id);
         if (!waiter) return;
         waiters.delete(id);
-        if (message.error)
+        if (message.error) {
+          if (waiter.method === 'turn/start') turnSettled = true;
           waiter.reject(new Error(`Codex ${waiter.method}: ${str(obj(message.error).message) || 'request failed'}`));
-        else waiter.resolve(obj(message.result));
+        } else waiter.resolve(obj(message.result));
         return;
       }
       const params = obj(message.params);
@@ -618,7 +622,7 @@ export function createCodexTurn(config: CodexConfig): CodexTurn {
     child.stdout.resume();
     child.stdin.end();
     // Give the protocol a chance to wind down, then kill only this turn's own process group. Waiting here keeps
-    // the next turn (or worktree deletion) from racing the child. Killing the group also reaches local helpers.
+    // the next turn (or worktree deletion) from racing App Server. Codex commands can have their own groups.
     const waitForExit = (ms: number) =>
       new Promise<void>((resolve) => {
         const timer = setTimeout(resolve, ms);
@@ -651,13 +655,17 @@ export function createCodexTurn(config: CodexConfig): CodexTurn {
       child.stdin.destroy();
       await waitForExit(100);
     }
-    // App Server allocates the ID before writing its history. Leave it provisional if cleanup or stat fails.
-    if (closed && threadId && newRollout) {
-      const exists = await rolloutExists(newRollout).catch(() => undefined);
+    // A closed App Server pipe does not prove a command in another process group has stopped.
+    if (!closed || (sentTurn && !turnSettled)) {
+      const detail = outcome instanceof Error ? ` ${outcome.message}` : '';
+      throw new CodexTeardownError(`Could not confirm that Codex and its commands stopped.${detail}`);
+    }
+    // App Server allocates the ID before writing its history. Leave it provisional if stat fails.
+    if (threadId && newRollout) {
+      const exists = await hasRollout(newRollout).catch(() => undefined);
       if (exists !== undefined) onSession(exists ? threadId : null);
     }
     if (outcome instanceof Error) throw outcome;
-    if (!closed) throw new Error('Could not confirm that the Codex process closed.');
     return outcome;
   };
 }

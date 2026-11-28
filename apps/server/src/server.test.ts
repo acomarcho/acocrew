@@ -60,7 +60,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, onTestFinished, tes
 import { WebSocket } from 'ws';
 import { FIRST_ADMIN } from './auth.ts';
 import { CHECK_MS } from './automations.ts';
-import type { CodexTurn } from './codex.ts';
+import { CodexTeardownError, type CodexTurn } from './codex.ts';
+import * as gitModule from './git.ts';
 import { openDb, type Db } from './db.ts';
 import { createProxy, PROXY_DEFAULTS } from './proxy.ts';
 import type { QueryFn } from './runner.ts';
@@ -3329,7 +3330,7 @@ test('Codex permission prompts expire after a restart, but the next prompt still
   expect(turn).toHaveBeenNthCalledWith(2, expect.objectContaining({ sessionId: CODEX_SESSION, text: 'continue' }));
 });
 
-test('Codex can continue after a crash before the first native turn was sent', async () => {
+test('Codex keeps its saved model after a crash and a change to the default model', async () => {
   const cwd = makeRepo(join(home, 'code', 'codex-first-turn-crash'));
   writeFileSync(join(cwd, 'scenario'), 'normal');
   mkdirSync(CODEX.home, { recursive: true });
@@ -3353,7 +3354,7 @@ test('Codex can continue after a crash before the first native turn was sent', a
   // Copy SQLite before graceful shutdown can change it, then use the real adapter with the stand-in App Server.
   db = openDb(db.$client.serialize());
   const binary = fileURLToPath(new URL('./codex.fake.mjs', import.meta.url));
-  await serve([], undefined, { codex: { ...CODEX, binary } });
+  await serve([], undefined, { codex: { ...CODEX, model: 'gpt-5.5', binary } });
   const after = await connect();
   expect((await say(thread, 'continue', CODEX_MESSAGE)).status).toBe(200);
   await after.status(thread.id, 'done');
@@ -3361,25 +3362,88 @@ test('Codex can continue after a crash before the first native turn was sent', a
   expect(saved()?.sessionId).not.toBe(CODEX_SESSION);
   const wire = readFileSync(join(cwd, 'wire.jsonl'), 'utf8');
   expect(wire).toContain('"method":"thread/start"');
+  expect(wire).toContain(`"model":"${CODEX.model}"`);
   expect(wire).not.toContain('"method":"thread/resume"');
   expect(wire).toContain('"text":"continue"');
   expect(wire).not.toContain('"text":"first prompt"');
 });
 
-test('a failed Codex teardown does not report success or delete the thread', async () => {
-  const turn: CodexTurn = async ({ signal }) => {
-    await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
-    throw new Error('Could not confirm that the Codex process closed.');
-  };
-  await serve([], undefined, { codex: CODEX, codexTurn: turn });
-  const tab = await connect();
-  const thread = await startThread('first prompt', CODEX_START);
-  const stop = await post(`/api/threads/${thread.id}/stop`);
-  expect(stop.status).toBe(500);
-  expect(await stop.json()).toEqual({ error: 'Could not confirm that the Codex process closed.' });
-  await tab.status(thread.id, 'failed');
-  expect((await post(`/api/threads/${thread.id}/delete`)).status).toBe(500);
-  expect(allThreads().map((row) => row.id)).toEqual([thread.id]);
+test.each([false, true])(
+  'a failed Codex teardown blocks Stop and Delete (failure already reported: %s)',
+  async (failed) => {
+    const turn: CodexTurn = async ({ signal }) => {
+      if (!failed)
+        await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+      throw new CodexTeardownError('Could not confirm that Codex and its commands stopped.');
+    };
+    await serve([], undefined, { codex: CODEX, codexTurn: turn });
+    const tab = await connect();
+    const thread = await startThread('first prompt', CODEX_START);
+    if (failed) await tab.status(thread.id, 'failed');
+    const stop = await post(`/api/threads/${thread.id}/stop`);
+    expect(stop.status).toBe(500);
+    expect(await stop.json()).toEqual({ error: 'Could not confirm that Codex and its commands stopped.' });
+    if (!failed) await tab.status(thread.id, 'failed');
+    expect((await say(thread, 'not sent', CODEX_MESSAGE)).status).toBe(409);
+    expect((await post(`/api/threads/${thread.id}/delete`)).status).toBe(500);
+    expect(allThreads().map((row) => row.id)).toEqual([thread.id]);
+  },
+);
+
+test('shutdown refuses to start Codex after an in-flight worktree setup returns', async () => {
+  const channel = await addChannel();
+  const { turn } = codexFixture();
+  const { app, close } = await createApp({
+    db,
+    query: claude.query,
+    home,
+    images,
+    worktrees,
+    secret: 'test',
+    codex: CODEX,
+    codexTurn: turn,
+  });
+  let placed!: () => void;
+  let release!: () => void;
+  const made = new Promise<void>((resolve) => {
+    placed = resolve;
+  });
+  const waiting = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const add = gitModule.addWorktree;
+  const git = vi.spyOn(gitModule, 'addWorktree').mockImplementationOnce(async (...args) => {
+    await add(...args);
+    placed();
+    await waiting;
+  });
+  onTestFinished(async () => {
+    release();
+    git.mockRestore();
+    await close();
+  });
+  const initial = (await gitModule.listPlaces(channel.path)).worktrees;
+  const from = initial[0].branch;
+  const request = async () =>
+    app.request(url('/api/threads'), {
+      method: 'POST',
+      headers: { ...browser(), host: new URL(url('')).host },
+      body: JSON.stringify({ ...CODEX_START, channelId: channel.id, text: 'first prompt', from }),
+    });
+  const response = request();
+  await Promise.race([
+    made,
+    response.then(async (res) => {
+      throw new Error(await res.text());
+    }),
+  ]);
+  await close();
+  expect((await request()).status).toBe(503);
+  release();
+  expect((await response).status).toBe(503);
+  expect(allThreads()).toEqual([]);
+  expect(turn).not.toHaveBeenCalled();
+  expect((await gitModule.listPlaces(channel.path)).worktrees).toEqual(initial);
 });
 
 test.each(['stop', 'delete'])('Codex %s rejects replies until the running turn ends', async (action) => {

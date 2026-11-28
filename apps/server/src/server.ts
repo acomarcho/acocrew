@@ -440,7 +440,8 @@ export async function createApp({
   // Starts a thread: saves it, tells everyone and hands the first message to its agent. People and automations
   // both start threads through here. Gives back the thread, or why there is none.
   type Where = { from?: unknown; path?: unknown };
-  type Refusal = { error: string; status: 400 | 500 };
+  type Refusal = { error: string; status: 400 | 500 | 503 };
+  const codexClosing = { error: 'The server is shutting down. Try again after it restarts.', status: 503 } as const;
   // `shared`: the people it is shared with from the start.
   type Starter = { userId: string; visibility: Visibility; automationId?: string; shared?: string[] };
   async function startThread(
@@ -450,20 +451,30 @@ export async function createApp({
     { userId, visibility, automationId, shared = [] }: Starter,
     agent: Thread['agent'] = 'claude',
   ): Promise<Thread | Refusal> {
+    if (agent === 'codex' && runner.codexClosing()) return codexClosing;
     const id = randomUUID();
     const short = id.slice(0, 8);
     // The thread works in a folder that exists already, or in a new worktree: a second working copy of the
     // repository, on a new branch. Only what git itself lists can be picked.
     let place: Places['worktrees'][number];
+    let made = false;
     try {
       const places = await listPlaces(channel.path);
+      if (agent === 'codex' && runner.codexClosing()) return codexClosing;
       const existing = places.worktrees.find((worktree) => worktree.path === pick.path);
       const from = places.branches.find((branch) => branch.name === pick.from);
       if (!existing && !from) return { error: 'Pick a branch to start from, or a worktree that exists.', status: 400 };
       place = existing ?? { path: join(worktrees, channel.name, short), branch: `acocrew/${short}` };
-      if (!existing) await addWorktree(channel.path, place.path, place.branch!, from!);
+      if (!existing) {
+        await addWorktree(channel.path, place.path, place.branch!, from!);
+        made = true;
+      }
     } catch (err) {
       return { error: `Could not make a worktree: ${(err as { stderr?: string }).stderr || err}`, status: 500 };
+    }
+    if (agent === 'codex' && runner.codexClosing()) {
+      if (made) await removeWorktree(channel.path, place.path, place.branch!).catch(console.error);
+      return codexClosing;
     }
     const now = Date.now();
     const row = {
@@ -693,8 +704,10 @@ export async function createApp({
     if (why) return refuse(c, why);
     const userId = c.get('user').id;
     if (agent === 'codex') {
+      if (runner.codexClosing()) return c.json({ error: codexClosing.error }, codexClosing.status);
       if (!findThread(thread.id, userId)) return c.json({ error: 'Thread not found.' }, 404);
-      if (runner.stopping(thread.id)) return c.json({ error: 'Codex is still stopping.' }, 409);
+      const stopping = runner.codexStopReason(thread.id);
+      if (stopping) return c.json({ error: stopping }, 409);
     }
     runner.send(thread.id, message, userId);
     return c.json({ ok: true });

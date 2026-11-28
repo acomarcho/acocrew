@@ -20,7 +20,7 @@ import type {
 import { eq, isNull, ne } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import type { CodexTurn } from './codex.ts';
+import { CodexTeardownError, type CodexTurn } from './codex.ts';
 import { loadItems, saveItem, threadCols, type Db, type StoredThread } from './db.ts';
 import { branchOf } from './git.ts';
 import type { Hub } from './hub.ts';
@@ -84,6 +84,7 @@ type CodexSession = {
   live: Map<string, Item>;
   asks: Session['asks'];
   since: number | null;
+  teardownError?: CodexTeardownError;
 };
 
 // A Claude process with nothing to do for this long is closed. The next message starts a new one.
@@ -176,6 +177,7 @@ export function createRunner(
 ) {
   const sessions = new Map<string, Session>();
   const codexSessions = new Map<string, CodexSession>();
+  let codexClosing = false;
   const folderAndSession = (threadId: string) =>
     db
       .select({
@@ -518,6 +520,7 @@ export function createRunner(
         setThread(threadId, { status: 'done' });
       }
     } catch (err) {
+      if (err instanceof CodexTeardownError) session.teardownError = err;
       if (signal.aborted) throw err;
       session.since = null;
       savePartial(threadId, session);
@@ -526,7 +529,7 @@ export function createRunner(
     } finally {
       for (const resolve of session.asks.values()) resolve(null);
       session.asks.clear();
-      if (!signal.aborted) codexSessions.delete(threadId);
+      if (!signal.aborted && !session.teardownError) codexSessions.delete(threadId);
     }
   }
 
@@ -564,6 +567,7 @@ export function createRunner(
 
   async function stopCodex(threadId: string, session: CodexSession, showNotice: boolean) {
     const { signal } = session.abort;
+    if (session.teardownError) throw session.teardownError;
     if (signal.aborted) return session.run;
     session.abort.abort();
     for (const resolve of session.asks.values()) resolve(null);
@@ -752,8 +756,15 @@ export function createRunner(
       if (session) return stopCodex(threadId, session, false);
       close(threadId);
     },
-    shutdown: () => Promise.allSettled([...codexSessions].map(([id, session]) => stopCodex(id, session, false))),
-    stopping: (threadId: string) => codexSessions.get(threadId)?.abort.signal.aborted ?? false,
+    shutdown() {
+      codexClosing = true;
+      return Promise.allSettled([...codexSessions].map(([id, session]) => stopCodex(id, session, false)));
+    },
+    codexClosing: () => codexClosing,
+    codexStopReason(threadId: string) {
+      const session = codexSessions.get(threadId);
+      return session?.teardownError?.message ?? (session?.abort.signal.aborted ? 'Codex is still stopping.' : null);
+    },
 
     // The bubbles the agent is writing right now.
     live: (threadId: string) =>

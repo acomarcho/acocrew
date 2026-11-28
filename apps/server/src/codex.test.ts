@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { delimiter, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, expect, test, vi } from 'vite-plus/test';
-import { createCodexTurn, type CodexTurn } from './codex.ts';
+import { CodexTeardownError, createCodexTurn, type CodexTurn } from './codex.ts';
 
 type TurnParams = Parameters<CodexTurn>[0];
 type Wire = {
@@ -325,10 +325,11 @@ test('a rejected first turn releases only an allocated ID with no history', asyn
   expect(resumed.sessions).toEqual([[threadId, undefined]]);
 });
 
-test.each([false, true])('recovers a provisional ID after a crash (history exists: %s)', async (written) => {
+test.each(['missing', 'empty', 'saved'])('recovers a provisional ID with %s native history', async (history) => {
   const f = await fixture('normal');
   const pendingRollout = join(f.home, `${threadId}.jsonl`);
-  if (written) await writeFile(pendingRollout, 'previous turn\n');
+  const written = history === 'saved';
+  if (history !== 'missing') await writeFile(pendingRollout, written ? 'previous turn\n' : '');
   await expect(f.call({ sessionId: threadId, pendingRollout, text: 'continue' })).resolves.toBe('completed');
   const wire = await f.wire();
   expect(method(wire, written ? 'thread/resume' : 'thread/start')).toBeDefined();
@@ -369,12 +370,12 @@ test('cancels pending browser approval during Stop and never sends its late answ
   expectExited(wire);
 });
 
-test('kills an unresponsive child even if it never returns a turn ID or responds to SIGTERM', async () => {
+test('reaps an unresponsive App Server without reporting its turn as stopped', async () => {
   const f = await fixture('stubborn');
   const running = f.call();
   await vi.waitFor(async () => expect(method(await f.wire(), 'turn/start')).toBeDefined());
   f.stop.abort();
-  await expect(running).resolves.toBe('interrupted');
+  await expect(running).rejects.toThrow(CodexTeardownError);
   const wire = await f.wire();
   expect(method(wire, 'turn/interrupt')).toBeUndefined();
   expectExited(wire);
