@@ -3390,7 +3390,7 @@ test.each([false, true])(
   },
 );
 
-test('shutdown refuses to start Codex after an in-flight worktree setup returns', async () => {
+test('shutdown waits for a pending Codex worktree to roll back without exposing it to other threads', async () => {
   const channel = await addChannel();
   const { turn } = codexFixture();
   const { app, close } = await createApp({
@@ -3422,13 +3422,14 @@ test('shutdown refuses to start Codex after an in-flight worktree setup returns'
     git.mockRestore();
     await close();
   });
-  const initial = (await gitModule.listPlaces(channel.path)).worktrees;
-  const from = initial[0].branch;
-  const request = async () =>
+  const initial = await gitModule.listPlaces(channel.path);
+  const from = initial.worktrees[0].branch;
+  const headers = { ...browser(), host: new URL(url('')).host };
+  const request = async (settings: object = { ...CODEX_START, from }) =>
     app.request(url('/api/threads'), {
       method: 'POST',
-      headers: { ...browser(), host: new URL(url('')).host },
-      body: JSON.stringify({ ...CODEX_START, channelId: channel.id, text: 'first prompt', from }),
+      headers,
+      body: JSON.stringify({ channelId: channel.id, text: 'first prompt', ...settings }),
     });
   const response = request();
   await Promise.race([
@@ -3437,13 +3438,27 @@ test('shutdown refuses to start Codex after an in-flight worktree setup returns'
       throw new Error(await res.text());
     }),
   ]);
-  await close();
+  const pending = (await gitModule.listPlaces(channel.path)).worktrees.find(
+    ({ path }) => !initial.worktrees.some((worktree) => worktree.path === path),
+  );
+  expect(pending).toBeDefined();
+  const choices = await app.request(url(`/api/channels/${channel.id}/places`), { headers });
+  expect(((await choices.json()) as Places).worktrees).toEqual(initial.worktrees);
+  expect((await request({ ...HAIKU, path: pending!.path })).status).toBe(400);
+  expect((await request({ ...CODEX_START, path: pending!.path })).status).toBe(400);
+
+  let drained = false;
+  const closing = close().then(() => {
+    drained = true;
+  });
   expect((await request()).status).toBe(503);
+  expect(drained).toBe(false);
   release();
+  await closing;
   expect((await response).status).toBe(503);
   expect(allThreads()).toEqual([]);
   expect(turn).not.toHaveBeenCalled();
-  expect((await gitModule.listPlaces(channel.path)).worktrees).toEqual(initial);
+  expect(await gitModule.listPlaces(channel.path)).toEqual(initial);
 });
 
 test.each(['stop', 'delete'])('Codex %s rejects replies until the running turn ends', async (action) => {

@@ -39,7 +39,7 @@ import { and, eq, max, ne, sql } from 'drizzle-orm';
 import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { basename, join, sep } from 'node:path';
 import { WebSocketServer } from 'ws';
 import { findShown } from './shown.ts';
@@ -426,6 +426,11 @@ export async function createApp({
     return c.json({ ok: true });
   });
 
+  const pendingCodexStarts = new Set<Promise<Thread | Refusal>>();
+  const pendingWorktrees = new Set<string>();
+  const worktreeInUse = (path: string) =>
+    db.select({ id: threads.id }).from(threads).where(eq(threads.path, path)).get();
+
   // What the start screen offers: branches a new worktree can start from, and worktrees that exist.
   app.get('/api/channels/:id/places', async (c) => {
     const channel = db
@@ -434,7 +439,8 @@ export async function createApp({
       .where(eq(channels.id, c.req.param('id')))
       .get();
     if (!channel) return c.json({ error: 'Channel not found.' }, 404);
-    return c.json(await listPlaces(channel.path));
+    const places = await listPlaces(channel.path);
+    return c.json({ ...places, worktrees: places.worktrees.filter(({ path }) => !pendingWorktrees.has(path)) });
   });
 
   // Starts a thread: saves it, tells everyone and hands the first message to its agent. People and automations
@@ -457,24 +463,30 @@ export async function createApp({
     // The thread works in a folder that exists already, or in a new worktree: a second working copy of the
     // repository, on a new branch. Only what git itself lists can be picked.
     let place: Places['worktrees'][number];
-    let made = false;
     try {
       const places = await listPlaces(channel.path);
       if (agent === 'codex' && runner.codexClosing()) return codexClosing;
-      const existing = places.worktrees.find((worktree) => worktree.path === pick.path);
+      const existing = places.worktrees.find(
+        ({ path }) => path === pick.path && !pendingWorktrees.has(path) && existsSync(path),
+      );
       const from = places.branches.find((branch) => branch.name === pick.from);
       if (!existing && !from) return { error: 'Pick a branch to start from, or a worktree that exists.', status: 400 };
       place = existing ?? { path: join(worktrees, channel.name, short), branch: `acocrew/${short}` };
       if (!existing) {
-        await addWorktree(channel.path, place.path, place.branch!, from!);
-        made = true;
+        if (agent === 'codex') pendingWorktrees.add(place.path);
+        try {
+          await addWorktree(channel.path, place.path, place.branch!, from!);
+          if (agent === 'codex' && runner.codexClosing()) {
+            if (!worktreeInUse(place.path))
+              await removeWorktree(channel.path, place.path, place.branch!).catch(console.error);
+            return codexClosing;
+          }
+        } finally {
+          pendingWorktrees.delete(place.path);
+        }
       }
     } catch (err) {
       return { error: `Could not make a worktree: ${(err as { stderr?: string }).stderr || err}`, status: 500 };
-    }
-    if (agent === 'codex' && runner.codexClosing()) {
-      if (made) await removeWorktree(channel.path, place.path, place.branch!).catch(console.error);
-      return codexClosing;
     }
     const now = Date.now();
     const row = {
@@ -544,8 +556,14 @@ export async function createApp({
       return c.json({ error: 'Needs a channel, a message and a full set of settings.' }, 400);
     const why = agent === 'codex' ? codexRefusal(message) : await unoffered(message.model);
     if (why) return refuse(c, why);
-    const thread = await startThread(channel, message, body, { userId: c.get('user').id, visibility }, agent);
-    return 'error' in thread ? c.json({ error: thread.error }, thread.status) : c.json(thread);
+    const starting = startThread(channel, message, body, { userId: c.get('user').id, visibility }, agent);
+    if (agent === 'codex') pendingCodexStarts.add(starting);
+    try {
+      const thread = await starting;
+      return 'error' in thread ? c.json({ error: thread.error }, thread.status) : c.json(thread);
+    } finally {
+      pendingCodexStarts.delete(starting);
+    }
   });
 
   // One run of an automation: its message in a fresh thread, in a new worktree, as the person who made it.
@@ -906,7 +924,7 @@ export async function createApp({
     });
     hub.drop(thread.id, (userId) => canSee(thread, userId));
     const ours = thread.path?.startsWith(worktrees + sep) && thread.path;
-    const inUse = ours && db.select({ id: threads.id }).from(threads).where(eq(threads.path, ours)).get();
+    const inUse = ours && worktreeInUse(ours);
     // The branch it was made on is named after its folder (see `startThread`).
     if (ours && !inUse)
       await removeWorktree(findChannel(thread.channelId)!.path, ours, `acocrew/${basename(ours)}`).catch((err) =>
@@ -1027,7 +1045,7 @@ export async function createApp({
     app,
     close() {
       clearInterval(check);
-      return runner.shutdown();
+      return Promise.allSettled([runner.shutdown(), ...pendingCodexStarts]);
     },
   };
 }

@@ -370,6 +370,18 @@ test('cancels pending browser approval during Stop and never sends its late answ
   expectExited(wire);
 });
 
+test('accepts matching Stop confirmation during process cleanup without publishing late output', async () => {
+  const f = await fixture('late-stop-confirmation');
+  const running = f.call();
+  await vi.waitFor(async () => expect(method(await f.wire(), 'turn/start')).toBeDefined());
+  f.stop.abort();
+  await expect(running).resolves.toBe('interrupted');
+  const wire = await f.wire();
+  expect(method(wire, 'turn/interrupt')?.params).toEqual({ threadId, turnId });
+  expect(f.updates).toEqual([]);
+  expectExited(wire);
+});
+
 test('reaps an unresponsive App Server without reporting its turn as stopped', async () => {
   const f = await fixture('stubborn');
   const running = f.call();

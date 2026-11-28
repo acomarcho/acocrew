@@ -192,6 +192,7 @@ input.on('line', (line) => {
       // App Server writes native history after it accepts the first input, not at thread/start.
       appendFileSync(join(process.env.CODEX_HOME, `${threadId}.jsonl`), 'turn\n');
       const ack = response(id, { turn: turn('inProgress') });
+      if (scenario === 'late-stop-confirmation') return send(ack);
       if (scenario === 'early-stop') return void setTimeout(() => send(ack), 150);
       if (scenario === 'late-approval' || scenario === 'stop-approval') {
         send(ack, { id: 'late', ...event(commandMethod, commandRequest) });
@@ -242,6 +243,15 @@ input.on('line', (line) => {
       );
     }
     case 'turn/interrupt':
+      if (scenario === 'late-stop-confirmation') {
+        input.once('close', () =>
+          send(
+            event('item/agentMessage/delta', { itemId: agent.id, delta: 'not after stop' }),
+            complete('interrupted'),
+          ),
+        );
+        return send(response(id));
+      }
       return send(
         response(id),
         event('item/agentMessage/delta', { itemId: agent.id, delta: 'not after stop' }),

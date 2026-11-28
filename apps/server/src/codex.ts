@@ -522,9 +522,15 @@ export function createCodexTurn(config: CodexConfig): CodexTurn {
       ),
     );
     lines.on('line', (line: string) => {
-      if (terminal || !line.trim()) return;
+      if (!line.trim() || (terminal && (!turnId || turnSettled))) return;
       try {
-        hear(obj(JSON.parse(line)));
+        const message = obj(JSON.parse(line));
+        if (!terminal) return hear(message);
+        // Keep reading during cleanup, but only use a matching confirmation that the turn ended.
+        const params = obj(message.params);
+        if (message.method === 'turn/completed' && params.threadId === threadId && obj(params.turn).id === turnId) {
+          turnSettled = true;
+        }
       } catch (error) {
         finish(new Error(`Could not process a Codex event: ${err(error).message}`));
       }
@@ -617,9 +623,6 @@ export function createCodexTurn(config: CodexConfig): CodexTurn {
 
     const outcome = await result;
     signal.removeEventListener('abort', stop);
-    lines.close();
-    // readline.close() pauses stdout. Keep draining late output without publishing it so Node can close the pipe.
-    child.stdout.resume();
     child.stdin.end();
     // Give the protocol a chance to wind down, then kill only this turn's own process group. Waiting here keeps
     // the next turn (or worktree deletion) from racing App Server. Codex commands can have their own groups.
@@ -655,6 +658,7 @@ export function createCodexTurn(config: CodexConfig): CodexTurn {
       child.stdin.destroy();
       await waitForExit(100);
     }
+    lines.close();
     // A closed App Server pipe does not prove a command in another process group has stopped.
     if (!closed || (sentTurn && !turnSettled)) {
       const detail = outcome instanceof Error ? ` ${outcome.message}` : '';
