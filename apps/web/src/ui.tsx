@@ -9,6 +9,7 @@ import {
   type Access,
   type Channel,
   type Command,
+  type Model,
   type NewMessage,
   type Person,
   type Places,
@@ -108,12 +109,15 @@ const COLORS = [
 ];
 const colorOf = (id: string) => COLORS[[...id].reduce((sum, letter) => sum + letter.charCodeAt(0), 0) % COLORS.length];
 
-// Claude's picture, or a person's: the first letter of their name on their color.
-export function Avatar({ agent, person, small }: { agent?: boolean; person?: Person; small?: boolean }) {
-  const color = agent ? 'bg-[#d97757]' : person ? colorOf(person.id) : 'bg-muted-foreground';
+export const agentName = (agent: Thread['agent']) => (agent === 'codex' ? 'Codex' : 'Claude');
+
+// The agent's picture, or a person's: the first letter of their name on their color.
+export function Avatar({ agent, person, small }: { agent?: Thread['agent']; person?: Person; small?: boolean }) {
+  const color =
+    agent === 'codex' ? 'bg-indigo-500' : agent ? 'bg-[#d97757]' : person ? colorOf(person.id) : 'bg-muted-foreground';
   return (
     <div
-      title={agent ? 'Claude' : person?.name}
+      title={agent ? agentName(agent) : person?.name}
       className={`grid shrink-0 place-items-center font-semibold text-white uppercase ${color} ${
         small ? 'size-6 rounded-md text-xs' : 'size-9 rounded-lg'
       }`}
@@ -556,6 +560,25 @@ export function nearestEffort(efforts: string[], effort: string) {
   return efforts.toSorted((a, b) => away(a) - away(b) || at(b) - at(a))[0] ?? effort;
 }
 
+const AGENTS = [
+  { id: 'claude', name: agentName('claude'), hint: 'Claude Code' },
+  { id: 'codex', name: agentName('codex'), hint: 'Codex App Server' },
+] satisfies (Option & { id: Thread['agent'] })[];
+const CODEX_ACCESS = ACCESS.map((option) =>
+  option.id === 'full' ? { ...option, hint: 'Codex acts without asking' } : option,
+);
+
+export function newThreadSettings(draft: Draft, codexModel?: Model): Settings {
+  if (draft.agent !== 'codex') return { ...NEW_THREAD, ...draft.settings };
+  return {
+    model: codexModel?.id ?? '',
+    effort: nearestEffort(codexModel?.efforts ?? [], draft.codexSettings?.effort ?? 'medium'),
+    access: draft.codexSettings?.access ?? 'ask',
+    context: '200k',
+    fast: false,
+  };
+}
+
 const SPEEDS = [
   { id: 'off', name: 'Standard', hint: 'Normal speed and price' },
   { id: 'on', name: 'Fast', hint: 'Quicker answers, costs more' },
@@ -564,13 +587,22 @@ const SPEEDS = [
 // What a message box holds: the words, and the ids of the images and other files added to them.
 export type Box = { text: string; images: string[]; files: string[] };
 
+// Codex sends text only. A reply uses the settings of the thread, never draft overrides.
+export const codexMessage = (
+  text: string,
+  { model, effort, access }: Pick<Settings, 'model' | 'effort' | 'access'>,
+): NewMessage => ({ text, images: [], files: [], model, effort, access, context: '200k', fast: false });
+
 type ComposerProps = {
   placeholder: string;
   // The box does not keep what it holds. Whoever shows it does, so it can outlive the screen.
   value: Box;
   onChange: (change: (value: Box) => Box) => void;
   settings: Settings;
-  onSettings: (settings: Settings) => void;
+  // Without this, settings are fixed for the life of the thread.
+  onSettings?: (settings: Settings) => void;
+  agent?: Thread['agent'];
+  blocked?: boolean;
   onSend: (message: Box) => Promise<unknown>;
   // What Claude can run, suggested while a `/name` is being typed.
   commands: Command[];
@@ -604,22 +636,27 @@ export function Composer({
   onChange,
   settings,
   onSettings,
+  agent = 'claude',
+  blocked,
   onSend,
   commands,
   canSendEmpty,
   textOnly,
-  noAttachments = textOnly,
+  noAttachments,
   onStop,
   autoFocus,
   sendLabel,
 }: ComposerProps) {
   const { text } = value;
+  const codex = agent === 'codex';
+  const wordsOnly = textOnly || codex;
+  const attachmentFree = noAttachments || wordsOnly;
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
   // Files are uploaded as soon as they are added. These are the ids the server gave back.
   // While the box takes words only, files added before are set aside until it takes them again.
-  const images = noAttachments ? [] : value.images;
-  const files = noAttachments ? [] : value.files;
+  const images = attachmentFree ? [] : value.images;
+  const files = attachmentFree ? [] : value.files;
   const [uploading, setUploading] = useState(0);
   // A file is being dragged over the page.
   const [dragging, setDragging] = useState(false);
@@ -628,14 +665,14 @@ export function Composer({
   // Nothing is suggested while the box takes words only.
   const list = useSuggestions(
     box,
-    (caret) => (textOnly ? null : suggest(commands, text, caret)),
+    (caret) => (wordsOnly ? null : suggest(commands, text, caret)),
     (command: Command) => `/${command.name}`,
   );
   const clean = text.trim();
-  const ready = Boolean(clean || images.length || files.length || canSendEmpty) && !sending && !uploading;
+  const ready = Boolean(clean || images.length || files.length || canSendEmpty) && !sending && !uploading && !blocked;
   // Pasting, dropping and the attach button all end up here. Whether this did anything with the files.
   const attach = (list: Iterable<File>) => {
-    const picked = noAttachments ? [] : [...list];
+    const picked = attachmentFree ? [] : [...list];
     if (!picked.length) return false;
     setError('');
     setUploading((count) => count + picked.length);
@@ -672,7 +709,7 @@ export function Composer({
       window.removeEventListener('drop', dropped);
     };
   }, []);
-  const models = useApp((state) => state.models);
+  const models = useApp((state) => (codex ? state.codexModels : state.models));
   const model = models.find((option) => option.id === settings.model);
   // A model the list does not have (a proxy model while the proxy is away) keeps every level on offer.
   const efforts = EFFORTS.filter((option) => model?.efforts.includes(option.id) ?? true);
@@ -695,7 +732,7 @@ export function Composer({
   };
   return (
     <div className="relative rounded-xl border border-border bg-card shadow-sm focus-within:border-primary">
-      {dragging && !noAttachments && (
+      {dragging && !attachmentFree && (
         <div className="pointer-events-none absolute inset-0 z-10 grid place-items-center rounded-xl border-2 border-dashed border-primary bg-card/90 text-sm font-medium text-primary">
           Drop files to attach
         </div>
@@ -754,7 +791,7 @@ export function Composer({
       />
       {error && <p className="px-3.5 pb-1 text-xs text-rose-500">{error}</p>}
       <div className="flex items-center gap-0.5 px-1.5 pb-1.5">
-        {!noAttachments && (
+        {!attachmentFree && (
           <>
             <input
               ref={picker}
@@ -778,30 +815,32 @@ export function Composer({
             </button>
           </>
         )}
-        <Picker
-          icon={<Sparkles size={14} className="text-primary" />}
-          value={settings.model}
-          options={models}
-          search="Search models"
-          onChange={(id) => {
-            const picked = models.find((option) => option.id === id)!;
-            onSettings({ ...settings, model: id, effort: nearestEffort(picked.efforts, settings.effort) });
-          }}
-        />
+        {onSettings && !codex && (
+          <Picker
+            icon={<Sparkles size={14} className="text-primary" />}
+            value={settings.model}
+            options={models}
+            search="Search models"
+            onChange={(id) => {
+              const picked = models.find((option) => option.id === id)!;
+              onSettings({ ...settings, model: id, effort: nearestEffort(picked.efforts, settings.effort) });
+            }}
+          />
+        )}
         {/* Only the levels the model has. Not there for a model whose thinking cannot be set.
             Nudged left on phones so the menus stay on screen. */}
-        {efforts.length > 0 && (
+        {onSettings && (!codex || model) && efforts.length > 0 && (
           <Picker
             icon={<Brain size={14} />}
             // A level saved before the model's levels were known shows as the one that will run.
             value={model ? nearestEffort(model.efforts, settings.effort) : settings.effort}
             options={efforts}
             onChange={(effort) => onSettings({ ...settings, effort })}
-            menuClass="-left-20 sm:left-0"
+            menuClass={codex ? undefined : '-left-20 sm:left-0'}
             labelClass={ICON_ON_PHONE}
           />
         )}
-        {model?.bigContext && (
+        {onSettings && !codex && model?.bigContext && (
           <Picker
             icon={<Layers size={14} />}
             value={settings.context}
@@ -811,7 +850,7 @@ export function Composer({
             labelClass={ICON_ON_PHONE}
           />
         )}
-        {model?.fast && (
+        {onSettings && !codex && model?.fast && (
           <Picker
             icon={<Zap size={14} className={settings.fast ? 'text-primary' : ''} />}
             value={settings.fast ? 'on' : 'off'}
@@ -821,21 +860,28 @@ export function Composer({
             labelClass="hidden"
           />
         )}
-        <Picker
-          icon={<ShieldCheck size={14} />}
-          value={settings.access}
-          options={ACCESS}
-          onChange={(access) => onSettings({ ...settings, access: access as Access })}
-          menuClass="-left-40 sm:left-0"
-          labelClass={ICON_ON_PHONE}
-        />
+        {onSettings && (
+          <Picker
+            icon={<ShieldCheck size={14} />}
+            value={settings.access}
+            options={codex ? CODEX_ACCESS : ACCESS}
+            onChange={(access) => onSettings({ ...settings, access: access as Access })}
+            menuClass={codex ? undefined : '-left-40 sm:left-0'}
+            labelClass={ICON_ON_PHONE}
+          />
+        )}
+        {codex && onSettings && model && (
+          <span className="min-w-0 truncate px-2 text-sm text-muted-foreground" title={model.name}>
+            {model.name}
+          </span>
+        )}
         <div className="flex-1" />
         {onStop && (
           <button
             type="button"
             onClick={onStop}
             aria-label="Stop"
-            title="Stop Claude"
+            title={`Stop ${agentName(agent)}`}
             className="mr-1 grid size-8 shrink-0 place-items-center rounded-full bg-rose-500/10 text-rose-500 hover:bg-rose-500/20"
           >
             <Square size={13} fill="currentColor" />
@@ -906,10 +952,13 @@ export function NewThread({ channel, draftId, title }: NewThreadProps) {
   const channelId = channel.id;
   const draft = useDraft(draftId);
   const edit = (patch: Partial<Draft>) => editDraft(draftId, { channelId, ...patch });
-  const settings = { ...NEW_THREAD, ...draft.settings };
+  const agent = draft.agent ?? 'claude';
+  const codex = agent === 'codex';
+  const codexModel = useApp((state) => state.codexModels[0]);
+  const settings = newThreadSettings(draft, codexModel);
   const place = draft.place ?? PLACES[0].id;
   const visibility = draft.visibility ?? 'private';
-  const commands = useCommands(`channel=${channelId}`);
+  const commands = useCommands(codex ? undefined : `channel=${channelId}`);
   const places = usePlaces(channelId);
   const branches = places.branches.map(branchOption);
   // A worktree is easier to tell by what its last thread was about than by its branch. The worktrees used
@@ -961,6 +1010,16 @@ export function NewThread({ channel, draftId, title }: NewThreadProps) {
         <span className="min-w-0 flex-1 truncate">
           New thread in <b className="text-foreground">#{channel.name}</b>.
         </span>
+        {codexModel && (
+          <Picker
+            icon={<Sparkles size={14} />}
+            value={agent}
+            options={AGENTS}
+            onChange={(agent) => edit({ agent: agent as Thread['agent'] })}
+            menuClass="right-0"
+            fullLabel
+          />
+        )}
         <Link
           to="/c/$channelId"
           params={{ channelId }}
@@ -969,17 +1028,35 @@ export function NewThread({ channel, draftId, title }: NewThreadProps) {
           Cancel
         </Link>
       </div>
+      {codex && !codexModel && (
+        <p className="mb-2 text-xs text-muted-foreground">
+          Codex is unavailable.{' '}
+          <button type="button" onClick={() => edit({ agent: 'claude' })} className="text-primary underline">
+            Switch to Claude
+          </button>
+        </p>
+      )}
+      {codex && attachedTo(draft) > 0 && (
+        <p className="mb-2 text-xs text-muted-foreground">Codex only takes text. Attachments will not be sent.</p>
+      )}
       <Composer
         autoFocus
-        placeholder="What should Claude work on?"
+        agent={agent}
+        blocked={codex && !codexModel}
+        placeholder={`What should ${agentName(agent)} work on?`}
         value={draft}
         onChange={(change) => edit(change(draftOf(draftId)))}
         settings={settings}
-        onSettings={(settings) => edit({ settings })}
+        onSettings={(settings) => {
+          const { access, effort } = settings;
+          edit(codex ? { codexSettings: { access, effort } } : { settings });
+        }}
         commands={commands}
         onSend={async (message) => {
           const where = fresh ? { from } : { path };
-          const thread = await createThread({ channelId, ...message, visibility, ...where, ...settings });
+          const body = codex ? { ...codexMessage(message.text, settings), agent } : { ...message, ...settings };
+          const thread = await createThread({ channelId, visibility, ...where, ...body });
+          if (codex) dropDraft(draftId);
           void navigate({ to: '/c/$channelId/t/$threadId', params: { channelId, threadId: thread.id }, replace: true });
         }}
       />
@@ -1318,14 +1395,16 @@ export function ThreadMenu({ thread }: { thread: Thread }) {
               <SquarePen size={15} className="text-muted-foreground" />
               Rename
             </button>
-            <button type="button" className={row} disabled={naming} onClick={rename}>
-              {naming ? (
-                <LoaderCircle size={15} className="animate-spin text-muted-foreground" />
-              ) : (
-                <Sparkles size={15} className="text-muted-foreground" />
-              )}
-              {naming ? 'Thinking of a name…' : 'New name from Claude'}
-            </button>
+            {thread.agent !== 'codex' && (
+              <button type="button" className={row} disabled={naming} onClick={rename}>
+                {naming ? (
+                  <LoaderCircle size={15} className="animate-spin text-muted-foreground" />
+                ) : (
+                  <Sparkles size={15} className="text-muted-foreground" />
+                )}
+                {naming ? 'Thinking of a name…' : 'New name from Claude'}
+              </button>
+            )}
             <button type="button" className={`${row} text-rose-600`} onClick={() => ask('delete')}>
               <Trash2 size={15} />
               Delete

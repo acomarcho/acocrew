@@ -60,11 +60,14 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, onTestFinished, tes
 import { WebSocket } from 'ws';
 import { FIRST_ADMIN } from './auth.ts';
 import { CHECK_MS } from './automations.ts';
+import { CodexTeardownError, type CodexTurn } from './codex.ts';
+import * as gitModule from './git.ts';
 import { openDb, type Db } from './db.ts';
 import { createProxy, PROXY_DEFAULTS } from './proxy.ts';
 import type { QueryFn } from './runner.ts';
 import { automations, channels, chats, events, seen, session as sessions, shares, threads } from './schema.ts';
-import { startServer } from './server.ts';
+import { createApp, startServer, type Deps } from './server.ts';
+import { nextAt } from './translate.ts';
 
 // A line of a recording (see fixtures/record.ts): a real message from Claude, or a marker for what the
 // outside world did at that point.
@@ -303,10 +306,10 @@ let sockets: WebSocket[];
 let gh = GH;
 
 // Starts (or restarts) the server with a Claude that plays `script`.
-async function serve(script: Line[], naming?: Line[]) {
-  server?.close();
+async function serve(script: Line[], naming?: Line[], codex: Pick<Deps, 'codex' | 'codexTurn'> = {}) {
+  await server?.close();
   claude = fakeClaude(script, naming);
-  server = await startServer(0, { db, query: claude.query, home, images, worktrees, secret: 'test', gh }); // 0 = any free port
+  server = await startServer(0, { db, query: claude.query, home, images, worktrees, secret: 'test', gh, ...codex }); // 0 = any free port
 }
 
 // The login cookie of whoever the test is acting as. Every request and every tab sends it, like a browser.
@@ -3032,6 +3035,462 @@ test("the model picker offers Claude's models and then the proxy's, and only Cla
   expect((await proxySettings(await ask(PROXY_PATH))).error).toBe('Nothing answers at http://127.0.0.1:1.');
 });
 
+const CODEX = { home: join(home, '.acocrew', 'codex'), model: 'gpt-5.4' };
+const CODEX_MESSAGE = { ...HAIKU, model: CODEX.model, context: '200k', effort: 'medium', access: 'ask' };
+const CODEX_START = { ...CODEX_MESSAGE, agent: 'codex' };
+const CODEX_SESSION = '8eca93b4-0ee0-4fd1-9517-27f87c92347f';
+
+function codexFixture() {
+  const approvals: (Answer | null)[] = [];
+  const turn = vi.fn<CodexTurn>(async ({ access, sessionId, text, onSession, onApproval, onItem, signal }) => {
+    if (!sessionId) onSession(CODEX_SESSION);
+    if (!sessionId && access === 'ask') {
+      const item = {
+        id: 'codex-approval',
+        at: nextAt(),
+        kind: 'tool',
+        name: 'Approve command',
+        detail: 'printf hello',
+        done: false,
+        failed: false,
+        ask: 'pending',
+      } as const;
+      const decision = await onApproval(item);
+      approvals.push(decision);
+      if (!signal.aborted) {
+        const approved = decision?.decision === 'approve';
+        onItem(
+          { ...item, done: true, endAt: nextAt(), failed: !approved, ask: approved ? 'approved' : 'declined' },
+          true,
+        );
+      }
+    }
+    if (signal.aborted) return 'interrupted';
+    onItem({ id: `codex-${text}`, at: nextAt(), kind: 'message', by: 'codex', text: `Codex: ${text}` }, true);
+    return 'completed';
+  });
+  return { approvals, turn };
+}
+
+test('Codex is opt-in, with a model list separate from Claude and the model proxy', async () => {
+  const models = (query = '') => ask(`${MODELS_PATH}${query}`).then((res) => res.json()) as Promise<Model[]>;
+  const channel = await addChannel();
+  const create = (settings: object) =>
+    post('/api/threads', {
+      channelId: channel.id,
+      text: 'hello',
+      path: channel.path,
+      ...settings,
+    });
+  const available = await models();
+  expect(await models('?agent=codex')).toEqual([]);
+  expect((await create(CODEX_START)).status).toBe(400);
+  const { turn } = codexFixture();
+  await serve(TWO_TURNS, undefined, { codex: CODEX, codexTurn: turn });
+  expect(await models()).toEqual(available);
+  const before = proxyAsked.length;
+  expect(await models('?agent=codex')).toEqual([
+    {
+      id: CODEX.model,
+      name: CODEX.model,
+      hint: 'Through Codex',
+      bigContext: false,
+      fast: false,
+      efforts: ['low', 'medium', 'high', 'xhigh'],
+      window: null,
+    },
+  ]);
+  const image = await uploaded();
+  const file = await sent();
+  for (const settings of [
+    { agent: 'other' },
+    { model: HAIKU.model },
+    { context: '1m' },
+    { fast: true },
+    { effort: 'max' },
+    { images: [image] },
+    { files: [file] },
+  ])
+    expect((await create({ ...CODEX_START, ...settings })).status, JSON.stringify(settings)).toBe(400);
+  expect(allThreads()).toEqual([]);
+  expect(turn).not.toHaveBeenCalled();
+  expect(proxyAsked).toHaveLength(before);
+  expect(((await create(HAIKU).then((res) => res.json())) as Thread).agent).toBe('claude');
+});
+
+test('Codex creates, asks permission across WebSocket reconnect, and resumes after a server restart', async () => {
+  const { turn, approvals } = codexFixture();
+  const config = { codex: CODEX, codexTurn: turn };
+  await serve([], NAMING, config);
+  const tab = await connect();
+  const before = proxyAsked.length;
+  const thread = await startThread('first prompt', CODEX_START);
+  expect(thread).toMatchObject({ ...CODEX_START, title: 'first prompt' });
+  expect((await tab.until('thread', ({ thread: row }) => row.id === thread.id)).thread.agent).toBe('codex');
+  await tab.open(thread.id);
+  await tab.shows(thread.id, (screen) => screen.includes('Approve command asking'));
+  const reconnect = await connect();
+  expect(reconnect.hello.threads).toContainEqual(expect.objectContaining({ id: thread.id, agent: 'codex' }));
+  await reconnect.open(thread.id);
+  expect(reconnect.screen(thread.id)).toContain('Approve command asking');
+  expect(await (await commands(`thread=${thread.id}`)).json()).toEqual([]);
+  expect((await retitle(thread)).status).toBe(400);
+  expect((await rename(thread, 'By hand')).status).toBe(200);
+  for (const notSupported of [{ decision: 'always' }, { decision: 'approve', answers: { a: 'b' } }] as const)
+    expect((await answer(thread, { toolId: 'codex-approval', ...notSupported })).status).toBe(400);
+  expect(approvals).toHaveLength(0);
+  const allow = { toolId: 'codex-approval', decision: 'approve' } as const;
+  expect((await answer(thread, allow)).status).toBe(200);
+  await reconnect.status(thread.id, 'done');
+  expect(approvals).toEqual([allow]);
+  expect(reconnect.tool(thread.id, 'Approve command')).toMatchObject({ ask: 'approved', done: true });
+  expect(reconnect.items(thread.id)).toContainEqual(
+    expect.objectContaining({ by: 'codex', text: 'Codex: first prompt' }),
+  );
+  expect(turn).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({ cwd: shop, text: 'first prompt', model: CODEX.model, access: 'ask', effort: 'medium' }),
+  );
+  expect(claude.calls).toEqual([]);
+
+  // A fresh app has only the database to recover the Codex session and its saved items from.
+  db = openDb(db.$client.serialize());
+  await serve([], NAMING, { ...config, codex: { ...CODEX, model: 'gpt-5.5' } });
+  const after = await connect();
+  expect(after.hello.threads).toContainEqual(
+    expect.objectContaining({ id: thread.id, agent: 'codex', title: 'By hand' }),
+  );
+  await after.open(thread.id);
+  expect(after.items(thread.id)).toContainEqual(expect.objectContaining({ by: 'codex', text: 'Codex: first prompt' }));
+  const image = await uploaded();
+  for (const settings of [
+    { agent: 'claude' },
+    { model: 'other' },
+    { context: '1m' },
+    { fast: true },
+    { effort: 'high' },
+    { access: 'full' },
+    { images: [image] },
+  ])
+    expect((await say(thread, 'rejected', { ...CODEX_MESSAGE, ...settings })).status, JSON.stringify(settings)).toBe(
+      400,
+    );
+  expect(turn).toHaveBeenCalledTimes(1);
+  expect(after.screen(thread.id)).not.toContain('message: rejected');
+  expect((await say(thread, 'second prompt', CODEX_MESSAGE)).status).toBe(200);
+  await after.status(thread.id, 'done');
+  expect(turn).toHaveBeenNthCalledWith(2, expect.objectContaining({ sessionId: CODEX_SESSION, text: 'second prompt' }));
+  expect(after.items(thread.id)).toContainEqual(expect.objectContaining({ by: 'codex', text: 'Codex: second prompt' }));
+  expect(claude.calls).toEqual([]);
+  expect(proxyAsked).toHaveLength(before);
+});
+
+test('opening an active Codex thread returns the latest version of each live item once', async () => {
+  const turn: CodexTurn = async ({ onItem, signal }) => {
+    const message = { id: 'stream', at: nextAt(), kind: 'message', by: 'codex' } as const;
+    const tool = {
+      id: 'command',
+      at: nextAt(),
+      kind: 'tool',
+      name: 'Command',
+      detail: 'printf hello',
+      done: false,
+      failed: false,
+    } as const;
+    onItem({ ...message, text: 'Hello' }, false);
+    onItem(tool, false);
+    onItem({ ...tool, output: 'hello' }, false);
+    onItem({ ...message, text: 'Hello there' }, false);
+    await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+    return 'interrupted';
+  };
+  await serve([], undefined, { codex: CODEX, codexTurn: turn });
+  const tab = await connect();
+  const thread = await startThread('hello', CODEX_START);
+  await tab.open(thread.id);
+  expect(tab.items(thread.id).filter((item) => item.id === 'command')).toEqual([
+    expect.objectContaining({ output: 'hello' }),
+  ]);
+  expect(tab.items(thread.id)).toContainEqual(expect.objectContaining({ id: 'stream', text: 'Hello there' }));
+  expect((await post(`/api/threads/${thread.id}/stop`)).status).toBe(200);
+});
+
+test('revoking a share while its Codex approval arrives cannot authorize the command', async () => {
+  const jordan = await teammate('jordan');
+  const channel = await addChannel();
+  const { turn, approvals } = codexFixture();
+  const { app, close } = await createApp({
+    db,
+    query: claude.query,
+    home,
+    images,
+    worktrees,
+    secret: 'test',
+    codex: CODEX,
+    codexTurn: turn,
+  });
+  onTestFinished(async () => {
+    await close();
+  });
+  const headers = { ...browser(), host: new URL(url('')).host };
+  const send = (path: string, body: unknown) =>
+    app.request(url(path), { method: 'POST', headers, body: JSON.stringify(body) });
+  const thread = (await (
+    await send('/api/threads', {
+      ...CODEX_START,
+      channelId: channel.id,
+      path: channel.path,
+      text: 'approval test',
+      visibility: 'private',
+    })
+  ).json()) as Thread;
+  const path = `/api/threads/${thread.id}`;
+  expect((await send(`${path}/shares`, { userId: jordan.id, shared: true })).status).toBe(200);
+  const answer = JSON.stringify({ toolId: 'codex-approval', decision: 'approve' });
+  let startReading!: () => void;
+  const reading = new Promise<void>((resolve) => (startReading = resolve));
+  let sendBody!: () => void;
+  const body = new ReadableStream<Uint8Array>(
+    {
+      start(controller) {
+        sendBody = () => {
+          controller.enqueue(new TextEncoder().encode(answer));
+          controller.close();
+        };
+      },
+      pull: startReading,
+    },
+    { highWaterMark: 0 },
+  );
+  const init = { method: 'POST', headers: { ...headers, cookie: jordan.cookie }, duplex: 'half' as const, body };
+  const request = app.fetch(new Request(url(`${path}/answers`), init));
+  await reading;
+  expect((await send(`${path}/shares`, { userId: jordan.id, shared: false })).status).toBe(200);
+  sendBody();
+  expect((await request).status).toBe(404);
+  expect(approvals).toEqual([]);
+});
+
+test('a request withdrawn by Codex closes its approval and rejects stale browser answers', async () => {
+  let withdraw!: () => void;
+  const withdrawn = new Promise<void>((resolve) => (withdraw = resolve));
+  onTestFinished(withdraw);
+  const turn: CodexTurn = async ({ onApproval, onItem }) => {
+    const item = {
+      id: 'codex-withdrawn',
+      at: nextAt(),
+      kind: 'tool',
+      name: 'Approve command',
+      detail: 'printf hello',
+      done: false,
+      failed: false,
+      ask: 'pending',
+    } as const;
+    const waiting = onApproval(item);
+    await withdrawn;
+    onItem({ ...item, done: true, failed: true, ask: 'declined' }, true);
+    expect(await waiting).toBeNull();
+    return 'completed';
+  };
+  await serve([], undefined, { codex: CODEX, codexTurn: turn });
+  const tab = await connect();
+  const thread = await startThread('first prompt', CODEX_START);
+  await tab.status(thread.id, 'needs');
+  withdraw();
+  await tab.status(thread.id, 'done');
+  await tab.open(thread.id);
+  expect(tab.items(thread.id)).toContainEqual(expect.objectContaining({ id: 'codex-withdrawn', ask: 'declined' }));
+  expect((await answer(thread, { toolId: 'codex-withdrawn', decision: 'approve' })).status).toBe(409);
+});
+
+test('Codex permission prompts expire after a restart, but the next prompt still resumes the session', async () => {
+  const { turn, approvals } = codexFixture();
+  const config = { codex: CODEX, codexTurn: turn };
+  await serve([], undefined, config);
+  const tab = await connect();
+  const thread = await startThread('first prompt', CODEX_START);
+  await tab.status(thread.id, 'needs');
+
+  // Keep the database as it was at the time of the crash, without a graceful shutdown.
+  db = openDb(db.$client.serialize());
+  await serve([], undefined, config);
+  const after = await connect();
+  expect(after.hello.threads).toContainEqual(
+    expect.objectContaining({ id: thread.id, status: 'failed', agent: 'codex' }),
+  );
+  await after.open(thread.id);
+  expect(after.screen(thread.id)).toEqual([
+    'message: first prompt',
+    'Approve command failed',
+    'error: The server restarted while Codex was busy. Send a message to continue.',
+  ]);
+  expect(approvals).toEqual([null]);
+  expect((await answer(thread, { toolId: 'codex-approval', decision: 'approve' })).status).toBe(409);
+  expect((await say(thread, 'continue', CODEX_MESSAGE)).status).toBe(200);
+  await after.status(thread.id, 'done');
+  expect(turn).toHaveBeenNthCalledWith(2, expect.objectContaining({ sessionId: CODEX_SESSION, text: 'continue' }));
+});
+
+test('Codex keeps its saved model after a crash and a change to the default model', async () => {
+  const cwd = makeRepo(join(home, 'code', 'codex-first-turn-crash'));
+  writeFileSync(join(cwd, 'scenario'), 'normal');
+  mkdirSync(CODEX.home, { recursive: true });
+  const pendingRollout = join(CODEX.home, `${CODEX_SESSION}.jsonl`);
+  const turn: CodexTurn = async ({ onSession, signal }) => {
+    onSession(CODEX_SESSION, pendingRollout);
+    await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+    return 'interrupted';
+  };
+  await serve([], undefined, { codex: CODEX, codexTurn: turn });
+  const thread = await startThread('first prompt', {
+    ...CODEX_START,
+    path: cwd,
+    channelId: (await addChannel(cwd)).id,
+  });
+  const saved = () => db.select().from(threads).where(eq(threads.id, thread.id)).get();
+  await vi.waitFor(() =>
+    expect(saved()).toMatchObject({ sessionId: CODEX_SESSION, codexPendingRollout: pendingRollout }),
+  );
+
+  // Copy SQLite before graceful shutdown can change it, then use the real adapter with the stand-in App Server.
+  db = openDb(db.$client.serialize());
+  const binary = fileURLToPath(new URL('./codex.fake.mjs', import.meta.url));
+  await serve([], undefined, { codex: { ...CODEX, model: 'gpt-5.5', binary } });
+  const after = await connect();
+  expect((await say(thread, 'continue', CODEX_MESSAGE)).status).toBe(200);
+  await after.status(thread.id, 'done');
+  expect(saved()).toMatchObject({ codexPendingRollout: null });
+  expect(saved()?.sessionId).not.toBe(CODEX_SESSION);
+  const wire = readFileSync(join(cwd, 'wire.jsonl'), 'utf8');
+  expect(wire).toContain('"method":"thread/start"');
+  expect(wire).toContain(`"model":"${CODEX.model}"`);
+  expect(wire).not.toContain('"method":"thread/resume"');
+  expect(wire).toContain('"text":"continue"');
+  expect(wire).not.toContain('"text":"first prompt"');
+});
+
+test.each([false, true])(
+  'a failed Codex teardown blocks Stop and Delete (failure already reported: %s)',
+  async (failed) => {
+    const turn: CodexTurn = async ({ signal }) => {
+      if (!failed)
+        await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+      throw new CodexTeardownError('Could not confirm that Codex and its commands stopped.');
+    };
+    await serve([], undefined, { codex: CODEX, codexTurn: turn });
+    const tab = await connect();
+    const thread = await startThread('first prompt', CODEX_START);
+    if (failed) await tab.status(thread.id, 'failed');
+    const stop = await post(`/api/threads/${thread.id}/stop`);
+    expect(stop.status).toBe(500);
+    expect(await stop.json()).toEqual({ error: 'Could not confirm that Codex and its commands stopped.' });
+    if (!failed) await tab.status(thread.id, 'failed');
+    expect((await say(thread, 'not sent', CODEX_MESSAGE)).status).toBe(409);
+    expect((await post(`/api/threads/${thread.id}/delete`)).status).toBe(500);
+    expect(allThreads().map((row) => row.id)).toEqual([thread.id]);
+  },
+);
+
+test('shutdown waits for a pending Codex worktree to roll back without exposing it to other threads', async () => {
+  const channel = await addChannel();
+  const { turn } = codexFixture();
+  const { app, close } = await createApp({
+    db,
+    query: claude.query,
+    home,
+    images,
+    worktrees,
+    secret: 'test',
+    codex: CODEX,
+    codexTurn: turn,
+  });
+  let placed!: () => void;
+  let release!: () => void;
+  const made = new Promise<void>((resolve) => {
+    placed = resolve;
+  });
+  const waiting = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const add = gitModule.addWorktree;
+  const git = vi.spyOn(gitModule, 'addWorktree').mockImplementationOnce(async (...args) => {
+    await add(...args);
+    placed();
+    await waiting;
+  });
+  onTestFinished(async () => {
+    release();
+    git.mockRestore();
+    await close();
+  });
+  const initial = await gitModule.listPlaces(channel.path);
+  const from = initial.worktrees[0].branch;
+  const headers = { ...browser(), host: new URL(url('')).host };
+  const request = async (settings: object = { ...CODEX_START, from }) =>
+    app.request(url('/api/threads'), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ channelId: channel.id, text: 'first prompt', ...settings }),
+    });
+  const response = request();
+  await Promise.race([
+    made,
+    response.then(async (res) => {
+      throw new Error(await res.text());
+    }),
+  ]);
+  const pending = (await gitModule.listPlaces(channel.path)).worktrees.find(
+    ({ path }) => !initial.worktrees.some((worktree) => worktree.path === path),
+  );
+  expect(pending).toBeDefined();
+  const choices = await app.request(url(`/api/channels/${channel.id}/places`), { headers });
+  expect(((await choices.json()) as Places).worktrees).toEqual(initial.worktrees);
+  expect((await request({ ...HAIKU, path: pending!.path })).status).toBe(400);
+  expect((await request({ ...CODEX_START, path: pending!.path })).status).toBe(400);
+
+  let drained = false;
+  const closing = close().then(() => {
+    drained = true;
+  });
+  expect((await request()).status).toBe(503);
+  expect(drained).toBe(false);
+  release();
+  await closing;
+  expect((await response).status).toBe(503);
+  expect(allThreads()).toEqual([]);
+  expect(turn).not.toHaveBeenCalled();
+  expect(await gitModule.listPlaces(channel.path)).toEqual(initial);
+});
+
+test.each(['stop', 'delete'])('Codex %s rejects replies until the running turn ends', async (action) => {
+  let abort!: () => void;
+  let finish!: () => void;
+  const aborted = new Promise<void>((resolve) => (abort = resolve));
+  const finished = new Promise<void>((resolve) => (finish = resolve));
+  onTestFinished(finish);
+  const turn = vi.fn<CodexTurn>(async ({ signal }) => {
+    signal.addEventListener('abort', abort, { once: true });
+    await finished;
+    return 'interrupted';
+  });
+  await serve([], undefined, { codex: CODEX, codexTurn: turn });
+  const tab = await connect();
+  const thread = await startThread('first prompt', CODEX_START);
+  const res = post(`/api/threads/${thread.id}/${action}`);
+  await aborted;
+  expect(allThreads().map((row) => row.id)).toEqual([thread.id]);
+  expect((await say(thread, 'not sent', CODEX_MESSAGE)).status).toBe(409);
+  finish();
+  expect((await res).status).toBe(200);
+  expect(turn).toHaveBeenCalledTimes(1);
+  if (action === 'delete') {
+    expect(allThreads()).toEqual([]);
+  } else {
+    await tab.status(thread.id, 'done');
+    await tab.open(thread.id);
+    expect(tab.screen(thread.id)).toEqual(['message: first prompt', 'notice: Stopped.']);
+  }
+});
+
 test('a thread on a proxy model runs Claude pointed at the proxy, signed in with its key', async () => {
   const tab = await connect();
   const thread = await startThread('make notes', DEEPSEEK);
@@ -3248,6 +3707,28 @@ test('asked for a thread in this worktree, Claude starts it in its own folder, a
   await startThread('make notes');
   const inRepo = await acocrewTools(claude.calls.length - 1);
   expect(await inRepo.call('start_thread', { text: 'more', worktree: 'this' })).toMatchObject({ path: null });
+});
+
+test('Codex threads accept direct messages only; MCP and automations still start Claude threads', async () => {
+  const { turn } = codexFixture();
+  await serve(TWO_TURNS, undefined, { codex: CODEX, codexTurn: turn });
+  const tab = await connect();
+  const claudeThread = await startThread('make notes');
+  await tab.status(claudeThread.id, 'done');
+  expect((await say(claudeThread, 'switch', CODEX_START)).status).toBe(400);
+  const codexThread = await startThread('hello', { ...CODEX_START, access: 'full' });
+  await tab.status(codexThread.id, 'done');
+  expect(turn).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ access: 'full' }));
+  const tools = await acocrewTools();
+  expect(await tools.call('send_message', { id: codexThread.id, text: 'not direct' })).toEqual({
+    error: 'Send messages to Codex threads from the app.',
+  });
+  const child = await tools.call('start_thread', { text: 'another thread', worktree: 'this' });
+  expect((await tab.status(child.id, 'done')).agent).toBe('claude');
+  const automation = await automate();
+  const run = (await (await post(`${AUTOMATIONS_PATH}/${automation.id}/run`)).json()) as Thread;
+  expect(run.agent).toBe('claude');
+  expect(turn).toHaveBeenCalledTimes(1);
 });
 
 test('Claude can list the threads in its repository that its owner sees, read one, and write in it', async () => {

@@ -1,3 +1,5 @@
+import Database from 'better-sqlite3';
+import { readMigrationFiles } from 'drizzle-orm/migrator';
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -25,4 +27,30 @@ test('a database file keeps writes in a side log that is not flushed on every wr
   db.$client.close();
   expect(loadItems(openDb(file), 't1')).toEqual([item]);
   rmSync(dir, { recursive: true });
+});
+
+test('existing threads stay on Claude with their original session ID after migration', () => {
+  const legacy = new Database(':memory:');
+  legacy.exec('CREATE TABLE __drizzle_migrations (id SERIAL PRIMARY KEY, hash text NOT NULL, created_at numeric)');
+  const folder = new URL('../drizzle', import.meta.url).pathname;
+  // The 14 migrations released before the agent column was added.
+  for (const migration of readMigrationFiles({ migrationsFolder: folder }).slice(0, 14)) {
+    for (const sql of migration.sql) legacy.exec(sql);
+    legacy
+      .prepare('INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)')
+      .run(migration.hash, migration.folderMillis);
+  }
+  legacy.exec(`INSERT INTO channels (id, name, path, created_at) VALUES ('repo', 'Repo', '/old', 1);
+    INSERT INTO threads (id, channel_id, title, model, effort, status, session_id, created_at, updated_at)
+    VALUES ('old', 'repo', 'Old thread', 'gpt-example', 'high', 'done', 'old-session', 1, 1)`);
+  const db = openDb(legacy.serialize());
+  legacy.close();
+  try {
+    expect(db.$client.prepare('SELECT agent, session_id FROM threads WHERE id = ?').get('old')).toEqual({
+      agent: 'claude',
+      session_id: 'old-session',
+    });
+  } finally {
+    db.$client.close();
+  }
 });

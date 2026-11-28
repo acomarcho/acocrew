@@ -37,7 +37,8 @@ test('only the name the caret is in counts, and an email address or a name nobod
 });
 
 test('only people who see the thread, and still have an account, are offered', () => {
-  const thread = (visibility: string, shared: string[] = []) => ({ visibility, createdBy: 'ann', shared }) as Thread;
+  const thread = (visibility: string, shared: string[] = []) =>
+    ({ agent: 'claude', visibility, createdBy: 'ann', shared }) as Thread;
   const names = (of: Thread) => peopleOf(of, TEAM).map((one) => one.name);
   expect(names(thread('private'))).toEqual(['Ann']);
   expect(names(thread('private', ['bo', 'Sam']))).toEqual(['Ann', 'Bo']);
@@ -53,8 +54,8 @@ test('the usernames a message tags: at the start of a word, in small letters, wi
   expect(tagsIn('nobody here @ all')).toEqual([]);
 });
 
-test('the timeline puts what people wrote to each other between what Claude did, by time, and can leave either out', () => {
-  const item = (id: string, at: number) => ({ id, at, kind: 'message', by: 'claude', text: id }) as Item;
+test('the timeline mixes agent messages with people’s chat by time, and can leave either out', () => {
+  const item = (id: string, at: number): Item => ({ id, at, kind: 'message', by: 'codex', text: id });
   const chat = (id: number, at: number): Chat => ({ id, at, userId: 'ann', text: `#${id}`, tagged: [] });
   const items = [item('a', 10), item('b', 30), item('c', 50)];
   const chats = [chat(1, 20), chat(2, 40), chat(3, 60)];

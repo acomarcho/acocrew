@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from 'react';
 import { SuggestMenu, useSuggestions } from './commands';
 import { editDraft, useDraft } from './drafts';
 import { sendChat, useApp, useMe } from './store';
-import { Avatar, BOX, SEND_KEYS, sends } from './ui';
+import { agentName, Avatar, BOX, SEND_KEYS, sends } from './ui';
 
 // One row of a thread's timeline: something Claude or a person did there, or a chat message.
 export type Entry = Item | ({ kind: 'chat' } & Chat);
@@ -178,7 +178,7 @@ export function ChatBox({ thread }: { thread: Thread }) {
           <AtSign size={15} />
         </button>
         <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-          People only. Claude does not see this.
+          People only. {agentName(thread.agent)} does not see this.
         </span>
         <button
           type="button"

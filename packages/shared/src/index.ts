@@ -8,6 +8,9 @@ export type Status = 'working' | 'waiting' | 'needs' | 'failed' | 'done';
 // full: Claude acts without asking. ask: Claude asks before anything that is not just reading.
 export type Access = 'full' | 'ask';
 
+// The coding engine belongs to the thread, not to the selected model.
+export type Agent = 'claude' | 'codex';
+
 // private: only whoever made it sees it, and for a thread also the people it is shared with.
 // public: everyone with an account does.
 export type Visibility = 'private' | 'public';
@@ -28,6 +31,7 @@ export type Channel = { id: string; name: string; path: string };
 export type Thread = {
   id: string;
   channelId: string;
+  agent: Agent;
   title: string;
   model: string;
   effort: string;
@@ -100,7 +104,7 @@ export type Todo = { id: string; subject: string; status: string };
 // `files` on a message are ids of other uploaded files (see `fileName`).
 // `userId` on a message says which person wrote it. Claude's own messages have none.
 export type Item = { id: string; at: number; parent?: string } & (
-  | { kind: 'message'; by: 'user' | 'claude'; userId?: string; text: string; images?: string[]; files?: string[] }
+  | { kind: 'message'; by: 'user' | Agent; userId?: string; text: string; images?: string[]; files?: string[] }
   | {
       kind: 'tool';
       name: string;
@@ -332,7 +336,7 @@ export type NewMessage = {
 };
 // `from`: the thread gets its own new worktree, on a new branch that starts from this branch.
 // `path`: the thread works in a folder that exists already: the repository folder or one of its worktrees.
-export type NewThread = NewMessage & { channelId: string; visibility: Visibility } & (
+export type NewThread = NewMessage & { channelId: string; visibility: Visibility; agent?: Agent } & (
     | { from: string }
     | { path: string }
   );

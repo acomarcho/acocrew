@@ -1,5 +1,6 @@
+import type { Model, Thread } from '@acocrew/shared';
 import { expect, test } from 'vite-plus/test';
-import { nearestEffort, sends } from './ui';
+import { agentName, codexMessage, nearestEffort, NEW_THREAD, newThreadSettings, sends } from './ui';
 
 // A key press in a message box, as the browser reports it.
 const press = (key: string, held: { shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean } = {}) => ({
@@ -44,4 +45,67 @@ test('switching models keeps the level when the new model has it, and otherwise 
 
 test('a model whose thinking cannot be set keeps whatever level was picked', () => {
   expect(nearestEffort([], 'medium')).toBe('medium');
+});
+
+const CODEX: Model = {
+  id: 'gpt-5.5',
+  name: 'gpt-5.5',
+  hint: 'Through Codex',
+  bigContext: false,
+  fast: false,
+  efforts: ['low', 'medium', 'high', 'xhigh'],
+  window: null,
+};
+
+test('new Codex threads use the configured model, separate settings and text-only wire values', () => {
+  const draft = {
+    text: 'hello',
+    images: ['cat.png'],
+    files: ['notes.txt'],
+    settings: { fast: true, model: 'proxy-gpt', effort: 'max' },
+  };
+  const codex = { ...draft, agent: 'codex' as const };
+  expect(newThreadSettings(draft, CODEX)).toEqual({ ...NEW_THREAD, ...draft.settings });
+  expect(newThreadSettings(codex, CODEX)).toEqual({
+    model: CODEX.id,
+    effort: 'medium',
+    access: 'ask',
+    context: '200k',
+    fast: false,
+  });
+  const picked = newThreadSettings({ ...codex, codexSettings: { access: 'full', effort: 'high' } }, CODEX);
+  expect(codexMessage(codex.text, picked)).toEqual({
+    text: 'hello',
+    images: [],
+    files: [],
+    model: CODEX.id,
+    effort: 'high',
+    access: 'full',
+    context: '200k',
+    fast: false,
+  });
+});
+
+test('Codex replies keep the thread settings and do not send a runtime switch', () => {
+  const thread = {
+    agent: 'codex' as const,
+    model: 'retired-model',
+    effort: 'xhigh',
+    access: 'ask' as const,
+    context: '1m',
+    fast: true,
+  };
+  expect(codexMessage('carry on', thread)).toEqual({
+    text: 'carry on',
+    images: [],
+    files: [],
+    model: 'retired-model',
+    effort: 'xhigh',
+    access: 'ask',
+    context: '200k',
+    fast: false,
+  });
+  const label = (thread: Pick<Thread, 'agent' | 'model'>) => agentName(thread.agent);
+  expect(label(thread)).toBe('Codex');
+  expect(label({ ...thread, agent: 'claude' })).toBe('Claude');
 });

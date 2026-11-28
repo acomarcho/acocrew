@@ -20,6 +20,7 @@ import type {
 import { eq, isNull, ne } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { CodexTeardownError, type CodexTurn } from './codex.ts';
 import { loadItems, saveItem, threadCols, type Db, type StoredThread } from './db.ts';
 import { branchOf } from './git.ts';
 import type { Hub } from './hub.ts';
@@ -73,6 +74,17 @@ type Session = {
   // We closed it on purpose, so whatever it still says is ignored.
   closed: boolean;
   idle?: NodeJS.Timeout;
+};
+
+// One queue per Codex thread. Each turn gets its own child; its teardown must finish before the next turn.
+type CodexSession = {
+  input: NewMessage[];
+  abort: AbortController;
+  run: Promise<void>;
+  live: Map<string, Item>;
+  asks: Session['asks'];
+  since: number | null;
+  teardownError?: CodexTeardownError;
 };
 
 // A Claude process with nothing to do for this long is closed. The next message starts a new one.
@@ -161,8 +173,23 @@ export function createRunner(
   files: Files,
   proxy: ProxyNow,
   tools: (threadId: string) => McpServerConfig,
+  codex?: CodexTurn,
 ) {
   const sessions = new Map<string, Session>();
+  const codexSessions = new Map<string, CodexSession>();
+  let codexClosing = false;
+  const folderAndSession = (threadId: string) =>
+    db
+      .select({
+        path: threads.path,
+        repo: channels.path,
+        sessionId: threads.sessionId,
+        pendingRollout: threads.codexPendingRollout,
+      })
+      .from(threads)
+      .innerJoin(channels, eq(channels.id, threads.channelId))
+      .where(eq(threads.id, threadId))
+      .get()!;
 
   function addItem(threadId: string, item: Item) {
     saveItem(db, threadId, item);
@@ -179,7 +206,8 @@ export function createRunner(
   // Adds what is only known while the process runs to a stored thread row.
   const withLive = (row: StoredThread): Thread => {
     const session = sessions.get(row.id);
-    return { ...row, tasks: session ? pending(session) : [], since: session?.since ?? null };
+    const codexSession = codexSessions.get(row.id);
+    return { ...row, tasks: session ? pending(session) : [], since: session?.since ?? codexSession?.since ?? null };
   };
 
   // Saves a change to a thread and tells everyone who sees it. `news` is a change people want to look at: it moves the
@@ -241,12 +269,7 @@ export function createRunner(
     // Kept as it is, so that `send` can tell a change by comparing it with the same function's answer.
     const options = launchOptions(message, proxy);
     const { login, ...launch } = options;
-    const { path, repo, sessionId } = db
-      .select({ path: threads.path, repo: channels.path, sessionId: threads.sessionId })
-      .from(threads)
-      .innerJoin(channels, eq(channels.id, threads.channelId))
-      .where(eq(threads.id, threadId))
-      .get()!;
+    const { path, repo, sessionId } = folderAndSession(threadId);
     const folder = path ?? repo;
     const before = loadItems(db, threadId).find((item) => item.kind === 'todos');
     const input = queue<SDKUserMessage>();
@@ -415,6 +438,156 @@ export function createRunner(
     if (session) kill(session);
   }
 
+  function savePartial(threadId: string, session: CodexSession) {
+    for (const item of session.live.values()) addItem(threadId, item);
+    session.live.clear();
+  }
+
+  function answerCodex(threadId: string, session: CodexSession, itemId: string, answer: Answer | null) {
+    const resolve = session.asks.get(itemId);
+    if (!resolve) return false;
+    session.asks.delete(itemId);
+    resolve(answer);
+    if (!session.asks.size) {
+      session.since = Date.now();
+      setThread(threadId, { status: 'working' });
+    }
+    return true;
+  }
+
+  async function runCodex(threadId: string, session: CodexSession, runTurn: CodexTurn) {
+    const { signal } = session.abort;
+    try {
+      while (!signal.aborted && session.input.length) {
+        const { text, model, effort, access } = session.input.shift()!;
+        const { path, repo, sessionId, pendingRollout } = folderAndSession(threadId);
+        const result = await runTurn({
+          cwd: path ?? repo,
+          sessionId,
+          pendingRollout,
+          text,
+          model,
+          effort,
+          access,
+          signal,
+          onSession(id, pendingRollout) {
+            db.update(threads)
+              .set({ sessionId: id, codexPendingRollout: pendingRollout ?? null })
+              .where(eq(threads.id, threadId))
+              .run();
+          },
+          onItem(item, save) {
+            if (signal.aborted) return;
+            if (save) {
+              session.live.delete(item.id);
+              addItem(threadId, item);
+              if (item.kind === 'tool' && item.done) answerCodex(threadId, session, item.id, null);
+            } else {
+              const prior = session.live.get(item.id);
+              session.live.set(item.id, item);
+              if (item.kind === 'message' && prior?.kind === 'message' && item.text.startsWith(prior.text)) {
+                hub.toThread(threadId, {
+                  type: 'delta',
+                  itemId: item.id,
+                  text: item.text.slice(prior.text.length),
+                  threadId,
+                });
+              } else {
+                hub.toThread(threadId, { type: 'item', item, threadId });
+              }
+            }
+          },
+          onApproval(item) {
+            if (signal.aborted) return Promise.resolve(null);
+            return new Promise((resolve) => {
+              session.asks.set(item.id, resolve);
+              session.since = null;
+              addItem(threadId, item);
+              setThread(threadId, { status: 'needs' });
+            });
+          },
+        });
+        if (signal.aborted) return;
+        savePartial(threadId, session);
+        if (result === 'interrupted') {
+          cutShort(threadId, () => note('notice', `Stopped.${dropped(session)}`));
+          break;
+        }
+        void noteBranch(threadId);
+      }
+      if (!signal.aborted) {
+        session.since = null;
+        setThread(threadId, { status: 'done' });
+      }
+    } catch (err) {
+      if (err instanceof CodexTeardownError) session.teardownError = err;
+      if (signal.aborted) throw err;
+      session.since = null;
+      savePartial(threadId, session);
+      cutShort(threadId, () => note('error', `${err instanceof Error ? err.message : String(err)}${dropped(session)}`));
+      setThread(threadId, { status: 'failed' });
+    } finally {
+      for (const resolve of session.asks.values()) resolve(null);
+      session.asks.clear();
+      if (!signal.aborted && !session.teardownError) codexSessions.delete(threadId);
+    }
+  }
+
+  function dropped(session: CodexSession) {
+    const count = session.input.length;
+    return count
+      ? ` ${count} queued ${count === 1 ? 'message was' : 'messages were'} not sent. Send again to continue.`
+      : '';
+  }
+
+  function sendCodex(threadId: string, message: NewMessage) {
+    const current = codexSessions.get(threadId);
+    if (current) {
+      current.input.push(message);
+      setThread(threadId, {});
+      return;
+    }
+    if (!codex) {
+      addItem(threadId, note('error', 'Codex is not configured on this server.'));
+      setThread(threadId, { status: 'failed' });
+      return;
+    }
+    const session: CodexSession = {
+      input: [message],
+      abort: new AbortController(),
+      run: Promise.resolve(),
+      live: new Map(),
+      asks: new Map(),
+      since: Date.now(),
+    };
+    codexSessions.set(threadId, session);
+    setThread(threadId, { status: 'working' });
+    session.run = runCodex(threadId, session, codex);
+  }
+
+  async function stopCodex(threadId: string, session: CodexSession, showNotice: boolean) {
+    const { signal } = session.abort;
+    if (session.teardownError) throw session.teardownError;
+    if (signal.aborted) return session.run;
+    session.abort.abort();
+    for (const resolve of session.asks.values()) resolve(null);
+    session.asks.clear();
+    try {
+      await session.run;
+    } catch (err) {
+      session.since = null;
+      savePartial(threadId, session);
+      cutShort(threadId, () => note('error', err instanceof Error ? err.message : String(err)));
+      setThread(threadId, { status: 'failed' });
+      throw err;
+    }
+    codexSessions.delete(threadId);
+    if (!showNotice) return;
+    savePartial(threadId, session);
+    cutShort(threadId, () => note('notice', `Stopped.${dropped(session)}`));
+    setThread(threadId, { status: 'done' });
+  }
+
   // Asks Claude itself, so the list follows Claude's own rules: which folders skills come from, which one wins
   // when two share a name, and which are for Claude only. The process is never sent a message.
   async function ask(folder: string): Promise<Command[]> {
@@ -440,13 +613,16 @@ export function createRunner(
 
   // Threads that were in the middle of something when the server last stopped. Claude waiting for an answer
   // counts: nobody can give it any more.
-  for (const { id, status } of db.select(threadCols).from(threads).where(ne(threads.status, 'done')).all()) {
+  for (const { id, status, agent } of db.select(threadCols).from(threads).where(ne(threads.status, 'done')).all()) {
     const interrupted = status !== 'failed';
     cutShort(
       id,
       (wasOpen) =>
         (interrupted || wasOpen) &&
-        note('error', 'The server restarted while Claude was busy. Send a message to continue.'),
+        note(
+          'error',
+          `The server restarted while ${agent === 'codex' ? 'Codex' : 'Claude'} was busy. Send a message to continue.`,
+        ),
     );
     if (interrupted) setThread(id, { status: 'failed' });
   }
@@ -472,6 +648,11 @@ export function createRunner(
     // Saves the user's message and hands it to Claude. If Claude is busy, it picks the message up when it can.
     send(threadId: string, message: NewMessage, userId: string) {
       const { text, images: imageIds, files: fileIds, model, effort, context, fast, access } = message;
+      const { agent, people } = db
+        .select({ agent: threads.agent, people: threads.people })
+        .from(threads)
+        .where(eq(threads.id, threadId))
+        .get()!;
       const item = {
         id: randomUUID(),
         kind: 'message',
@@ -482,8 +663,12 @@ export function createRunner(
         files: fileIds,
       } as const;
       addItem(threadId, { ...item, at: nextAt() });
-      const { people } = db.select({ people: threads.people }).from(threads).where(eq(threads.id, threadId)).get()!;
       if (!people.includes(userId)) people.push(userId);
+      if (agent === 'codex') {
+        setThread(threadId, { people }, false);
+        sendCodex(threadId, message);
+        return;
+      }
       db.update(threads).set({ model, effort, context, fast, access, people }).where(eq(threads.id, threadId)).run();
       try {
         // The model, reasoning level, context window and fast mode are fixed when a process starts. A change
@@ -528,9 +713,12 @@ export function createRunner(
     // did not work out: the thread keeps the name it has. Getting a name is not news.
     async name(threadId: string) {
       const said = loadItems(db, threadId)
-        .flatMap((item) => (item.kind === 'message' && !item.parent && item.text ? [item] : []))
-        .slice(0, TITLE_MESSAGES)
-        .map(({ by, text }) => ({ by, text }));
+        .flatMap((item) =>
+          item.kind === 'message' && item.by !== 'codex' && !item.parent && item.text
+            ? [{ by: item.by, text: item.text }]
+            : [],
+        )
+        .slice(0, TITLE_MESSAGES);
       if (!said.length) return null;
       const title = await inferTitle(query, said).catch((err) => void console.error('Could not name the thread:', err));
       if (title) setThread(threadId, { title }, false);
@@ -539,13 +727,17 @@ export function createRunner(
 
     // Hands the user's reply to the approval prompt or question that is waiting for it.
     answer(threadId: string, answer: Answer) {
+      const codexSession = codexSessions.get(threadId);
+      if (codexSession) return answerCodex(threadId, codexSession, answer.toolId, answer);
       const waiting = sessions.get(threadId)?.asks.get(answer.toolId);
       waiting?.(answer);
       return Boolean(waiting);
     },
 
-    // Stops whatever Claude is doing in this thread, background work included.
+    // Stops the agent, including Claude's background work or any queued Codex prompts.
     async stop(threadId: string) {
+      const codexSession = codexSessions.get(threadId);
+      if (codexSession) return stopCodex(threadId, codexSession, true);
       const session = detach(threadId);
       if (!session) return;
       cutShort(threadId, () => note('notice', 'Stopped.'));
@@ -558,10 +750,24 @@ export function createRunner(
       kill(session);
     },
 
-    // Ends the thread's Claude process at once, without a word in the thread: it is being deleted.
-    end: close,
+    // End work quietly before deleting a thread or shutting down the server.
+    end(threadId: string) {
+      const session = codexSessions.get(threadId);
+      if (session) return stopCodex(threadId, session, false);
+      close(threadId);
+    },
+    shutdown() {
+      codexClosing = true;
+      return Promise.allSettled([...codexSessions].map(([id, session]) => stopCodex(id, session, false)));
+    },
+    codexClosing: () => codexClosing,
+    codexStopReason(threadId: string) {
+      const session = codexSessions.get(threadId);
+      return session?.teardownError?.message ?? (session?.abort.signal.aborted ? 'Codex is still stopping.' : null);
+    },
 
-    // The bubbles Claude is writing right now.
-    live: (threadId: string) => sessions.get(threadId)?.translator.live() ?? [],
+    // The bubbles the agent is writing right now.
+    live: (threadId: string) =>
+      sessions.get(threadId)?.translator.live() ?? [...(codexSessions.get(threadId)?.live.values() ?? [])],
   };
 }

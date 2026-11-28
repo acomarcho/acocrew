@@ -1,8 +1,9 @@
 // What Claude is waiting on the user for: a yes to an action, or an answer to its questions.
 // Both are pinned above the message box, so nobody has to scroll to find them.
-import type { Answer, Item, Question } from '@acocrew/shared';
+import type { Answer, Item, Question, Thread } from '@acocrew/shared';
 import { Check, Ellipsis, Hand, MessageCircleQuestion } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { agentName } from './ui';
 
 type Tool = Extract<Item, { kind: 'tool' }>;
 type Reply = (answer: Omit<Answer, 'toolId'>) => Promise<unknown>;
@@ -18,8 +19,9 @@ const questionsOf = (tool: Tool): Question[] | undefined =>
 const panel = 'mb-2 rounded-lg border border-rose-500/30 bg-card p-3 text-sm shadow-sm';
 const button = 'rounded-md px-3 py-1.5 text-sm font-medium';
 
-// Approve or decline what Claude wants to do. The two rarer choices sit behind the "..." button.
-export function ApprovalPanel({ tool, reply }: { tool: Tool; reply: Reply }) {
+// Approve or decline what the agent wants to do. Extra choices sit behind the "..." button.
+export function ApprovalPanel({ tool, reply, agent }: { tool: Tool; reply: Reply; agent: Thread['agent'] }) {
+  const name = agentName(agent);
   const [menu, setMenu] = useState(false);
   const [error, setError] = useState('');
   const send = (decision: Answer['decision']) => {
@@ -31,7 +33,9 @@ export function ApprovalPanel({ tool, reply }: { tool: Tool; reply: Reply }) {
     <div className={panel}>
       <div className="flex items-center gap-2">
         <Hand size={15} className="shrink-0 text-rose-500" />
-        <span className="font-medium">Claude wants to use {tool.name}</span>
+        <span className="font-medium">
+          {name} wants to use {tool.name}
+        </span>
       </div>
       <pre className="mt-2 max-h-40 overflow-auto rounded-md border border-border bg-muted p-2 font-mono text-xs break-words whitespace-pre-wrap">
         {tool.input}
@@ -50,15 +54,17 @@ export function ApprovalPanel({ tool, reply }: { tool: Tool; reply: Reply }) {
             <>
               <div className="fixed inset-0 z-40" onClick={() => setMenu(false)} />
               <div className="absolute right-0 bottom-full z-50 mb-1 w-64 rounded-lg border border-border bg-card p-1 shadow-xl">
-                <button type="button" className={more} onClick={() => send('always')}>
-                  Always allow this session
-                  <span className="block text-xs text-muted-foreground">
-                    Yes, and stop asking about this kind of action
-                  </span>
-                </button>
+                {agent !== 'codex' && (
+                  <button type="button" className={more} onClick={() => send('always')}>
+                    Always allow this session
+                    <span className="block text-xs text-muted-foreground">
+                      Yes, and stop asking about this kind of action
+                    </span>
+                  </button>
+                )}
                 <button type="button" className={more} onClick={() => send('cancel')}>
                   Cancel
-                  <span className="block text-xs text-muted-foreground">No, and stop what Claude is doing</span>
+                  <span className="block text-xs text-muted-foreground">No, and stop what {name} is doing</span>
                 </button>
               </div>
             </>

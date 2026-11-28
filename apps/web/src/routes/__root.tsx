@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { TagToast } from '../chat';
 import { Login, SetPassword } from '../login';
 import { keepDraftsOf } from '../drafts';
-import { connect, loadModels, LOGGED_OUT, useApp, whoAmI } from '../store';
+import { connect, loadCodexModels, loadModels, LOGGED_OUT, useApp, whoAmI } from '../store';
 
 export const Route = createRootRoute({ component: Root });
 
@@ -47,7 +47,10 @@ function App({ me, recheck }: { me: Me; recheck: () => Promise<unknown> }) {
   useEffect(() => keepDraftsOf(me.id), [me.id]);
   useEffect(() => connect(recheck), [recheck]);
   // Without an answer the model picker keeps Claude's own models.
-  useEffect(() => void loadModels().catch(() => {}), []);
+  useEffect(() => {
+    void loadModels().catch(() => {});
+    void loadCodexModels().catch(() => {});
+  }, []);
   useEffect(() => {
     // Whether Cmd or Ctrl is held, for `held:` styles. It is let go too when the window loses focus mid-press.
     const hold = (e: KeyboardEvent) => document.documentElement.toggleAttribute('data-held', e.metaKey || e.ctrlKey);
