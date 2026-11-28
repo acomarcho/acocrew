@@ -178,7 +178,12 @@ export function createRunner(
   const codexSessions = new Map<string, CodexSession>();
   const folderAndSession = (threadId: string) =>
     db
-      .select({ path: threads.path, repo: channels.path, sessionId: threads.sessionId })
+      .select({
+        path: threads.path,
+        repo: channels.path,
+        sessionId: threads.sessionId,
+        pendingRollout: threads.codexPendingRollout,
+      })
       .from(threads)
       .innerJoin(channels, eq(channels.id, threads.channelId))
       .where(eq(threads.id, threadId))
@@ -453,18 +458,21 @@ export function createRunner(
     try {
       while (!signal.aborted && session.input.length) {
         const { text, model, effort, access } = session.input.shift()!;
-        const { path, repo, sessionId } = folderAndSession(threadId);
+        const { path, repo, sessionId, pendingRollout } = folderAndSession(threadId);
         const result = await runTurn({
           cwd: path ?? repo,
           sessionId,
+          pendingRollout,
           text,
           model,
           effort,
           access,
           signal,
-          onSession(id) {
-            if (id === null || !signal.aborted)
-              db.update(threads).set({ sessionId: id }).where(eq(threads.id, threadId)).run();
+          onSession(id, pendingRollout) {
+            db.update(threads)
+              .set({ sessionId: id, codexPendingRollout: pendingRollout ?? null })
+              .where(eq(threads.id, threadId))
+              .run();
           },
           onItem(item, save) {
             if (signal.aborted) return;

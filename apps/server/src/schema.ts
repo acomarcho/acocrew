@@ -120,6 +120,7 @@ export const threads = sqliteTable('threads', {
   branch: text('branch'),
   // The stored agent's own conversation ID. Only that agent can resume it.
   sessionId: text('session_id'),
+  codexPendingRollout: text('codex_pending_rollout'),
   // How many tokens the conversation took up in Claude's latest call. Empty until Claude has answered once.
   contextUsed: integer('context_used'),
   // Who started the thread. They decide who sees it.

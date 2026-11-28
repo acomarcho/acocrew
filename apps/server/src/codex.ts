@@ -11,12 +11,13 @@ export type CodexConfig = { home: string; model: string; binary?: string };
 export type CodexTurn = (params: {
   cwd: string;
   sessionId: string | null;
+  pendingRollout?: string | null;
   text: string;
   model: string;
   effort: string;
   access: Access;
   signal: AbortSignal;
-  onSession: (id: string | null) => void;
+  onSession: (id: string | null, pendingRollout?: string) => void;
   onItem: (item: Item, save: boolean) => void;
   onApproval: (item: Item) => Promise<Answer | null>;
 }) => Promise<'completed' | 'interrupted'>;
@@ -201,9 +202,38 @@ function approvalDetails(method: string, params: Obj, patch: Obj | undefined) {
   return { ...details, name: 'a file patch' };
 }
 
-// Start a new stdio child for each turn. Only the native thread ID crosses turns.
+// An unreadable rollout is not proof it is missing. Keep the ID rather than splitting native history.
+function rolloutExists(path: string) {
+  return stat(path).then(
+    () => true,
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return false;
+      throw error;
+    },
+  );
+}
+
+// Start a new stdio child for each turn. Keep the rollout path until the new native ID is established.
 export function createCodexTurn(config: CodexConfig): CodexTurn {
-  return async ({ cwd, sessionId, text, model, effort, access, signal, onSession, onItem, onApproval }) => {
+  return async ({
+    cwd,
+    sessionId,
+    pendingRollout,
+    text,
+    model,
+    effort,
+    access,
+    signal,
+    onSession,
+    onItem,
+    onApproval,
+  }) => {
+    if (signal.aborted) return 'interrupted';
+    // After a crash only provisional IDs can be discarded, and only if Codex never wrote their history.
+    if (pendingRollout && !(await rolloutExists(pendingRollout))) {
+      sessionId = null;
+      onSession(null);
+    }
     if (signal.aborted) return 'interrupted';
     if (sessionId === null && model !== config.model) throw new Error('This model is not enabled for Codex.');
     const [home, folder] = await Promise.all([dedicatedHome(config.home), realpath(cwd)]);
@@ -557,8 +587,12 @@ export function createCodexTurn(config: CodexConfig): CodexTurn {
         throw new Error('Codex did not open the requested persistent, idle thread; no prompt was sent.');
       }
       if (stopped || terminal) return;
-      if (sessionId === null && isAbsolute(str(thread.path))) newRollout = str(thread.path);
-      onSession(threadId);
+      if (sessionId === null) {
+        const path = str(thread.path);
+        if (!isAbsolute(path)) throw new Error('Codex did not return an absolute path for the new session.');
+        newRollout = path;
+      }
+      onSession(threadId, newRollout);
       if (stopped || terminal) return;
       sentTurn = true;
       const started = await request('turn/start', {
@@ -617,14 +651,10 @@ export function createCodexTurn(config: CodexConfig): CodexTurn {
       child.stdin.destroy();
       await waitForExit(100);
     }
-    // App Server allocates the ID before writing its rollout. On a cleanly closed, failed first turn,
-    // release only that ID if the native file never appeared. Never reset a previously saved session.
-    if (closed && newRollout && outcome !== 'completed') {
-      const missing = await stat(newRollout).then(
-        () => false,
-        (error: NodeJS.ErrnoException) => error.code === 'ENOENT',
-      );
-      if (missing) onSession(null);
+    // App Server allocates the ID before writing its history. Leave it provisional if cleanup or stat fails.
+    if (closed && threadId && newRollout) {
+      const exists = await rolloutExists(newRollout).catch(() => undefined);
+      if (exists !== undefined) onSession(exists ? threadId : null);
     }
     if (outcome instanceof Error) throw outcome;
     if (!closed) throw new Error('Could not confirm that the Codex process closed.');

@@ -35,7 +35,7 @@ async function fixture(scenario: string, settings?: Partial<Parameters<typeof cr
   await Promise.all([mkdir(home), mkdir(cwd)]);
   await writeFile(join(cwd, 'scenario'), scenario);
   const stop = new AbortController();
-  const sessions: (string | null)[] = [];
+  const sessions: [string | null, string | undefined][] = [];
   const updates: { item: Item; save: boolean }[] = [];
   const run = createCodexTurn({ home, model, binary, ...settings });
   const call = (params?: Partial<TurnParams>) =>
@@ -47,8 +47,8 @@ async function fixture(scenario: string, settings?: Partial<Parameters<typeof cr
       effort: 'high',
       access: 'ask',
       signal: stop.signal,
-      onSession: (id) => {
-        sessions.push(id);
+      onSession: (id, path) => {
+        sessions.push([id, path]);
       },
       onItem: (item, save) => {
         updates.push({ item, save });
@@ -90,7 +90,10 @@ test('persists the native ID before input, isolates the child, and saves final t
   const f = await fixture('normal');
   await expect(f.call()).resolves.toBe('completed');
   const wire = await f.wire();
-  expect(f.sessions).toEqual([threadId]);
+  expect(f.sessions).toEqual([
+    [threadId, join(f.home, `${threadId}.jsonl`)],
+    [threadId, undefined],
+  ]);
   expect(wire[0].env).toMatchObject({ CODEX_HOME: f.home, PATH: path });
   for (const name of ['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'HTTPS_PROXY', 'ANTHROPIC_API_KEY', 'ACOCREW_SECRET_TEST']) {
     expect(wire[0].env).not.toHaveProperty(name);
@@ -165,7 +168,11 @@ test('resumes the same native thread using a fresh child and never reuses transc
   );
   const wire = await f.wire();
   expect(wire.filter((line) => line.method === 'thread/start')).toHaveLength(1);
-  expect(f.sessions).toEqual([threadId, threadId]);
+  expect(f.sessions).toEqual([
+    [threadId, join(f.home, `${threadId}.jsonl`)],
+    [threadId, undefined],
+    [threadId, undefined],
+  ]);
   expect(method(wire, 'thread/resume')?.params).toMatchObject({
     threadId,
     excludeTurns: true,
@@ -292,13 +299,16 @@ test('stops before spawn, during initialize, and after saving the ID but before 
   const beforeInput = await fixture('normal');
   await expect(
     beforeInput.call({
-      onSession: (id) => {
-        beforeInput.sessions.push(id);
+      onSession: (id, path) => {
+        beforeInput.sessions.push([id, path]);
         beforeInput.stop.abort();
       },
     }),
   ).resolves.toBe('interrupted');
-  expect(beforeInput.sessions).toEqual([threadId, null]);
+  expect(beforeInput.sessions).toEqual([
+    [threadId, join(beforeInput.home, `${threadId}.jsonl`)],
+    [null, undefined],
+  ]);
   expect(method(await beforeInput.wire(), 'turn/start')).toBeUndefined();
   expectExited(await beforeInput.wire());
 });
@@ -306,10 +316,25 @@ test('stops before spawn, during initialize, and after saving the ID but before 
 test('a rejected first turn releases only an allocated ID with no history', async () => {
   const first = await fixture('reject-start');
   await expect(first.call()).rejects.toThrow('Turn rejected.');
-  expect(first.sessions).toEqual([threadId, null]);
+  expect(first.sessions).toEqual([
+    [threadId, join(first.home, `${threadId}.jsonl`)],
+    [null, undefined],
+  ]);
   const resumed = await fixture('reject-start');
   await expect(resumed.call({ sessionId: threadId })).rejects.toThrow('Turn rejected.');
-  expect(resumed.sessions).toEqual([threadId]);
+  expect(resumed.sessions).toEqual([[threadId, undefined]]);
+});
+
+test.each([false, true])('recovers a provisional ID after a crash (history exists: %s)', async (written) => {
+  const f = await fixture('normal');
+  const pendingRollout = join(f.home, `${threadId}.jsonl`);
+  if (written) await writeFile(pendingRollout, 'previous turn\n');
+  await expect(f.call({ sessionId: threadId, pendingRollout, text: 'continue' })).resolves.toBe('completed');
+  const wire = await f.wire();
+  expect(method(wire, written ? 'thread/resume' : 'thread/start')).toBeDefined();
+  expect(method(wire, written ? 'thread/start' : 'thread/resume')).toBeUndefined();
+  expect(f.sessions[0]).toEqual(written ? [threadId, undefined] : [null, undefined]);
+  expect(f.sessions.at(-1)).toEqual([threadId, undefined]);
 });
 
 test('interrupts after delayed turn ID and drops late output', async () => {

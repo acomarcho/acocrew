@@ -3329,6 +3329,43 @@ test('Codex permission prompts expire after a restart, but the next prompt still
   expect(turn).toHaveBeenNthCalledWith(2, expect.objectContaining({ sessionId: CODEX_SESSION, text: 'continue' }));
 });
 
+test('Codex can continue after a crash before the first native turn was sent', async () => {
+  const cwd = makeRepo(join(home, 'code', 'codex-first-turn-crash'));
+  writeFileSync(join(cwd, 'scenario'), 'normal');
+  mkdirSync(CODEX.home, { recursive: true });
+  const pendingRollout = join(CODEX.home, `${CODEX_SESSION}.jsonl`);
+  const turn: CodexTurn = async ({ onSession, signal }) => {
+    onSession(CODEX_SESSION, pendingRollout);
+    await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+    return 'interrupted';
+  };
+  await serve([], undefined, { codex: CODEX, codexTurn: turn });
+  const thread = await startThread('first prompt', {
+    ...CODEX_START,
+    path: cwd,
+    channelId: (await addChannel(cwd)).id,
+  });
+  const saved = () => db.select().from(threads).where(eq(threads.id, thread.id)).get();
+  await vi.waitFor(() =>
+    expect(saved()).toMatchObject({ sessionId: CODEX_SESSION, codexPendingRollout: pendingRollout }),
+  );
+
+  // Copy SQLite before graceful shutdown can change it, then use the real adapter with the stand-in App Server.
+  db = openDb(db.$client.serialize());
+  const binary = fileURLToPath(new URL('./codex.fake.mjs', import.meta.url));
+  await serve([], undefined, { codex: { ...CODEX, binary } });
+  const after = await connect();
+  expect((await say(thread, 'continue', CODEX_MESSAGE)).status).toBe(200);
+  await after.status(thread.id, 'done');
+  expect(saved()).toMatchObject({ codexPendingRollout: null });
+  expect(saved()?.sessionId).not.toBe(CODEX_SESSION);
+  const wire = readFileSync(join(cwd, 'wire.jsonl'), 'utf8');
+  expect(wire).toContain('"method":"thread/start"');
+  expect(wire).not.toContain('"method":"thread/resume"');
+  expect(wire).toContain('"text":"continue"');
+  expect(wire).not.toContain('"text":"first prompt"');
+});
+
 test('a failed Codex teardown does not report success or delete the thread', async () => {
   const turn: CodexTurn = async ({ signal }) => {
     await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));

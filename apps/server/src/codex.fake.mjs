@@ -189,6 +189,8 @@ input.on('line', (line) => {
     case 'turn/start': {
       if (scenario === 'stubborn') return;
       if (scenario === 'reject-start') return send({ id, error: { code: -32602, message: 'Turn rejected.' } });
+      // App Server writes native history after it accepts the first input, not at thread/start.
+      appendFileSync(join(process.env.CODEX_HOME, `${threadId}.jsonl`), 'turn\n');
       const ack = response(id, { turn: turn('inProgress') });
       if (scenario === 'early-stop') return void setTimeout(() => send(ack), 150);
       if (scenario === 'late-approval' || scenario === 'stop-approval') {
